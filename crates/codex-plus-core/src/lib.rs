@@ -1,3 +1,4 @@
+pub mod fastaiapi;
 pub mod ads;
 pub mod aggregate_catalog;
 pub mod agent_cache;

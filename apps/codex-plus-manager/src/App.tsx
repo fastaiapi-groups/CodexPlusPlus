@@ -1,3 +1,4 @@
+import FastAiApiAccount from "./fastaiapi/Account";
 import {
   closestCenter,
   DndContext,
@@ -1157,7 +1158,7 @@ type ToolId = string;
 
 /** 品牌图标随应用打包，来源和许可见 assets/agents/LICENSE.txt。 */
 const TOOL_ICONS: Record<string, string> = {
-  codex: new URL("./assets/agents/chatgpt.svg", import.meta.url).href,
+  codex: new URL("./fastaiapi/logo.svg", import.meta.url).href,
   grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
   claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
@@ -5136,8 +5137,8 @@ function OverviewScreen({
   const tool = toolEntries.find((entry) => entry.id === activeTool);
   return (
     <>
-      {/* 置顶推荐位两个工具下都显示，内容与「推荐内容」页同源。 */}
-      <SponsorBoard ads={ads} actions={actions} />
+      {/* Codex 概览展示 FastAiApi 账户，其余工具保留推荐内容。 */}
+      {activeTool === "codex" ? <FastAiApiAccount /> : <SponsorBoard ads={ads} actions={actions} />}
       {activeTool === "codex" ? (
         <>
           <Panel>
@@ -14135,7 +14136,7 @@ function ToolSwitcher({
             title={`${title}${running ? `｜${t("运行中")}` : ""}`}
             type="button"
           >
-            {icon ? (
+            {tool.id === "codex" ? <img src={icon} alt="" className="tool-chip-icon" /> : icon ? (
               <span
                 aria-hidden="true"
                 className={`tool-chip-icon tool-chip-brand-icon tool-chip-icon-${tool.id}`}

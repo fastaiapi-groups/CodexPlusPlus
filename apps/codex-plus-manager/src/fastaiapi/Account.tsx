@@ -1,0 +1,98 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+const logo = new URL("./logo.svg", import.meta.url).href;
+import "./account.css";
+
+type User = { email: string; username?: string; balance: number };
+type Key = { id: number; name: string; status: string };
+type Package = { id: string; name: string; amount_cents: number; credit: string };
+type Order = { id: string; status: string; amount_cents: number; credit: string; gateway_status: string; payment_type: string; reversed_at?: string };
+type Checkout = { order: Order; state: string; qr_code?: string; qr_kind?: string };
+const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", { action, body, id });
+
+export default function Account() {
+  const [user, setUser] = useState<User | null>(null), [register, setRegister] = useState(false);
+  const [email, setEmail] = useState(""), [password, setPassword] = useState(""), [confirm, setConfirm] = useState("");
+  const [code, setCode] = useState(""), [invitation, setInvitation] = useState("");
+  const [error, setError] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
+  const [keys, setKeys] = useState<Key[]>([]), [keyId, setKeyId] = useState(0), [models, setModels] = useState<string[]>([]), [model, setModel] = useState("");
+  const [groups, setGroups] = useState<{id: number; name: string}[]>([]), [group, setGroup] = useState("");
+  const [recharge, setRecharge] = useState(false), [packages, setPackages] = useState<Package[]>([]), [orders, setOrders] = useState<Order[]>([]);
+  const [settings, setSettings] = useState<{registration_enabled?: boolean; email_verify_enabled?: boolean; invitation_code_enabled?: boolean} | null>(null);
+  const work = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch(e) { setError(String(e)); } finally { setBusy(false); } };
+  const refresh = async () => setUser(await api<User>("me"));
+  const loadKeys = async () => { const data = await api<{items: Key[]}>("keys"); setKeys(data.items ?? []); return data.items ?? []; };
+  useEffect(() => { api<typeof settings>("settings").then(setSettings).catch(e => setError(String(e))); api<User>("me").then(u => { setUser(u); void loadKeys(); }).catch(() => {}); }, []);
+  const login = () => work(async () => {
+    if (register && password !== confirm) throw new Error("两次密码不一致");
+    const u = await api<User>(register ? "register" : "login", {email, password, verify_code: code, invitation_code: invitation || undefined});
+    setUser(u); setPassword(""); setConfirm(""); const available = (await loadKeys()).filter(k => k.status === "active");
+    if (available.length === 1) {
+      const id = available[0].id; const list = await invoke<string[]>("fastaiapi_models", {keyId: id});
+      setKeyId(id); setModels(list);
+      const preferred = list.find(m => m === "gpt-5.6-sol") ?? list.find(m => /^(gpt-|deepseek|claude|qwen|glm|kimi)/i.test(m) && !/image|audio|video|realtime|tts|embedding/i.test(m));
+      setModel(preferred ?? "");
+      if (preferred) { await invoke("fastaiapi_configure", {keyId: id, model: preferred}); setNotice("已登录并自动配置模型服务，可以启动 Codex。"); return; }
+    }
+    setNotice("已登录，请选择对话分组 Key 和模型，完成配置后启动 Codex。");
+  });
+  const selectKey = (id: number) => work(async () => {
+    setKeyId(id); setModels([]); setModel("");
+    const list = await invoke<string[]>("fastaiapi_models", {keyId: id}); setModels(list); setModel(list[0] ?? "");
+  });
+  return <section className="fast-account" aria-label="FastAiApi 账户">
+    <header><img src={logo} alt="FastAiApi"/><div><h2>FastAiApi</h2><p>{user ? user.email : "登录账号，连接模型，开始工作。"}</p></div>{user && <div className="fast-balance"><small>API 余额（美元额度）</small><strong>{Number.isFinite(user.balance) ? `$${user.balance.toFixed(2)}` : "暂不可用"}</strong></div>}</header>
+    {error && <p role="alert" className="fast-error">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {!user ? <form onSubmit={e => { e.preventDefault(); void login(); }}>
+      <nav><button type="button" onClick={() => setRegister(false)} aria-pressed={!register}>登录</button><button type="button" onClick={() => setRegister(true)} aria-pressed={register}>注册账号</button></nav>
+      <div className="fast-fields"><label>邮箱<input type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}/></label><label>密码<input type="password" minLength={8} autoComplete={register ? "new-password" : "current-password"} required value={password} onChange={e => setPassword(e.target.value)}/></label>
+      {register && <><label>确认密码<input type="password" autoComplete="new-password" required value={confirm} onChange={e => setConfirm(e.target.value)}/></label>{settings?.email_verify_enabled && <label>邮箱验证码<div className="fast-row"><input required value={code} onChange={e => setCode(e.target.value)}/><button type="button" disabled={busy || !email} onClick={() => void work(async () => { await api("verify", {email}); setNotice("验证码已发送，请查收邮箱。"); })}>发送验证码</button></div></label>}{settings?.invitation_code_enabled && <label>邀请码<input value={invitation} onChange={e => setInvitation(e.target.value)}/></label>}</>}
+      </div><button disabled={busy || (register && (!settings || !settings.registration_enabled))} type="submit">{busy ? "处理中…" : register ? "注册并登录" : "登录 FastAiApi"}</button>
+    </form> : <>
+      <div className="fast-row"><span>模型服务 https://fastaiapi.cloud/v1</span><button disabled={busy} onClick={() => void work(refresh)}>刷新余额</button><button onClick={() => void work(async () => { setPackages(await api<Package[]>("packages")); setOrders(await api<Order[]>("orders")); setRecharge(true); })}>去充值</button><button onClick={() => void work(async () => { await api("logout"); setUser(null); setKeys([]); setModels([]); setRecharge(false); setNotice("已退出账户；已配置的模型服务可在供应商配置中管理。"); })}>退出登录</button></div>
+      <div className="fast-row"><label>对话 API Key<select value={keyId} disabled={busy} onChange={e => void selectKey(Number(e.target.value))}><option value={0} disabled>选择账户 Key</option>{keys.filter(k => k.status === "active").map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label><label>切换模型<select value={model} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m}>{m}</option>)}</select></label><button disabled={busy || !model} onClick={() => void work(async () => { await invoke("fastaiapi_configure", {keyId, model}); setNotice("模型服务已配置。点击右上角启动或重启 Codex 生效。"); })}>应用模型配置</button></div>
+      <details><summary>创建专用 API Key</summary><button disabled={busy} onClick={() => void work(async () => setGroups(await api("groups")))}>读取可用分组</button><select aria-label="模型分组" value={group} onChange={e => setGroup(e.target.value)}><option value="">选择对话模型分组</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select><button disabled={busy || !group} onClick={() => void work(async () => { await api("create_key", {name: "Codex++ FastAiApi", group_id: Number(group)}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。"); })}>创建 Key</button></details>
+      {recharge && <Recharge packages={packages} orders={orders} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>}
+    </>}
+    <p className="fast-muted">内置图片 / Grok / H3 技能随应用提供。图片、Grok 和 H3 分别使用各自分组密钥；H3 使用 newapi.fastaiapi.cloud。</p>
+  </section>;
+}
+
+function Recharge({packages, orders, onClose, onPaid}: {packages: Package[]; orders: Order[]; onClose: () => void; onPaid: () => void}) {
+  const [packageId, setPackageId] = useState(packages[0]?.id ?? ""), [channel, setChannel] = useState("alipay");
+  const [session, setSession] = useState<Checkout | null>(null), [qr, setQr] = useState(""), [error, setError] = useState("");
+  const [busy, setBusy] = useState(false), [attempted, setAttempted] = useState(false);
+  const requestId = useRef(crypto.randomUUID()), disposed = useRef(false), paid = useRef(false);
+  useEffect(() => { disposed.current = false; return () => { disposed.current = true; }; }, []);
+  const apply = async (next: Checkout) => {
+    if (disposed.current) return; setSession(next);
+    if (next.order.status === "paid") { setQr(""); if (!paid.current) { paid.current = true; onPaid(); } return; }
+    if (next.state === "expired" || next.order.gateway_status === "expired" || next.order.reversed_at) { setQr(""); return; }
+    if (next.qr_code) {
+      const image = next.qr_kind === "image" ? (/^data:image\/(png|jpeg|webp);base64,/.test(next.qr_code) ? next.qr_code : "") : await invoke<string>("fastaiapi_qr", {text: next.qr_code});
+      if (!disposed.current) setQr(image);
+    }
+  };
+  useEffect(() => {
+    if (!session || session.order.status === "paid" || session.state === "expired" || session.order.gateway_status === "expired") return;
+    let stopped = false, count = 0, timer: ReturnType<typeof setTimeout>;
+    const tick = async () => { try { const next = await api<Checkout>("order", undefined, session.order.id); if (!stopped) await apply(next); } catch { if (!stopped) setError("暂时无法查询到账状态，已付款请勿重复扫码。"); } if (!stopped && ++count < 200) timer = setTimeout(tick, 3000); };
+    timer = setTimeout(tick,3000); return () => { stopped = true; clearTimeout(timer); };
+  }, [session?.order.id, session?.order.status, session?.state]);
+  const checkout = async (existing?: Order) => {
+    setBusy(true); setAttempted(true); setError(""); setQr(""); if (existing) paid.current = false;
+    try { const order = existing ?? session?.order ?? (await api<{order: Order}>("create_order", {package_id: packageId, payment_type: channel, request_id: requestId.current})).order;
+      if (!disposed.current) setSession({order, state: "pending"});
+      await apply(await api<Checkout>("checkout", {}, order.id));
+    } catch(e) { if (!disposed.current) setError(`${String(e)}。重试将沿用原订单，请勿重复付款。`); } finally { if (!disposed.current) setBusy(false); }
+  };
+  const selected = packages.find(p => p.id === packageId);
+  return <div className="fast-payment" role="region" aria-label="在线充值"><h3>支付宝 / 微信充值</h3><button disabled={busy} onClick={onClose}>关闭充值</button>{error && <p role="alert">{error}</p>}
+    {!session && <><label>充值套餐<select disabled={attempted} value={packageId} onChange={e => setPackageId(e.target.value)}>{packages.map(p => <option key={p.id} value={p.id}>{p.name} · ¥{(p.amount_cents / 100).toFixed(2)}</option>)}</select></label><label>支付方式<select disabled={attempted} value={channel} onChange={e => setChannel(e.target.value)}><option value="alipay">支付宝</option><option value="wxpay">微信支付</option></select></label><p>应付人民币 ¥{((selected?.amount_cents ?? 0)/100).toFixed(2)}，到账 API 额度 ${selected?.credit}。</p></>}
+    {session && <p>订单 {session.order.id} · {session.order.payment_type === "wxpay" ? "微信支付" : "支付宝"} · {session.order.status === "paid" ? "已到账" : session.state === "expired" ? "已过期" : "待支付 / 确认中"} · ¥{(session.order.amount_cents/100).toFixed(2)}</p>}
+    {qr && <img className="fast-qr" src={qr} alt="请使用所选支付方式扫码付款"/>}
+    {session?.order.status !== "paid" && session?.state !== "expired" && session?.order.gateway_status !== "expired" && !session?.order.reversed_at && <button disabled={busy || !packageId} onClick={() => void checkout()}>{busy ? "正在处理…" : session ? "继续原订单" : "确认并提交订单"}</button>}
+    <p>请按订单金额付款，支付成功后自动刷新余额。关闭后可从下方订单继续。</p>
+    <details><summary>最近充值订单</summary>{orders.map(o => <div key={o.id}>{o.id} · {o.status} · ¥{(o.amount_cents/100).toFixed(2)} {o.status !== "paid" && <button disabled={busy} onClick={() => void checkout(o)}>继续支付</button>}</div>)}</details>
+  </div>;
+}

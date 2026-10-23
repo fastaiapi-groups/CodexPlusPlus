@@ -1,3 +1,4 @@
+mod fastaiapi_commands;
 mod auto_takeover;
 mod agent_collaboration_commands;
 mod computer_use_commands;
@@ -124,6 +125,7 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            fastaiapi_commands::install_media_skill().map_err(std::io::Error::other)?;
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
@@ -171,6 +173,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            fastaiapi_commands::fastaiapi_account,
+            fastaiapi_commands::fastaiapi_qr,
+            fastaiapi_commands::fastaiapi_models,
+            fastaiapi_commands::fastaiapi_configure,
             agent_collaboration_commands::agent_collaboration_request,
             commands::backend_version,
             commands::startup_options,
