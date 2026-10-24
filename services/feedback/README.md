@@ -48,6 +48,6 @@ location = /fastaiapi/api/feedback {
 
 `Dockerfile` 使用服务器现有的官方 `golang:1.27.0-alpine` 镜像构建并测试，运行层为 scratch，非 root 用户。准备专用目录 `/opt/fastaiapi-feedback-data`，属主 `65532:65532`、权限 `0700`，然后在本目录执行 `docker compose up -d --build`。端口只绑定主机回环地址。只更新这一项服务，不重启其他项目容器。
 
-公网隐藏管理入口使用 `/feedback-admin`（与官方 `/admin` 不冲突），仍必须管理员登录。反向代理可以额外精确匹配 `/feedback-admin` 和前缀 `/feedback-admin/` 到本服务，保留路径。管理员 Cookie 对站点根路径有效，HttpOnly/SameSite 保护不变。
+公网隐藏管理入口使用 `/fastaiapi/feedback-admin`（与官方 `/admin` 不冲突），仍必须管理员登录。反向代理可以额外精确匹配 `/fastaiapi/feedback-admin` 和前缀 `/fastaiapi/feedback-admin/` 到本服务，保留路径。管理员 Cookie 对站点根路径有效，HttpOnly/SameSite 保护不变。
 
 `deploy/nginx-feedback.conf` 是可直接包含在现有 `fastaiapi.cloud` server 块中的路由片段。当前生产入口由 HTTPS 网关转发到源站 HTTP，片段保留网关的 `X-Forwarded-Proto`；若直接在 Nginx 终止 TLS，应改为 `$scheme`。修改主配置前备份，`nginx -t` 成功后再平滑 reload。

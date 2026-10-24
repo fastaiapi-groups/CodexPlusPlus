@@ -145,6 +145,12 @@ func (s *Server) authorized(r *http.Request) bool {
 	return ok && expiry.After(time.Now())
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/fastaiapi/feedback-admin" || strings.HasPrefix(r.URL.Path, "/fastaiapi/feedback-admin/") {
+		r = r.Clone(r.Context())
+		u := *r.URL
+		u.Path = strings.TrimPrefix(u.Path, "/fastaiapi")
+		r.URL = &u
+	}
 	// 独立管理前缀可与官方平台 /admin 共存，不加入普通客户端导航。
 	if r.URL.Path == "/feedback-admin" || strings.HasPrefix(r.URL.Path, "/feedback-admin/") {
 		r = r.Clone(r.Context())
