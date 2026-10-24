@@ -8,3 +8,16 @@
 .fast-account.is-connected .fast-advanced{margin:0;padding:15px 0;color:#97a6b5;font-size:12px}.fast-advanced>summary{list-style:none;display:flex;gap:10px;align-items:center}.fast-advanced>summary::-webkit-details-marker{display:none}.fast-advanced>summary:before{content:'›';font-size:19px;line-height:1;color:#5f7488}.fast-advanced[open]>summary:before{transform:rotate(90deg)}.fast-advanced>summary>span{margin-left:auto;font-size:11px;color:#63778c}.fast-advanced>.fast-row{padding-top:18px}.fast-advanced label{font-size:12px}.fast-account.is-connected .fast-advanced select{padding:8px;font-size:12px;background:#111720;border-color:#ffffff14}.fast-account.is-connected .fast-advanced details{border-top:1px solid #ffffff0b;padding-top:14px}
 .fast-account-footer{border-top:1px solid #ffffff0b;margin:0 -30px;padding:13px 30px;display:flex;justify-content:space-between;align-items:center;gap:12px;background:#080c121c}.fast-account-footer>span{display:flex;align-items:center;gap:7px;font-size:11px;color:#70879a}.fast-account-footer>div{display:flex;gap:6px}.fast-account.is-connected .fast-account-footer button{border:0;background:none;padding:6px 8px;color:#8c9caf;font-size:11px}.fast-account.is-connected .fast-notice{padding:9px 12px;background:#2bc5a209;border:1px solid #2bc5a21c;color:#78c8b6;font-size:12px;border-radius:8px;margin:0 0 18px}.fast-account.is-connected .fast-error{background:#ef686810;padding:10px 12px;border:1px solid #ef686825;border-radius:8px;font-size:12px}
 @media(max-width:1050px){.fast-wallet{margin-left:70px}.fast-service-grid{grid-template-columns:1fr}.fast-account-footer{flex-wrap:wrap}.fast-models .fast-row{justify-content:flex-start;gap:20px}}
+/* 展开配置时按内容撑开网格项，由页面统一滚动，避免 overflow 裁掉底部。 */
+.fast-account.is-connected{min-height:max-content;flex-shrink:0;min-width:0}
+.fast-account.is-connected .fast-advanced>.fast-row{align-items:flex-end}
+.fast-account.is-connected .fast-advanced label{min-width:0;max-width:100%}
+.fast-account.is-connected .fast-advanced>details{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.fast-account.is-connected .fast-advanced>details>summary{width:100%}
+.fast-account.is-connected .fast-advanced>details:not([open]){display:block}
+@media(max-width:700px){.fast-account.is-connected{padding:20px 18px 0}.fast-account.is-connected .fast-account-footer{margin-inline:-18px;padding-inline:18px}.fast-account.is-connected .fast-advanced>.fast-row{align-items:stretch}.fast-account.is-connected .fast-advanced label{flex:1 1 100%}.fast-advanced>summary{flex-wrap:wrap}.fast-advanced>summary>span{margin-left:0}.fast-wallet{margin-left:0;flex-wrap:wrap}}
+/* WebKit 的 details 展开在网格固有高度计算中会滞后，账户概览使用正常文档流。 */
+.screen:has(>.fast-account.is-connected){display:block}
+.screen:has(>.fast-account.is-connected)>.panel{margin-bottom:14px}
+.fast-account.is-connected{overflow:visible}
+.fast-account.is-connected .fast-account-footer{border-radius:0 0 20px 20px}
