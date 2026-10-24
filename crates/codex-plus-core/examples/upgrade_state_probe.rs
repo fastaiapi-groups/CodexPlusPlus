@@ -44,15 +44,15 @@ fn main() -> anyhow::Result<()> {
             ensure!(root.join("watcher.disabled").is_file(), "用户启动偏好没有保留");
         }
         "logout" => {
-            fastaiapi_session::clear()?;
+            fastaiapi_session::clear().map_err(anyhow::Error::msg)?;
             ensure!(fastaiapi_session::load().is_none(), "退出登录未生效");
             ensure!(fastaiapi_credentials::load()["email"] == "upgrade-test@example.invalid", "退出登录误删记住的账号");
         }
         "forget" => {
-            fastaiapi_session::clear()?;
-            fastaiapi_credentials::clear()?;
+            fastaiapi_session::clear().map_err(anyhow::Error::msg)?;
+            fastaiapi_credentials::clear().map_err(anyhow::Error::msg)?;
             ensure!(fastaiapi_credentials::load() == json!({}), "忘记账号未生效");
-            fastaiapi_credentials::clear()?;
+            fastaiapi_credentials::clear().map_err(anyhow::Error::msg)?;
         }
         _ => anyhow::bail!("未知验收动作"),
     }

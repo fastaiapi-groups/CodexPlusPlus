@@ -1037,6 +1037,70 @@ mod runtime {
     }
 
     #[cfg(test)]
+    pub(super) fn published_dmg_upgrade(root: &Path) -> anyhow::Result<()> {
+        // 使用实际发布 DMG，不注册额外测试应用、不接触用户默认配置。
+        let old_image = PathBuf::from(std::env::var_os("CODEX_PLUS_ACCEPTANCE_OLD_DMG").context("缺少旧版 DMG")?);
+        let new_image = PathBuf::from(std::env::var_os("CODEX_PLUS_ACCEPTANCE_NEW_DMG").context("缺少新版 DMG")?);
+        let probe = PathBuf::from(std::env::var_os("CODEX_PLUS_ACCEPTANCE_PROBE").context("缺少持久化探针")?);
+        let state = root.join("upgrade-test-state");
+        let run_probe = |action: &str| -> anyhow::Result<()> {
+            let status = Command::new(&probe).arg(action)
+                .env("CODEX_PLUS_STATE_DIR", &state)
+                .env("CODEX_HOME", state.join("codex-home")).status()?;
+            if !status.success() { bail!("系统凭据/配置验收失败：{action}"); }
+            Ok(())
+        };
+        run_probe("seed")?;
+        let files = ["settings.json", "codex-home/config.toml", "codex-home/auth.json", "watcher.disabled"];
+        let before: Vec<_> = files.iter().map(|name| fs::read(state.join(name))).collect::<Result<_, _>>()?;
+        let install_root = root.join("安装目录 with spaces");
+        fs::create_dir(&install_root)?;
+        let mount = root.join("readonly mount");
+        fs::create_dir(&mount)?;
+        let with_image = |image: &Path, operation: &dyn Fn() -> anyhow::Result<()>| -> anyhow::Result<()> {
+            checked("/usr/bin/hdiutil", &["attach".as_ref(), "-readonly".as_ref(), "-nobrowse".as_ref(),
+                "-noautoopen".as_ref(), "-mountpoint".as_ref(), mount.as_os_str(), image.as_os_str()])?;
+            let result = operation();
+            let detach = checked("/usr/bin/hdiutil", &["detach".as_ref(), mount.as_os_str()]);
+            result?;
+            detach?;
+            Ok(())
+        };
+        let result = (|| -> anyhow::Result<()> {
+            with_image(&old_image, &|| {
+                NativeOps.verify_signature(&mount.join(BUNDLES[0].name))?;
+                NativeOps.copy_bundle(&mount.join(BUNDLES[0].name), &install_root.join(BUNDLES[0].name))
+            })?;
+            let old = validate_bundle(&NativeOps, &install_root.join(BUNDLES[0].name), BUNDLES[0])?;
+            let transaction = install_root.join(".codex-plus-update-release-acceptance");
+            fs::create_dir(&transaction)?;
+            fs::set_permissions(&transaction, fs::Permissions::from_mode(0o700))?;
+            let plan = UpdatePlan { schema: 2, install_root, transaction, installer: new_image.clone(),
+                version: crate::version::VERSION.into(), manager_pid: std::process::id(), old_bundles: [old.clone()] };
+            with_image(&new_image, &|| prepare_bundles(&NativeOps, &plan, &mount))?;
+            replace_bundles(&NativeOps, &plan)?;
+            let installed = plan.install_root.join(BUNDLES[0].name);
+            NativeOps.verify_signature(&installed)?;
+            let info = validate_bundle(&NativeOps, &installed, BUNDLES[0])?;
+            if info.version != crate::version::VERSION { bail!("真实发布包升级版本不正确"); }
+            if NativeOps.inspect(&plan.transaction.join("backups").join(BUNDLES[0].name))?.version != old.version {
+                bail!("没有保留真实旧版本应用备份");
+            }
+            for (name, expected) in files.iter().zip(&before) {
+                if fs::read(state.join(name))? != *expected { bail!("覆盖升级改写了用户配置文件"); }
+            }
+            run_probe("verify")?;
+            run_probe("verify")?;
+            run_probe("logout")?;
+            eprintln!("MACOS_REAL_RELEASE_UPGRADE_OK {} -> {}；配置逐字节一致，系统会话和记住账号跨进程保留", old.version, info.version);
+            Ok(())
+        })();
+        let cleanup = run_probe("forget");
+        result?;
+        cleanup
+    }
+
+    #[cfg(test)]
     pub(super) fn pipe_deadline_smoke(root: &Path) -> anyhow::Result<()> {
         let done = root.join("controlled-pipe-child.done");
         let mut command = Command::new(std::env::current_exe()?);
@@ -1467,6 +1531,14 @@ mod tests {
     fn macos_update_native_signed_bundle_copy_smoke_uses_only_temp_fixture() {
         let temp = tempfile::tempdir().unwrap();
         runtime::native_smoke(temp.path()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "显式指定两版真实 DMG 和隔离凭据探针后运行"]
+    fn macos_published_dmg_upgrade_preserves_credentials_and_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::published_dmg_upgrade(temp.path()).unwrap();
     }
 
     #[cfg(target_os = "macos")]
