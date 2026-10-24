@@ -1,5 +1,7 @@
 import { useState } from "react";
 import "./support.css";
+import { ContactQr } from "./ContactQr";
+const qqGroup = new URL("./icons/qq-group.jpg", import.meta.url).href;
 const wechatGroup = new URL("./icons/wechat-group.jpg", import.meta.url).href;
 const faqs = [
   ["第一次使用怎样开始？", "登录 FastAiApi 账号，等待自动配置完成，在概览中选择默认模型，再点击启动 Codex。请先安装配套的 Codex 桌面应用。"],
@@ -16,5 +18,5 @@ const faqs = [
 export function Manual() {
   const [query, setQuery] = useState(""), [copied, setCopied] = useState(false);
   const matches = faqs.filter(item => item.join(" ").toLowerCase().includes(query.toLowerCase()));
-  return <section className="fast-support"><div className="fast-support-intro"><span>FASTAIAPI · 使用手册</span><h2>从开始使用，到解决问题</h2><p>常见问题与社群支持。</p></div><input className="fast-manual-search" aria-label="搜索常见问题" placeholder="搜索登录、模型、充值…" value={query} onChange={e => setQuery(e.target.value)}/><div className="fast-faqs">{matches.map(([question, answer]) => <details key={question}><summary>{question}</summary><p>{answer}</p></details>)}{!matches.length && <p>没有找到相关问题，可在反馈页面联系我们。</p>}</div><div className="fast-support-contacts"><h3>加入交流群</h3><article><h4>QQ 群</h4><strong>48878665</strong><p>在 QQ 搜索群号加入。</p><button onClick={async () => {try {await navigator.clipboard.writeText("48878665"); setCopied(true);} catch {setCopied(false);}}}>{copied ? "已复制群号" : "复制群号"}</button></article><article><h4>微信群</h4><p>FastAiApi 中转图片视频交流群</p><img className="fast-contact-qr" src={wechatGroup} alt="FastAiApi 微信群二维码"/><small>二维码有效期至 2026 年 10 月 31 日；过期可通过 QQ 群获取新二维码。</small></article></div></section>;
+  return <section className="fast-support"><div className="fast-support-intro"><span>FASTAIAPI · 使用手册</span><h2>从开始使用，到解决问题</h2><p>常见问题与社群支持。</p></div><input className="fast-manual-search" aria-label="搜索常见问题" placeholder="搜索登录、模型、充值…" value={query} onChange={e => setQuery(e.target.value)}/><div className="fast-faqs">{matches.map(([question, answer]) => <details key={question}><summary>{question}</summary><p>{answer}</p></details>)}{!matches.length && <p>没有找到相关问题，可在反馈页面联系我们。</p>}</div><div className="fast-support-contacts"><h3>加入交流群</h3><article><h4>QQ 群</h4><strong>48878665</strong><p>扫码或在 QQ 搜索群号加入。</p><ContactQr src={qqGroup} name="FastAiApi QQ 群"/><button onClick={async () => {try {await navigator.clipboard.writeText("48878665"); setCopied(true);} catch {setCopied(false);}}}>{copied ? "已复制群号" : "复制群号"}</button></article><article><h4>微信群</h4><p>FastAiApi 中转图片视频交流群</p><ContactQr src={wechatGroup} name="FastAiApi 微信群"/><small>二维码有效期至 2026 年 10 月 31 日；过期可通过 QQ 群获取新二维码。</small></article></div></section>;
 }

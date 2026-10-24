@@ -145,6 +145,13 @@ func (s *Server) authorized(r *http.Request) bool {
 	return ok && expiry.After(time.Now())
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 独立管理前缀可与官方平台 /admin 共存，不加入普通客户端导航。
+	if r.URL.Path == "/feedback-admin" || strings.HasPrefix(r.URL.Path, "/feedback-admin/") {
+		r = r.Clone(r.Context())
+		u := *r.URL
+		u.Path = "/admin" + strings.TrimPrefix(r.URL.Path, "/feedback-admin")
+		r.URL = &u
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -163,7 +170,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(adminHTML)
 		return
 	}
-	if r.URL.Path == "/admin.js" && r.Method == "GET" {
+	if (r.URL.Path == "/admin.js" || r.URL.Path == "/admin/admin.js") && r.Method == "GET" {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Write(adminJS)
 		return
@@ -195,7 +202,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.sessions, c.Value)
 		s.mu.Unlock()
-		http.SetCookie(w, &http.Cookie{Name: "fast_feedback_admin", Value: "", Path: "/admin", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: "fast_feedback_admin", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		reply(w, 200, map[string]bool{"ok": true})
 	case r.URL.Path == "/admin/api/feedback" && r.Method == "GET":
 		reply(w, 200, s.Store.List())
@@ -320,7 +327,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.sessions[token] = now.Add(8 * time.Hour)
 	s.mu.Unlock()
 	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, &http.Cookie{Name: "fast_feedback_admin", Value: token, Path: "/admin", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: 28800})
+	http.SetCookie(w, &http.Cookie{Name: "fast_feedback_admin", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: 28800})
 	reply(w, 200, map[string]bool{"ok": true})
 }
 func (s *Server) Run(ctx context.Context) {

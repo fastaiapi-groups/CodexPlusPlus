@@ -36,7 +36,7 @@ func TestAdminAndFeedback(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.Verify = func(context.Context, string) (int64, error) { return 230, nil }
-	for _, p := range []string{"/admin/api/feedback", "/admin/api/config", "/admin/api/feedback/123"} {
+	for _, p := range []string{"/admin/api/feedback", "/admin/api/config", "/admin/api/feedback/123", "/feedback-admin/api/feedback"} {
 		if w := request(s, "GET", p, nil, nil); w.Code != 401 {
 			t.Fatalf("unauthorized %s = %d", p, w.Code)
 		}
