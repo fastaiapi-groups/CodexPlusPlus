@@ -1,3 +1,5 @@
+import { Feedback } from "./fastaiapi/Feedback";
+import { Manual } from "./fastaiapi/Manual";
 import { showAccountRoute, showAccountTool } from "./fastaiapi/navigation";
 import FastAiApiAccount from "./fastaiapi/Account";
 import {
@@ -1164,7 +1166,7 @@ const TOOL_ICONS: Record<string, string> = {
   claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "maintenance" | "about" | "settings";
+type Route = "feedback" | "manual" | "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1181,6 +1183,8 @@ const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
+  { id: "feedback", label: "反馈", icon: MessageCircle, tool: "codex" },
+  { id: "manual", label: "手册", icon: BookOpen, tool: "codex" },
   { id: "relay", get label() { return t("供应商配置"); }, icon: KeyRound, tool: "codex" },
   { id: "multiLaunch", get label() { return t("Codex多开"); }, icon: Layers3, tool: "codex" },
   { id: "grok", get label() { return t("Grok 配置"); }, icon: Blocks, tool: "grok" },
@@ -1209,7 +1213,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     get label() { return t("工作区"); },
-    routes: ["overview", "relay", "relayEnvironment", "requestLog", "multiLaunch", "grok", "claude"],
+    routes: ["overview", "feedback", "manual", "relay", "relayEnvironment", "requestLog", "multiLaunch", "grok", "claude"],
   },
   {
     get label() { return t("全局管理"); },
@@ -4125,6 +4129,8 @@ export function App() {
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           key={route}
         >
+          {route === "feedback" ? <Feedback /> : null}
+          {route === "manual" ? <Manual /> : null}
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -14364,6 +14370,8 @@ function routeTitle(route: Route) {
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
+    feedback: "提交使用问题与建议",
+    manual: "常见问题与社群支持",
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),

@@ -16,6 +16,7 @@ fn route(action: &str, id: &str) -> Result<(&'static str, String), String> {
         "verify" => ("POST", "/api/v1/auth/send-verify-code"),
         "me" => ("GET", "/api/v1/auth/me"),
         "keys" => ("GET", "/api/v1/keys?page=1&page_size=100"),
+        "feedback" => ("POST", "/fastaiapi/api/feedback"),
         "groups" => ("GET", "/api/v1/groups/available"),
         "create_key" => ("POST", "/api/v1/keys"),
         "packages" => ("GET", "/fastaiapi/api/recharge/packages"),
@@ -43,15 +44,28 @@ fn route(action: &str, id: &str) -> Result<(&'static str, String), String> {
     Ok((fixed.0, fixed.1.to_owned()))
 }
 
+// 本地联调仅允许固定回环地址；发布版默认使用平台域名上的独立中转路由。
+fn request_url(path: &str, local_feedback: bool) -> String {
+    if path == "/fastaiapi/api/feedback" && local_feedback {
+        format!("http://127.0.0.1:6099{path}")
+    } else {
+        format!("https://fastaiapi.cloud{path}")
+    }
+}
+
 async fn request(method: &str, path: &str, body: &Value, bearer: &str) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
+    let local_feedback = path == "/fastaiapi/api/feedback"
+        && std::env::var("FASTAIAPI_FEEDBACK_LOCAL").as_deref() == Ok("1");
+    let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(35))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+        .redirect(reqwest::redirect::Policy::none());
+    // 回环联调不经过系统代理，避免代理把本地服务请求转发到远端。
+    let builder = if local_feedback { builder.no_proxy() } else { builder };
+    let client = builder.build()
         .map_err(|_| "无法初始化网络连接")?;
     let mut request = client.request(
         method.parse().map_err(|_| "请求方法无效")?,
-        format!("https://fastaiapi.cloud{path}"),
+        request_url(path, local_feedback),
     );
     if !bearer.is_empty() {
         request = request.bearer_auth(bearer);
@@ -248,6 +262,10 @@ mod tests {
     }
     #[test]
     fn rejects_arbitrary_routes_and_order_paths() {
+        assert_eq!(request_url("/fastaiapi/api/feedback", true), "http://127.0.0.1:6099/fastaiapi/api/feedback");
+        assert_eq!(request_url("/api/v1/auth/me", true), "https://fastaiapi.cloud/api/v1/auth/me");
+        assert_eq!(request_url("/fastaiapi/api/feedback", false), "https://fastaiapi.cloud/fastaiapi/api/feedback");
+        assert_eq!(route("feedback", "").unwrap(), ("POST", "/fastaiapi/api/feedback".into()));
         assert!(route("delete", "").is_err());
         for id in ["../auth", "a/b", "a?token=x", ""] {
             assert!(route("checkout", id).is_err());

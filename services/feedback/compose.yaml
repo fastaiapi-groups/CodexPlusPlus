@@ -1,0 +1,21 @@
+services:
+  feedback:
+    build: .
+    image: fastaiapi-feedback:local
+    container_name: fastaiapi-feedback
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - /opt/fastaiapi-feedback-data:/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
