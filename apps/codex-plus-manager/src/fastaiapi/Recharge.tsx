@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { X, ShieldCheck, Check, Clock3, QrCode, ArrowRight } from "lucide-react";
+import { X, ShieldCheck, Check, Clock3, QrCode, ArrowRight, Copy } from "lucide-react";
 import "./recharge.css";
 import { paymentState } from "./paymentState";
 export type Package = { id: string; name: string; amount_cents: number; credit: string };
@@ -10,6 +10,24 @@ type Checkout = { order: Order; state: string; qr_code?: string; qr_kind?: strin
 const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
 const channelLogo = {alipay: new URL("./icons/alipay.svg", import.meta.url).href, wxpay: new URL("./icons/wechat.svg", import.meta.url).href};
 function ChannelIcon({channel}: {channel: string}) { return <span className={`fast-channel-icon ${channel}`}><img src={channelLogo[channel === "wxpay" ? "wxpay" : "alipay"]} alt=""/></span>; }
+
+function SupportContact({channel, value}: {channel: "qq" | "wechat"; value: string}) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => {clearTimeout(timer.current);}, []);
+  const name = channel === "qq" ? "QQ" : "微信";
+  const logo = channel === "qq" ? new URL("./icons/qq.svg", import.meta.url).href : channelLogo.wxpay;
+  return <div className="fast-support-contact-card">
+    <span className={`fast-support-contact-logo ${channel}`}><img src={logo} alt=""/></span>
+    <span className="fast-support-contact-value"><small>{name} 客服</small><strong>{value}</strong></span>
+    <button type="button" className={`fast-support-copy ${status === "copied" ? "is-copied" : ""}`} aria-label={`复制${name}客服：${value}`} onClick={async () => {
+      clearTimeout(timer.current);
+      try {await navigator.clipboard.writeText(value); setStatus("copied");}
+      catch {setStatus("failed");}
+      timer.current = setTimeout(() => setStatus("idle"), 2500);
+    }}>{status === "copied" ? <Check size={13} aria-hidden="true"/> : <Copy size={13} aria-hidden="true"/>}<span role="status">{status === "copied" ? "复制成功" : status === "failed" ? "复制失败" : "复制"}</span></button>
+  </div>;
+}
 
 export function Recharge({packages, orders, onClose, onPaid}: {packages: Package[]; orders: Order[]; onClose: () => void; onPaid: () => void}) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -84,7 +102,7 @@ export function Recharge({packages, orders, onClose, onPaid}: {packages: Package
       {!paidOrder && !expired && !reversed && <div className="fast-scan-actions"><button className="fast-pay-primary" disabled={busy} onClick={() => void recheck()}>{busy ? "正在查询…" : "我已付款，查询到账"}</button>{!qr && <button disabled={busy} onClick={() => void checkout()}>继续原订单</button>}</div>}
       {paidOrder && <button className="fast-pay-primary" onClick={onClose}>完成</button>}
     </div>}
-    <div className="fast-payment-support"><span>充值未到账？请联系客服</span><div className="fast-payment-support-contacts"><span>QQ：<strong>172733456</strong></span><span>微信：<strong>selectthree</strong></span></div><small>请提供订单号，方便核查到账情况。</small></div>
+    <div className="fast-payment-support"><span>充值未到账？请联系客服</span><div className="fast-payment-support-contacts"><SupportContact channel="qq" value="172733456"/><SupportContact channel="wechat" value="selectthree"/></div><small>请提供订单号，方便核查到账情况。</small></div>
     <p className="fast-payment-security"><ShieldCheck size={14}/>由平台安全收款 · 支付结果以平台订单为准</p>
     <details className="fast-recent-orders"><summary>最近充值订单 <span>{orders.length} 笔</span></summary>{orders.length ? orders.map(o => <div key={o.id}><ChannelIcon channel={o.payment_type}/><span><strong>¥{(o.amount_cents/100).toFixed(2)} <small>{paymentState(o) === "reversed" ? "已退回" : paymentState(o) === "paid" ? "已到账" : paymentState(o) === "expired" ? "已过期" : "待确认"}</small></strong><code>{o.id}</code></span>{paymentState(o) === "pending" && <button disabled={busy} onClick={() => void checkout(o)}>查看付款码</button>}</div>) : <p>暂无充值订单</p>}</details>
     </div></dialog>, document.body);

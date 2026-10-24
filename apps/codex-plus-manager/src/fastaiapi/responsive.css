@@ -37,3 +37,6 @@
 .fast-model-dialog .fast-group-caption{gap:10px;flex-wrap:wrap}
 @media(max-width:560px){.fast-model-dialog .fast-group-list{grid-template-columns:minmax(0,1fr)}}
 .fast-model-dialog .fast-model-card-content>span,.fast-model-dialog .fast-model-price-table>span{flex:none}
+.fast-payment-dialog .fast-group-rate-badge{display:inline-block;margin:6px 0 0;padding:3px 7px;border-radius:5px;background:#20a58d10;color:#199a83;font-size:10px;font-weight:500;line-height:1.5;white-space:nowrap}
+.fast-model-hint .fast-group-rate-badge{margin:0 2px;vertical-align:baseline}
+.fast-group-name{display:block}

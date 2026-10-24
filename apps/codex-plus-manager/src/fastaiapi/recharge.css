@@ -3,4 +3,16 @@
 .fast-payment-support{padding:12px 14px;margin:0;border:1px solid #20a58d30;border-radius:10px;background:#20a58d08;color:#536475;font-size:12px;line-height:1.8}
 .fast-payment-support strong{color:#159b83;font-variant-numeric:tabular-nums;white-space:nowrap}
 .fast-payment-support small{display:block;font-size:11px;color:#8593a2}
-.fast-payment-support-contacts{display:flex;flex-wrap:wrap;gap:4px 20px;margin:3px 0}
+.fast-payment-support-contacts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:10px 0}
+.fast-support-contact-card{display:flex;align-items:center;gap:8px;min-width:0;padding:10px;border:1px solid #20a58d20;border-radius:10px;background:#ffffffb0}
+.fast-support-contact-logo{display:flex;align-items:center;justify-content:center;width:28px;height:28px;flex-shrink:0;border-radius:8px;background:#32a7eb}
+.fast-support-contact-logo.wechat{background:#20b966}
+.fast-support-contact-logo img{width:19px;height:19px;filter:brightness(0) invert(1)}
+.fast-support-contact-value{display:flex;flex-direction:column;flex:1;min-width:0;line-height:1.6}
+.fast-payment-support .fast-support-contact-value small{font-size:10px}
+.fast-payment-support .fast-support-contact-value strong{font-size:12px;letter-spacing:.1px;color:#334b58}
+.fast-payment-dialog .fast-support-copy{gap:4px;flex-shrink:0;min-width:64px;padding:7px 8px;border:1px solid #dce7e4;border-radius:7px;background:#f4f9f7;color:#547568;font-size:10px;white-space:nowrap}
+.fast-payment-dialog .fast-support-copy:hover{border-color:#20a58d;background:#eaf7f2}
+.fast-payment-dialog .fast-support-copy.is-copied{color:#159b83;border-color:#20a58d60;background:#eaf7f2}
+.fast-support-copy:focus-visible{outline:2px solid #20a58d;outline-offset:2px}
+@media(max-width:540px){.fast-payment-support-contacts{grid-template-columns:minmax(0,1fr)}}

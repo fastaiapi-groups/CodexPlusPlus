@@ -202,7 +202,7 @@ fn model_pricing_for_group(data: &Value, group_id: i64) -> Result<Value, String>
             "time_pricing": model.get("time_pricing").is_some_and(|v| !v.is_null())
                 || group["peak_rate_enabled"].as_bool() == Some(true)})
     }).collect();
-    Ok(json!({"group": group["name"], "models": rows}))
+    Ok(json!({"group": group["name"], "rate_multiplier": rate, "models": rows}))
 }
 
 pub async fn key_and_models(key_id: i64) -> Result<(String, Vec<String>), String> {
@@ -287,6 +287,7 @@ mod tests {
                 "intervals": [{"tier_label": "≤272K"}, {"tier_label": ">272K",
                     "input_multiplier": 2, "output_price": 0.000045}]}}]}]});
         let result = model_pricing_for_group(&data, 2).unwrap();
+        assert_eq!(result["rate_multiplier"], 0.1);
         let tiers = &result["models"][0]["tiers"];
         assert!((tiers[0]["input"].as_f64().unwrap() - 0.5).abs() < 1e-9);
         assert!((tiers[1]["input"].as_f64().unwrap() - 1.0).abs() < 1e-9);

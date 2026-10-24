@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./recharge.css";
 import "./responsive.css";
 type ModelPrice = {model: string; time_pricing: boolean; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
-type ModelPricing = {group: string; models: ModelPrice[]};
+type ModelPricing = {group: string; rate_multiplier: number; models: ModelPrice[]};
 const priceYuan = (price: number | null) => price !== null && Number.isFinite(price)
   ? `¥${price.toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 6})}` : "—";
 export function ModelDialog({keyId, models, value, busy, onApply, onReload, onClose}: {
@@ -40,7 +40,7 @@ export function ModelDialog({keyId, models, value, busy, onApply, onReload, onCl
       </span>{selected === m && <Check className="fast-model-selected-check" size={17}/>}</label>;
     })}{!models.some(m => m.toLowerCase().includes(query.toLowerCase())) && <p>{busy ? "正在加载模型…" : "没有匹配的模型"}</p>}</div>
     {error && <p className="fast-payment-error" role="alert">{error}</p>}
-    <p className="fast-model-hint">{pricing && <>价格来自 {pricing.group} 分组，已计入账户倍率。<br/></>}金额均为人民币，实际扣费以平台使用记录为准。切换后重启 Codex 生效。</p>
+    <p className="fast-model-hint">{pricing && <>价格来自 {pricing.group} 分组 <span className="fast-group-rate-badge">生效倍率 {pricing.rate_multiplier}×</span>，已计入价格。<br/></>}金额均为人民币，实际扣费以平台使用记录为准。切换后重启 Codex 生效。</p>
     <button className="fast-pay-primary" disabled={busy || saving || !models.includes(selected)} onClick={async () => {setSaving(true); setError(""); try{await onApply(selected); onClose();}catch(e){setError(String(e));}finally{setSaving(false);}}}>{saving ? "正在应用…" : "确认切换模型"}</button>
   </div></dialog>, document.body);
 }
