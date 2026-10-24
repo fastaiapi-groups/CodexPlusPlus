@@ -84,7 +84,7 @@ export function Recharge({packages, orders, onClose, onPaid}: {packages: Package
       {!paidOrder && !expired && !reversed && <div className="fast-scan-actions"><button className="fast-pay-primary" disabled={busy} onClick={() => void recheck()}>{busy ? "正在查询…" : "我已付款，查询到账"}</button>{!qr && <button disabled={busy} onClick={() => void checkout()}>继续原订单</button>}</div>}
       {paidOrder && <button className="fast-pay-primary" onClick={onClose}>完成</button>}
     </div>}
-    <p className="fast-payment-support">充值未到账？请联系客服 QQ：<strong>172733456</strong><small>请提供订单号，方便核查到账情况。</small></p>
+    <div className="fast-payment-support"><span>充值未到账？请联系客服</span><div className="fast-payment-support-contacts"><span>QQ：<strong>172733456</strong></span><span>微信：<strong>selectthree</strong></span></div><small>请提供订单号，方便核查到账情况。</small></div>
     <p className="fast-payment-security"><ShieldCheck size={14}/>由平台安全收款 · 支付结果以平台订单为准</p>
     <details className="fast-recent-orders"><summary>最近充值订单 <span>{orders.length} 笔</span></summary>{orders.length ? orders.map(o => <div key={o.id}><ChannelIcon channel={o.payment_type}/><span><strong>¥{(o.amount_cents/100).toFixed(2)} <small>{paymentState(o) === "reversed" ? "已退回" : paymentState(o) === "paid" ? "已到账" : paymentState(o) === "expired" ? "已过期" : "待确认"}</small></strong><code>{o.id}</code></span>{paymentState(o) === "pending" && <button disabled={busy} onClick={() => void checkout(o)}>查看付款码</button>}</div>) : <p>暂无充值订单</p>}</details>
     </div></dialog>, document.body);

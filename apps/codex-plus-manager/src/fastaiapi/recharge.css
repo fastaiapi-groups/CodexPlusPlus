@@ -3,3 +3,4 @@
 .fast-payment-support{padding:12px 14px;margin:0;border:1px solid #20a58d30;border-radius:10px;background:#20a58d08;color:#536475;font-size:12px;line-height:1.8}
 .fast-payment-support strong{color:#159b83;font-variant-numeric:tabular-nums;white-space:nowrap}
 .fast-payment-support small{display:block;font-size:11px;color:#8593a2}
+.fast-payment-support-contacts{display:flex;flex-wrap:wrap;gap:4px 20px;margin:3px 0}
