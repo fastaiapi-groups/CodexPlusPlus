@@ -1,9 +1,18 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImagePlus, Send, X } from "lucide-react";
+import { Check, CircleHelp, CreditCard, ImagePlus, Images, Lightbulb, MessageCircle, Send, UserRound, Waypoints, X } from "lucide-react";
 import "./support.css";
 
 type Screenshot = {name: string; data: string};
+const feedbackCategories = [
+  { label: "使用问题", icon: CircleHelp },
+  { label: "登录与账号", icon: UserRound },
+  { label: "模型与 API", icon: Waypoints },
+  { label: "充值与余额", icon: CreditCard },
+  { label: "图片与视频", icon: Images },
+  { label: "功能建议", icon: Lightbulb },
+  { label: "其他", icon: MessageCircle },
+];
 export function Feedback() {
   const [category, setCategory] = useState("使用问题"), [title, setTitle] = useState(""), [content, setContent] = useState(""), [contact, setContact] = useState("");
   const [images, setImages] = useState<Screenshot[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState(""), [receipt, setReceipt] = useState("");
@@ -25,7 +34,15 @@ export function Feedback() {
       try {const result = await invoke<{id: string}>("fastaiapi_account", {action:"feedback", body:{request_id:requestId, category, title:title.trim(), content:content.trim(), contact:contact.trim(), screenshots:images}}); setReceipt(result.id);}
       catch(e) {setError(String(e));} finally {setBusy(false);}
     }}><fieldset disabled={busy}>
-      <label>问题类型<select value={category} onChange={e => setCategory(e.target.value)}>{["使用问题","登录与账号","模型与 API","充值与余额","图片与视频","功能建议","其他"].map(item => <option key={item}>{item}</option>)}</select></label>
+      <div className="fast-feedback-category" role="group" aria-labelledby="fast-feedback-category-label">
+        <span id="fast-feedback-category-label">问题类型</span>
+        <div className="fast-feedback-category-grid">
+          {feedbackCategories.map(({ label, icon: Icon }) => <label className="fast-feedback-category-option" key={label}>
+            <input type="radio" name="feedback-category" value={label} checked={category === label} onChange={() => setCategory(label)}/>
+            <span className="fast-feedback-category-card"><Icon size={18} aria-hidden="true"/><span>{label}</span><Check className="fast-feedback-category-check" size={15} aria-hidden="true"/></span>
+          </label>)}
+        </div>
+      </div>
       <label>标题<input required maxLength={100} value={title} onChange={e => setTitle(e.target.value)} placeholder="用一句话描述问题"/></label>
       <label>内容<textarea required maxLength={5000} rows={6} value={content} onChange={e => setContent(e.target.value)} placeholder="请描述操作步骤、预期结果和实际情况…"/></label>
       <label>联系方式<input required maxLength={200} value={contact} onChange={e => setContact(e.target.value)} placeholder="邮箱、QQ 或微信，方便我们联系你"/></label>
