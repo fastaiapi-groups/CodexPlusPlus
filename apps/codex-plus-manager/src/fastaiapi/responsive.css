@@ -16,7 +16,6 @@
 .fast-key-dialog .fast-group-description>span:first-child{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fast-key-dialog .fast-group-description>.fast-group-help{display:inline-flex;align-items:center;justify-content:center;flex:0 0 15px;width:15px;height:15px;box-sizing:border-box;border:1px solid #a8b6c1;border-radius:50%;font-size:10px;cursor:help;color:#6d8394}
 .fast-group-help:focus-visible{outline:2px solid #20a58d;outline-offset:2px}
-.fast-group-preview{display:block;margin-top:6px;color:#8b99a7;font-size:11px;line-height:1.6;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .fast-key-dialog .fast-group-list .fast-group-help{flex:0 0 22px;width:22px;height:22px;padding:0;margin:0;border:1px solid #a8b6c1;border-radius:50%;background:transparent;color:#6d8394;font-size:12px;cursor:pointer}
 .fast-group-details{max-height:calc(100dvh - 32px);overflow:auto}.fast-group-details-text{white-space:pre-wrap;overflow-wrap:anywhere;color:#526173;font-size:14px;line-height:1.9;margin:0}.fast-group-details h2{overflow-wrap:anywhere}
 
@@ -40,3 +39,11 @@
 .fast-payment-dialog .fast-group-rate-badge{display:inline-block;margin:6px 0 0;padding:3px 7px;border-radius:5px;background:#20a58d10;color:#199a83;font-size:10px;font-weight:500;line-height:1.5;white-space:nowrap}
 .fast-model-hint .fast-group-rate-badge{margin:0 2px;vertical-align:baseline}
 .fast-group-name{display:block}
+
+/* 分组卡片只显示名称和倍率，备注统一由问号弹窗展示。 */
+.fast-key-dialog:not(.fast-model-dialog) .fast-group-list{grid-auto-rows:max-content;align-items:stretch}
+.fast-key-dialog:not(.fast-model-dialog) .fast-group-list>label{height:auto;min-height:88px;padding:14px;align-items:center}
+.fast-key-dialog .fast-group-choice-content{display:flex;flex-direction:column;align-items:flex-start;gap:7px;line-height:1.5}
+.fast-key-dialog .fast-group-choice-content .fast-group-name{flex:none;width:100%;overflow-wrap:anywhere}
+.fast-key-dialog .fast-group-choice-content .fast-group-rate-badge{margin:0;flex:none}
+@media(max-width:420px){.fast-key-dialog:not(.fast-model-dialog) .fast-group-list{grid-template-columns:minmax(0,1fr)}}

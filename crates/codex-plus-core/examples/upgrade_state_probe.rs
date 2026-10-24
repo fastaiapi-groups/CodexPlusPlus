@@ -25,6 +25,8 @@ fn main() -> anyhow::Result<()> {
             settings.relay_profiles[0].name = "升级保留测试".into();
             settings.relay_profiles[0].model = "gpt-6.1-sol".into();
             settings.relay_profiles[0].base_url = "https://fastaiapi.cloud/v1".into();
+            settings.relay_profiles[0].upstream_base_url = "https://fastaiapi.cloud/v1".into();
+            settings.relay_profiles[0].relay_mode = codex_plus_core::settings::RelayMode::PureApi;
             settings.relay_profiles[0].api_key = "synthetic-upgrade-test-key".into();
             store.save(&settings)?;
             fs::create_dir_all(root.join("codex-home"))?;
