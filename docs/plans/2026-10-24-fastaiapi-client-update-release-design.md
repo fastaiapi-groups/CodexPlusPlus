@@ -161,4 +161,15 @@ macOS 在替换/验证失败时恢复旧应用；安装成功后若需启动失�
 
 上线顺序：先部署发布服务与下载路由 → 上传并演练接管版 → 公开官网入口 → 推送接管安装指引 → 发布下一版本验证完整自动更新链路。
 
-本次仅完成方案设计与支付图标修复；没有修改生产更新地址、上传安装包、部署服务或发布线上版本。
+## 10. 实施记录（2026-10-24）
+
+已上线发布服务、管理员发布界面、独立下载页与官网首页。1.11.3 接管版已发布，包含 Windows x64 和 macOS arm64；macOS 安装包尚未完成 Apple 公证。官网首页已加入 Codex++、Canvas，移除剧芽短剧展示，Lark 与网站教程的 Codex++ 下载入口均切到官网。
+
+- 管理后台：`https://fastaiapi.cloud/fastaiui/admin/client-releases`
+- 下载入口：`https://fastaiapi.cloud/fastaiui/downloads/codexplus`
+- 客户端检查：`https://fastaiapi.cloud/fastaiapi/api/client-updates/v1/check`
+- 官网：`https://ui.fastaiapi.cloud`
+
+已实现管理员鉴权、平台完整性、内容寻址、Ed25519 签名与 SHA-256、递增序列、防回放、发布事务与撤回。私钥保留本机，服务器仅保存公钥。Rust 更新相关测试与安装器测试通过，前端构建与服务端生产构建内测试通过，后台实际完成上传、校验、发布。
+
+首期撤回清空当前渠道指针，停止新分发，不自动回退旧版本；修复需发布更高版本。以上设计中的下载统计、断点续传客户端、健康握手和 Windows 自动回滚未在首期实现。Windows 包完成 CI 构建，尚未进行 Windows 真机安装；也尚未发布第二个更高版本执行真实覆盖升级演练。操作流程见相邻服务仓库 `docs/client-updates.md`。
