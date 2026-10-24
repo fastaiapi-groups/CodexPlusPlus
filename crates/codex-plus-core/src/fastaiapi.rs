@@ -18,6 +18,12 @@ fn route(action: &str, id: &str) -> Result<(&'static str, String), String> {
         "keys" => ("GET", "/api/v1/keys?page=1&page_size=100"),
         "feedback" => ("POST", "/fastaiapi/api/feedback"),
         "groups" => ("GET", "/api/v1/groups/available"),
+        "model_pricing" => {
+            if id.parse::<i64>().ok().filter(|id| *id > 0).is_none() {
+                return Err("请选择有效的 API Key".into());
+            }
+            ("GET", "/api/v1/model-plaza")
+        }
         "create_key" => ("POST", "/api/v1/keys"),
         "packages" => ("GET", "/fastaiapi/api/recharge/packages"),
         "orders" => ("GET", "/fastaiapi/api/recharge/orders"),
@@ -120,6 +126,12 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         return Err("请先登录 FastAiApi".into());
     }
     let mut data = request(method, &path, &body, if public { "" } else { &bearer }).await?;
+    if action == "model_pricing" {
+        let key_id = id.parse::<i64>().map_err(|_| "请选择有效的 API Key")?;
+        let key = request("GET", &format!("/api/v1/keys/{key_id}"), &Value::Null, &bearer).await?;
+        let group_id = key["group_id"].as_i64().ok_or("该 Key 未绑定计价分组")?;
+        return model_pricing_for_group(&data, group_id);
+    }
     if matches!(action, "login" | "register") {
         let access = data["access_token"]
             .as_str()
@@ -155,6 +167,42 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         }
     }
     Ok(data)
+}
+
+// 按当前 Key 的分组及用户专属倍率展示人民币实付价，不回退到官方参考价。
+fn model_pricing_for_group(data: &Value, group_id: i64) -> Result<Value, String> {
+    let group = data["groups"].as_array().and_then(|groups| {
+        groups.iter().find(|group| group["id"].as_i64() == Some(group_id))
+    }).ok_or("当前分组暂无公开定价")?;
+    let rate = group.get("user_rate_multiplier").filter(|v| !v.is_null())
+        .unwrap_or(&group["rate_multiplier"]).as_f64()
+        .filter(|v| v.is_finite() && *v >= 0.0).ok_or("分组定价倍率无效")?;
+    let models = group["models"].as_array().ok_or("模型定价格式无效")?;
+    let rows: Vec<Value> = models.iter().map(|model| {
+        let base = &model["pricing"];
+        let intervals = base["intervals"].as_array().filter(|rows| !rows.is_empty()
+            && group["long_context_pricing_enabled"].as_bool() == Some(true));
+        let tiers: Vec<&Value> = intervals.map(|rows| rows.iter().collect()).unwrap_or_else(|| vec![base]);
+        let tiers: Vec<Value> = if base["billing_mode"].as_str() == Some("token") {
+            tiers.iter().map(|tier| {
+                let price = |field: &str, multiplier: &str| {
+                    let value = tier[field].as_f64().or_else(|| {
+                        base[field].as_f64().map(|value| value * tier[multiplier].as_f64().unwrap_or(1.0))
+                    });
+                    value.map(|value| value * rate * 1_000_000.0)
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                };
+                json!({"label": tier["tier_label"].as_str().unwrap_or("标准价"),
+                    "input": price("input_price", "input_multiplier"),
+                    "output": price("output_price", "output_multiplier"),
+                    "cache": price("cache_read_price", "cache_read_multiplier")})
+            }).collect()
+        } else { vec![] };
+        json!({"model": model["name"], "tiers": tiers,
+            "time_pricing": model.get("time_pricing").is_some_and(|v| !v.is_null())
+                || group["peak_rate_enabled"].as_bool() == Some(true)})
+    }).collect();
+    Ok(json!({"group": group["name"], "models": rows}))
 }
 
 pub async fn key_and_models(key_id: i64) -> Result<(String, Vec<String>), String> {
@@ -230,6 +278,37 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_prices_use_key_group_user_rate_and_context_tiers() {
+        let data = json!({"groups": [{"id": 2, "name": "gpt-pro", "rate_multiplier": 0.2,
+            "user_rate_multiplier": 0.1, "long_context_pricing_enabled": true,
+            "models": [{"name": "gpt-test", "pricing": {"billing_mode": "token",
+                "input_price": 0.000005, "output_price": 0.00003, "cache_read_price": 0,
+                "intervals": [{"tier_label": "≤272K"}, {"tier_label": ">272K",
+                    "input_multiplier": 2, "output_price": 0.000045}]}}]}]});
+        let result = model_pricing_for_group(&data, 2).unwrap();
+        let tiers = &result["models"][0]["tiers"];
+        assert!((tiers[0]["input"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+        assert!((tiers[1]["input"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!((tiers[1]["output"].as_f64().unwrap() - 4.5).abs() < 1e-9);
+        assert_eq!(tiers[0]["cache"], 0.0);
+        assert!(model_pricing_for_group(&data, 999).is_err());
+    }
+    #[test]
+    fn model_prices_do_not_substitute_official_or_unknown_prices() {
+        let data = json!({"groups": [{"id": 1, "rate_multiplier": 0.2, "models": [
+            {"name": "unknown", "official_pricing": {"input_price": 1}},
+            {"name": "base", "pricing": {"billing_mode": "token", "input_price": 0.000005,
+                "intervals": [{"input_price": 0.00001}]}}
+        ]}]});
+        let result = model_pricing_for_group(&data, 1).unwrap();
+        assert_eq!(result["models"][0]["tiers"], json!([]));
+        assert!((result["models"][1]["tiers"][0]["input"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!(result["models"][1]["tiers"][0]["output"].is_null());
+        assert!(route("model_pricing", "../keys").is_err());
+        assert!(route("model_pricing", "0").is_err());
+        assert_eq!(route("model_pricing", "2").unwrap().1, "/api/v1/model-plaza");
+    }
     #[test]
     fn remember_password_is_opt_in_and_never_forwarded() {
         for (flag, expected) in [
