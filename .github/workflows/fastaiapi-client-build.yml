@@ -19,7 +19,11 @@ jobs:
           npm run check
           npm run vite:build
       - name: Build Windows client
-        run: cargo build --release -p codex-plus-manager
+        run: |
+          cargo test -p codex-plus-core update:: --lib
+          cargo test -p codex-plus-core --test updater
+          cargo build --release -p codex-plus-core --example upgrade_state_probe
+          cargo build --release -p codex-plus-manager
       - name: Package installer
         shell: pwsh
         run: |
@@ -34,6 +38,17 @@ jobs:
             & $makensis /INPUTCHARSET UTF8 "/DVERSION=$version" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw 'Installer packaging failed' }
           } finally { Pop-Location }
+      - name: Test real Windows install and overwrite upgrade
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem dist/windows/*-setup.exe | Select-Object -First 1).FullName
+          ./scripts/test-windows-upgrade.ps1 -Installer $installer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-upgrade-acceptance
+          path: ${{ runner.temp }}/fastaiapi-install-acceptance/result.json
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: fastaiapi-windows-x64

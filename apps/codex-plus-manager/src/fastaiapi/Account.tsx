@@ -83,7 +83,7 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
     groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]);
     setUser(u); setPassword(""); setConfirm(""); void loadGroups().catch(() => {});
     await configure(await loadKeys());
-    if (remember && !u.password_remembered) setError("登录成功，但系统钥匙串未保存账号密码。请允许访问钥匙串后重新登录保存。");
+    if (remember && !u.password_remembered) setError("登录成功，但系统凭据库未保存账号密码。请允许访问系统凭据库后重新登录保存。");
     if (!u.session_persistent) setNotice("模型服务已配置。系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
   });
   const selectKey = (id: number) => work(async () => {
