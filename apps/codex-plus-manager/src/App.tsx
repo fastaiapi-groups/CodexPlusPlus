@@ -1,3 +1,4 @@
+import { showAccountRoute, showAccountTool } from "./fastaiapi/navigation";
 import FastAiApiAccount from "./fastaiapi/Account";
 import {
   closestCenter,
@@ -1491,7 +1492,7 @@ export function App() {
     const result = await run(() => call<ToolsResult>("list_tools"));
     if (result) {
       setToolEntries(result.tools ?? []);
-      setActiveTool(result.activeTool || "codex");
+      setActiveTool("codex");
       if (!silent) showResultNotice(t("工具列表"), result, { silentSuccess: true });
     }
     return result;
@@ -1555,8 +1556,8 @@ export function App() {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
-      // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
-      setActiveTool(normalized.activeTool || "codex");
+      // FastAiApi 发行版仅展示 Codex；保留后端其他工具的配置。
+      setActiveTool("codex");
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
@@ -4040,7 +4041,7 @@ export function App() {
   return (
     <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
       <ApplicationRail
-        tools={toolEntries}
+        tools={toolEntries.filter(showAccountTool)}
         activeTool={activeTool}
         codexAppRunning={codexAppRunning}
         route={route}
@@ -4054,7 +4055,7 @@ export function App() {
           <nav className="nav" aria-label={t("主导航")}>
             {navigationSections.map((section) => {
               // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
-              const visibleRoutes = section.routes.filter((routeId) => {
+              const visibleRoutes = section.routes.filter(showAccountRoute).filter((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
                 if (!item) return false;
                 return !item.tool || item.tool === activeTool;
@@ -14052,7 +14053,7 @@ function ApplicationRail({
       />
       <div className="rail-bottom">
         <nav className="rail-navigation" aria-label={t("系统")}>
-          {globalNavigationRoutes.map((routeId) => {
+          {globalNavigationRoutes.filter(showAccountRoute).map((routeId) => {
             const item = routes.find((candidate) => candidate.id === routeId);
             if (!item) return null;
             const Icon = item.icon;

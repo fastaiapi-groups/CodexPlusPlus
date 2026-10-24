@@ -6,7 +6,7 @@ export function ModelPicker({models, value, busy, onApply, onReload}: {
 }) {
   const [open, setOpen] = useState(false), [query, setQuery] = useState(""), [selected, setSelected] = useState("");
   return <div className="fast-models">
-    <div className="fast-row"><span>默认模型 {value || "使用已有配置"}</span><button onClick={() => { setSelected(value); setOpen(!open); }}>切换模型 ▾</button></div>
+    <div className="fast-row"><span><small>默认模型</small><strong>{value || "使用已有配置"}</strong></span><button onClick={() => { setSelected(value); setOpen(!open); }}>切换模型 ▾</button></div>
     {open && <fieldset disabled={busy}><legend>选择默认模型 · {models.length} 个</legend>
       <button onClick={onReload}>重新获取</button><button onClick={() => setOpen(false)}>收起</button>
       <input aria-label="搜索模型" placeholder="搜索模型名称，例如 deepseek、gemini" value={query} onChange={e => setQuery(e.target.value)}/>

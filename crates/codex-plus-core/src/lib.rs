@@ -1,5 +1,6 @@
 pub mod fastaiapi;
 mod fastaiapi_session;
+mod fastaiapi_credentials;
 pub mod ads;
 pub mod aggregate_catalog;
 pub mod agent_cache;

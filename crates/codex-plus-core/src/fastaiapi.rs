@@ -74,7 +74,23 @@ async fn request(method: &str, path: &str, body: &Value, bearer: &str) -> Result
     Ok(data.get("data").cloned().unwrap_or(data))
 }
 
-pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, String> {
+fn take_remember_preference(body: &mut Value) -> bool {
+    body.as_object_mut()
+        .and_then(|obj| obj.remove("remember_password"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, String> {
+    if action == "remembered_login" {
+        return Ok(crate::fastaiapi_credentials::load());
+    }
+    if action == "forget_login" {
+        crate::fastaiapi_credentials::clear()?;
+        return Ok(json!({}));
+    }
+    // 本地偏好不传给平台；只有认证成功后才保存密码。
+    let remember = take_remember_preference(&mut body);
     if action == "logout" {
         crate::fastaiapi_session::clear()?;
         *token().lock().map_err(|_| "账户状态不可用")? = String::new();
@@ -97,8 +113,18 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             .ok_or("登录需要额外验证，请在平台网站完成")?;
         *token().lock().map_err(|_| "账户状态不可用")? = access.to_owned();
         let persistent = crate::fastaiapi_session::save(access);
+        let remembered = if remember {
+            crate::fastaiapi_credentials::save(
+                body["email"].as_str().unwrap_or(""),
+                body["password"].as_str().unwrap_or(""),
+            )
+        } else {
+            crate::fastaiapi_credentials::clear()?;
+            false
+        };
         data = data["user"].clone();
         data["session_persistent"] = json!(persistent);
+        data["password_remembered"] = json!(remembered);
     }
     if action == "create_key" {
         if let Some(obj) = data.as_object_mut() {
@@ -190,6 +216,20 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remember_password_is_opt_in_and_never_forwarded() {
+        for (flag, expected) in [
+            (json!(true), true),
+            (json!(false), false),
+            (json!("true"), false),
+        ] {
+            let mut body = json!({"email": "test@example.com", "password": "test-only", "remember_password": flag});
+            assert_eq!(take_remember_preference(&mut body), expected);
+            assert!(body.get("remember_password").is_none());
+            assert_eq!(body["password"], "test-only");
+        }
+        assert!(!take_remember_preference(&mut json!({})));
+    }
     #[test]
     fn conversation_models_exclude_media_and_internal_routes() {
         for id in [
