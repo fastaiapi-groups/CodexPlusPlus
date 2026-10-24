@@ -1,0 +1,13 @@
+/* 账户 Key 横向平铺，长名称与窄窗口均可换行。 */
+.fast-account .fast-key-selector{border:0;margin:18px 0 0;padding:0;min-width:0}
+.fast-key-selector legend{padding:0;margin-bottom:10px;color:#97a6b5;font-size:12px}
+.fast-key-choices{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+.fast-account.is-connected .fast-key-choices label{position:relative;display:flex;flex:0 1 auto;align-items:center;gap:9px;max-width:100%;box-sizing:border-box;padding:10px 14px;border:1px solid #ffffff18;border-radius:10px;background:#ffffff04;color:#b6c2cf;cursor:pointer}
+.fast-key-choices label span{min-width:0;overflow-wrap:anywhere}.fast-key-choices label svg{flex-shrink:0;color:#49d4bf}
+.fast-account .fast-key-choices input{position:absolute;opacity:0;width:1px;height:1px;min-width:0;padding:0;border:0}
+.fast-account.is-connected .fast-key-choices label.is-selected{background:#2bc5a213;border-color:#37c9b27a;color:#b5eee1}
+.fast-key-choices label:focus-within{outline:2px solid #49d4bf;outline-offset:3px}.fast-key-selector:disabled label{opacity:.55;cursor:wait}
+.fast-key-choices p{margin:0;color:#8596a7;font-size:12px}
+.fast-account.is-connected .fast-advanced>.fast-key-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.fast-key-retry{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:6px;max-width:100%}
+.fast-key-retry small{font-size:11px;color:#70879a;text-align:right;line-height:1.6;max-width:300px}

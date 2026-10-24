@@ -8,6 +8,7 @@ import { Recharge, type Package, type Order } from "./Recharge";
 import "./gate.css";
 import { ModelPicker } from "./ModelPicker";
 import { KeyDialog } from "./KeyDialog";
+import { KeySelector } from "./KeySelector";
 import { createGroupCache, type AccountGroup } from "./groupCache";
 import { configureAccount } from "./onboarding";
 
@@ -104,8 +105,8 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
     </form> : <>
       <div className="fast-service-grid"><div className="fast-endpoint"><span>模型服务</span><strong>fastaiapi.cloud<span>/v1</span></strong><small>已连接你的 FastAiApi 账户</small></div>
       <ModelPicker models={models} value={model} busy={busy || !keyId} onReload={() => void selectKey(keyId)} onApply={async next => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); }}/>
-      </div><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><div className="fast-row"><label>对话 API Key<select value={keyId} disabled={busy} onChange={e => void selectKey(Number(e.target.value))}><option value={0} disabled>选择账户 Key</option>{keys.filter(k => k.status === "active").map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label><button disabled={busy} onClick={() => void work(async () => configure(await loadKeys()))}>重试自动配置</button></div>
-      <div className="fast-row"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button></div></details>
+      </div><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
+      <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
       {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
       <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频创作技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: "https://fastaiapi.cloud"}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); await restoreLogin(); setUser(null); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && <Recharge packages={packages} orders={orders} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>}
