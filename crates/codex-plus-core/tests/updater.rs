@@ -210,6 +210,7 @@ fn download_asset_to_writes_bytes() {
         body: "fixes".to_string(),
         asset_name: Some("pkg.zip".to_string()),
         asset_url: Some("https://example.test/pkg.zip".to_string()),
+        integrity: None,
     };
 
     let path = download_asset_to(&release, b"abcdef", dir.path()).unwrap();

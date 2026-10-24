@@ -2689,10 +2689,10 @@ export function App() {
       if (updateNotifications.current.shouldPrompt(result, request.manual)) {
         setUpdatePrompt(result);
       } else if (request.manual) {
-        showNotice(t("GitHub Release 检查"), result.message, result.status);
+        showNotice(t("FastAiApi 官网更新检查"), result.message, result.status);
       }
     } catch (error) {
-      if (request.manual) showNotice(t("GitHub Release 检查"), stringifyError(error), "failed");
+      if (request.manual) showNotice(t("FastAiApi 官网更新检查"), stringifyError(error), "failed");
     } finally {
       updateCheckPending.current = null;
     }
@@ -9183,7 +9183,7 @@ function AboutScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("GitHub Release 更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
+        <CardHead title={t("FastAiApi 官网更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
         <CardContent>
           <div className="metric-list">
             <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
@@ -9191,7 +9191,7 @@ function AboutScreen({
             <Metric label={t("资源")} value={update?.assetName ?? "-"} />
             <Metric label={t("进度")} value={`${formatProgressPercent(update?.progress ?? 0)}%`} />
           </div>
-          <ReleaseNotes markdown={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+          <ReleaseNotes markdown={update?.releaseSummary || update?.message || t("尚未检查 FastAiApi 官网更新；安装包将从本站下载并验证。")} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
           <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
           <Toolbar>
             <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
@@ -14391,7 +14391,7 @@ function routeSubtitle(route: Route) {
     agentCollaboration: t("连接 Codex、DeepSeek Harness 与 Claude Code，派发任务并查看结果。"),
     computerUse: t("复用 Codex 的 Computer Use，通过 MCP 接给 Claude Code、Claude Desktop 与 Codex。"),
     maintenance: t("入口检查与修复、开机启动与应用路径"),
-    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
+    about: t("版本信息、项目链接、FastAiApi 官网更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
   return subtitles[route];

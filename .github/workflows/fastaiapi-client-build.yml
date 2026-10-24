@@ -1,0 +1,42 @@
+name: FastAiApi client installers
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: |
+          npm ci
+          npm run check
+          npm run vite:build
+      - name: Build Windows client
+        run: cargo build --release -p codex-plus-manager
+      - name: Package installer
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $version = (Get-Content apps/codex-plus-manager/package.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force dist/windows/app | Out-Null
+          Copy-Item target/release/codex-plus-plus.exe dist/windows/app/
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { throw 'NSIS compiler missing' }
+          Push-Location scripts/installer/windows
+          try {
+            & $makensis /INPUTCHARSET UTF8 "/DVERSION=$version" CodexPlusPlus.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'Installer packaging failed' }
+          } finally { Pop-Location }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastaiapi-windows-x64
+          path: dist/windows/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14

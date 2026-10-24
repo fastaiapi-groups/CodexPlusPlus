@@ -4,13 +4,16 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::io::Write;
+mod trust;
 
 #[cfg(any(target_os = "macos", test))]
 pub mod macos;
 
 pub const DEFAULT_REPOSITORY: &str = "BigPizzaV3/CodexPlusPlus";
 pub const DEFAULT_LATEST_JSON_URL: &str =
-    "https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest/download/latest.json";
+    "https://fastaiapi.cloud/fastaiapi/api/client-updates/v1/check";
 const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -21,12 +24,21 @@ pub struct ReleaseAsset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateIntegrity {
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     pub version: String,
     pub url: String,
     pub body: String,
     pub asset_name: Option<String>,
     pub asset_url: Option<String>,
+    #[serde(default)]
+    pub integrity: Option<UpdateIntegrity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -127,6 +139,7 @@ pub fn release_from_github_payload(payload: &Value) -> anyhow::Result<Release> {
             .to_string(),
         asset_name: selected.as_ref().map(|asset| asset.name.clone()),
         asset_url: selected.map(|asset| asset.browser_download_url),
+        integrity: None,
     })
 }
 
@@ -170,6 +183,7 @@ pub fn release_from_latest_json_payload(payload: &Value) -> anyhow::Result<Relea
             .to_string(),
         asset_name: selected.as_ref().map(|asset| asset.name.clone()),
         asset_url: selected.map(|asset| asset.browser_download_url),
+        integrity: None,
     })
 }
 
@@ -193,29 +207,46 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
     })
 }
 
+async fn fetch_website_release(latest_json_url: &str) -> anyhow::Result<Option<Release>> {
+    anyhow::ensure!(latest_json_url == DEFAULT_LATEST_JSON_URL, "更新检查必须使用 FastAiApi 官网");
+    let response = update_http_client()?.get(latest_json_url).send().await?.error_for_status()?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT { return Ok(None); }
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        anyhow::ensure!(body.len() + chunk.len() <= 256 * 1024, "更新清单过大");
+        body.extend_from_slice(&chunk);
+    }
+    let release = trust::parse(serde_json::from_slice(&body)?)?;
+    if let Some(integrity) = &release.integrity {
+        let directory = crate::paths::default_app_state_dir().join("updates");
+        let path = directory.join("fastaiapi-release-sequence");
+        let previous = if path.exists() { std::fs::read_to_string(&path)?.trim().parse::<u64>()? } else { 0 };
+        anyhow::ensure!(integrity.sequence >= previous, "更新清单已过期，请重新检查更新");
+        if integrity.sequence > previous {
+            std::fs::create_dir_all(&directory)?;
+            let temporary = directory.join(format!(".sequence-{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(&temporary, integrity.sequence.to_string())?;
+            std::fs::rename(temporary, path)?;
+        }
+    }
+    Ok(Some(release))
+}
+
 pub async fn fetch_latest_release(latest_json_url: &str) -> anyhow::Result<Release> {
-    let client = update_http_client()?;
-    let payload = client
-        .get(latest_json_url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    release_from_latest_json_payload(&payload)
+    fetch_website_release(latest_json_url).await?.ok_or_else(|| anyhow::anyhow!("FastAiApi 暂无已发布版本"))
 }
 
 pub async fn check_for_update(current_version: &str) -> anyhow::Result<UpdateCheck> {
-    let release = fetch_latest_release(DEFAULT_LATEST_JSON_URL).await?;
-    let update_available = is_newer_version(&release.version, current_version)?;
+    let Some(release) = fetch_website_release(DEFAULT_LATEST_JSON_URL).await? else {
+        return Ok(UpdateCheck { current_version: current_version.into(), latest_version: None,
+            release_summary: "FastAiApi 暂无已发布版本".into(), asset_name: None, asset_url: None, update_available: false });
+    };
+    let update_available = is_newer_version(&release.version, current_version)? && release.asset_url.is_some();
     Ok(UpdateCheck {
-        current_version: current_version.to_string(),
-        latest_version: Some(release.version),
-        release_summary: release.body,
-        asset_name: release.asset_name,
-        asset_url: release.asset_url,
-        update_available,
+        current_version: current_version.to_string(), latest_version: Some(release.version),
+        release_summary: release.body, asset_name: release.asset_name, asset_url: release.asset_url, update_available,
     })
 }
 
@@ -234,6 +265,11 @@ pub async fn perform_update_with_progress<F>(
 where
     F: FnMut(UpdateProgress) + Send,
 {
+    // 安装时重新获取并验签，禁止前端指定外部链接，也检查撤回和版本变化。
+    let verified = fetch_latest_release(DEFAULT_LATEST_JSON_URL).await?;
+    anyhow::ensure!(verified.version == release.version, "发布版本已变化，请重新检查更新");
+    anyhow::ensure!(is_newer_version(&verified.version, crate::version::VERSION)?, "更新版本必须高于当前版本");
+    let release = &verified;
     let (installer_path, downloaded_bytes, total_bytes) =
         download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
 
@@ -285,165 +321,60 @@ where
 }
 
 async fn download_release_asset_with_progress<F>(
-    release: &Release,
-    download_dir: &Path,
-    on_progress: &mut F,
-) -> anyhow::Result<(PathBuf, u64, Option<u64>)>
-where
-    F: FnMut(UpdateProgress),
-{
-    let url = release
-        .asset_url
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
-    let download_started = Instant::now();
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.perform.start",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "assetUrl": url,
-            "downloadTimeoutSeconds": UPDATE_DOWNLOAD_TIMEOUT.as_secs()
-        }),
-    );
-    let response = match update_http_client()?.get(url).send().await {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.download.failed",
-                json!({
-                    "version": release.version,
-                    "assetName": release.asset_name,
-                    "elapsedMs": download_started.elapsed().as_millis() as u64,
-                    "error": error.to_string()
-                }),
-            );
-            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
-        }
-    };
-    let response = match response.error_for_status() {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.download.bad_status",
-                json!({
-                    "version": release.version,
-                    "assetName": release.asset_name,
-                    "elapsedMs": download_started.elapsed().as_millis() as u64,
-                    "error": error.to_string()
-                }),
-            );
-            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
-        }
-    };
-
-    // 用流式读取替代 response.bytes()，让 UI 能拿到真实下载字节数；
-    // 仍先把完整安装包收集到内存，写盘行为与旧实现保持一致。
+    release: &Release, download_dir: &Path, on_progress: &mut F,
+) -> anyhow::Result<(PathBuf, u64, Option<u64>)> where F: FnMut(UpdateProgress) {
+    let url = release.asset_url.as_ref().ok_or_else(|| anyhow::anyhow!("当前平台没有可用安装包"))?;
+    let local_test = cfg!(test) && url.starts_with("http://127.0.0.1:");
+    anyhow::ensure!(local_test || trust::owned_url(url), "安装包必须来自 FastAiApi 官网");
+    anyhow::ensure!(local_test || release.integrity.is_some(), "安装包缺少已验证的完整性信息");
+    let name = safe_asset_name(release.asset_name.as_deref().ok_or_else(|| anyhow::anyhow!("缺少安装包名称"))?)?;
+    let response = update_http_client()?.get(url).send().await?.error_for_status()?;
     let total_bytes = response.content_length();
-    on_progress(UpdateProgress {
-        stage: UpdateStage::Downloading,
-        downloaded_bytes: 0,
-        total_bytes,
-        percent: total_bytes.filter(|total| *total > 0).map(|_| 0.0),
-        elapsed_ms: 0,
-    });
-    let mut bytes = Vec::new();
-    let mut downloaded_bytes = 0_u64;
-    let mut last_percent_bucket = -1_i32;
+    let expected = release.integrity.as_ref().map(|v| v.size_bytes);
+    if let (Some(total), Some(expected)) = (total_bytes, expected) { anyhow::ensure!(total == expected, "安装包大小与签名清单不一致"); }
+    std::fs::create_dir_all(download_dir)?;
+    let temporary = download_dir.join(format!(".{}-{}.part", name, uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    let started = Instant::now(); let mut downloaded_bytes = 0u64; let mut hash = Sha256::new();
+    let mut last_percent = -1i32;
+    on_progress(UpdateProgress {stage: UpdateStage::Downloading, downloaded_bytes, total_bytes, percent: total_bytes.map(|_|0.0), elapsed_ms:0});
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "update.download.body_failed",
-                    json!({
-                        "version": release.version,
-                        "assetName": release.asset_name,
-                        "downloadedBytes": downloaded_bytes,
-                        "elapsedMs": download_started.elapsed().as_millis() as u64,
-                        "error": error.to_string()
-                    }),
-                );
-                return Err(anyhow::anyhow!("读取安装包失败：{error}"));
-            }
-        };
+        let chunk = chunk?;
         downloaded_bytes += chunk.len() as u64;
-        bytes.extend_from_slice(&chunk);
-        let percent = total_bytes
-            .filter(|total| *total > 0)
-            .map(|total| (downloaded_bytes as f64 / total as f64 * 100.0).clamp(0.0, 100.0));
-        let percent_bucket = percent.map(|value| value.floor() as i32).unwrap_or(-1);
-        let finished_known_total = total_bytes.is_some_and(|total| downloaded_bytes >= total);
-        if percent.is_none() || percent_bucket > last_percent_bucket || finished_known_total {
-            last_percent_bucket = percent_bucket;
-            on_progress(UpdateProgress {
-                stage: UpdateStage::Downloading,
-                downloaded_bytes,
-                total_bytes,
-                percent,
-                elapsed_ms: download_started.elapsed().as_millis() as u64,
-            });
+        anyhow::ensure!(downloaded_bytes <= expected.unwrap_or(2*1024*1024*1024), "安装包超出声明大小");
+        file.write_all(&chunk)?; hash.update(&chunk);
+        let percent = total_bytes.filter(|n| *n>0).map(|total| (downloaded_bytes as f64 / total as f64 * 100.0).min(100.0));
+        let bucket = percent.map(|p|p as i32).unwrap_or(-1);
+        if bucket != last_percent || percent.is_none() {
+            last_percent = bucket;
+            on_progress(UpdateProgress {stage:UpdateStage::Downloading,downloaded_bytes,total_bytes,percent,elapsed_ms:started.elapsed().as_millis() as u64});
         }
     }
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.download.completed",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "bytes": bytes.len(),
-            "totalBytes": total_bytes,
-            "elapsedMs": download_started.elapsed().as_millis() as u64
-        }),
-    );
-
-    on_progress(UpdateProgress {
-        stage: UpdateStage::Writing,
-        downloaded_bytes,
-        total_bytes,
-        percent: None,
-        elapsed_ms: 0,
-    });
-    let write_started = Instant::now();
-    let installer_path = match download_asset_to(release, &bytes, download_dir) {
-        Ok(path) => path,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.write.failed",
-                json!({
-                    "version": release.version,
-                    "assetName": release.asset_name,
-                    "downloadDir": download_dir.to_string_lossy(),
-                    "bytes": bytes.len(),
-                    "elapsedMs": write_started.elapsed().as_millis() as u64,
-                    "error": error.to_string()
-                }),
-            );
-            return Err(error);
-        }
-    };
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.write.completed",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "installerPath": installer_path.to_string_lossy(),
-            "bytes": bytes.len(),
-            "elapsedMs": write_started.elapsed().as_millis() as u64
-        }),
-    );
-    Ok((installer_path, downloaded_bytes, total_bytes))
+    if let Some(integrity) = &release.integrity {
+        anyhow::ensure!(downloaded_bytes==integrity.size_bytes, "安装包下载不完整");
+        anyhow::ensure!(format!("{:x}",hash.finalize())==integrity.sha256, "安装包 SHA-256 校验失败，已停止安装");
+    }
+    file.sync_all()?; drop(file);
+    on_progress(UpdateProgress {stage:UpdateStage::Writing,downloaded_bytes,total_bytes,percent:None,elapsed_ms:0});
+    let installer_path = download_dir.join(name);
+    std::fs::rename(&temporary,&installer_path)?;
+    Ok((installer_path,downloaded_bytes,total_bytes))
 }
 
 fn update_http_client() -> anyhow::Result<reqwest::Client> {
-    // 更新与安装包下载同样要走系统代理：在需要代理才能访问 GitHub 的网络里，
-    // 直连会一直超时，用户看到的是「检查更新成功但下载/安装失败」（#1329）。
-    // 复用统一构造器，保留原有连接/总超时语义。
-    crate::http_client::proxied_client_with_timeouts(
-        &format!("Codex++/{}", crate::version::VERSION),
-        UPDATE_CONNECT_TIMEOUT,
-        UPDATE_DOWNLOAD_TIMEOUT,
-    )
+    let mut builder=reqwest::Client::builder().user_agent(format!("FastAiApi-CodexPlusPlus/{}",crate::version::VERSION))
+        .connect_timeout(UPDATE_CONNECT_TIMEOUT).timeout(UPDATE_DOWNLOAD_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len()>=3 { return attempt.error("更新重定向过多"); }
+            if trust::owned_url(attempt.url().as_str()) { attempt.follow() } else { attempt.error("禁止跳转到非 FastAiApi 下载来源") }
+        }));
+    if !cfg!(test) {
+        if let Some(proxy)=crate::proxy::detect_system_proxy().or_else(||std::env::var("HTTPS_PROXY").ok()).or_else(||std::env::var("ALL_PROXY").ok()) {
+            builder=builder.proxy(reqwest::Proxy::all(proxy)?);
+        }
+    } else { builder=builder.no_proxy(); }
+    Ok(crate::http_client::apply_configured_ca_certificate(builder)?.build()?)
 }
 
 pub fn download_asset_to(
@@ -690,6 +621,7 @@ mod tests {
             body: String::new(),
             asset_name: Some("CodexPlusPlus-9.9.9-windows-x64-setup.exe".to_string()),
             asset_url: Some(format!("http://{address}/installer.exe")),
+            integrity: None,
         };
         let directory = tempfile::tempdir().unwrap();
         let observed = Arc::new(Mutex::new(Vec::<UpdateProgress>::new()));

@@ -6339,6 +6339,10 @@ pub async fn check_update() -> CommandResult<Value> {
                 status: status.to_string(),
                 message: if update.update_available {
                     "发现可用更新。".to_string()
+                } else if update.latest_version.is_none() {
+                    "FastAiApi 官网暂无已发布版本。".to_string()
+                } else if update.asset_url.is_none() {
+                    "FastAiApi 官网暂无适配当前平台的安装包。".to_string()
                 } else {
                     "当前已是最新版本。".to_string()
                 },
