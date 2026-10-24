@@ -139,11 +139,36 @@ pub async fn key_and_models(key_id: i64) -> Result<(String, Vec<String>), String
         .as_array()
         .or_else(|| models["data"].as_array())
         .ok_or("模型列表格式无效")?;
-    let ids = rows
+    let mut ids: Vec<String> = rows
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_owned))
+        .filter(|id| is_conversation_model(id))
         .collect();
+    ids.sort();
+    ids.dedup();
+    if let Some(index) = ids.iter().position(|id| id == "gpt-5.6-sol") {
+        let preferred = ids.remove(index);
+        ids.insert(0, preferred);
+    }
     Ok((secret, ids))
+}
+
+// 媒体和内部审核模型不能写入 Codex 的对话默认模型。
+fn is_conversation_model(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    !id.trim().is_empty()
+        && ![
+            "image",
+            "video",
+            "audio",
+            "tts",
+            "embedding",
+            "realtime",
+            "auto-review",
+            "reserve",
+        ]
+        .iter()
+        .any(|kind| lower.contains(kind))
 }
 
 pub fn qr_image(text: &str) -> Result<String, String> {
@@ -162,6 +187,22 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conversation_models_exclude_media_and_internal_routes() {
+        for id in [
+            "codex-auto-review",
+            "gpt-image-2",
+            "gpt-reserve",
+            "text-embedding-3",
+            "gpt-realtime",
+            "",
+        ] {
+            assert!(!is_conversation_model(id), "{id}");
+        }
+        for id in ["gpt-5.6-sol", "deepseek-v4-pro", "glm-5", "custom-chat"] {
+            assert!(is_conversation_model(id), "{id}");
+        }
+    }
     #[test]
     fn rejects_arbitrary_routes_and_order_paths() {
         assert!(route("delete", "").is_err());

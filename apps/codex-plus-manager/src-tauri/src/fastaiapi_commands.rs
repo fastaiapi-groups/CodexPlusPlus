@@ -32,23 +32,15 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
         .load()
         .map_err(|_| "无法读取本地配置")?;
     let previous = settings.active_relay_id.clone();
-    let profile = RelayProfile {
-        id: format!("fastaiapi-{key_id}"),
-        name: "FastAiApi".into(),
-        model: model.clone(),
-        base_url: "https://fastaiapi.cloud/v1".into(),
-        upstream_base_url: "https://fastaiapi.cloud/v1".into(),
-        api_key: key.clone(),
-        api_keys: vec![RelayApiKey {
-            id: "account".into(),
-            name: "FastAiApi".into(),
-            api_key: key,
-        }],
-        active_api_key_id: "account".into(),
-        relay_mode: RelayMode::PureApi,
-        model_list: models.join("\n"),
-        ..Default::default()
-    };
+    let profile_id = format!("fastaiapi-{key_id}");
+    // 切换模型只更新账户连接信息，保留该供应商已有的上下文等高级配置。
+    let existing = settings
+        .relay_profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .cloned()
+        .unwrap_or_default();
+    let profile = account_profile(existing, profile_id, key, model.clone(), models);
     settings.active_relay_id = profile.id.clone();
     settings.relay_profiles.retain(|p| p.id != profile.id);
     settings.relay_profiles.push(profile);
@@ -63,6 +55,32 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
     }
     install_media_skill()?;
     Ok(json!({"model": model, "message": "已配置 FastAiApi，可启动 Codex"}))
+}
+
+fn account_profile(
+    existing: RelayProfile,
+    profile_id: String,
+    key: String,
+    model: String,
+    models: Vec<String>,
+) -> RelayProfile {
+    RelayProfile {
+        id: profile_id,
+        name: "FastAiApi".into(),
+        model,
+        base_url: "https://fastaiapi.cloud/v1".into(),
+        upstream_base_url: "https://fastaiapi.cloud/v1".into(),
+        api_key: key.clone(),
+        api_keys: vec![RelayApiKey {
+            id: "account".into(),
+            name: "FastAiApi".into(),
+            api_key: key,
+        }],
+        active_api_key_id: "account".into(),
+        relay_mode: RelayMode::PureApi,
+        model_list: models.join("\n"),
+        ..existing
+    }
 }
 
 pub fn install_media_skill() -> Result<(), String> {
@@ -93,6 +111,26 @@ fn install_media_skill_at(root: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_switch_preserves_context_settings() {
+        let existing = RelayProfile {
+            context_window: "200000".into(),
+            auto_compact_limit: "160000".into(),
+            model_windows: r#"{"gpt-5.6-sol":"200000"}"#.into(),
+            ..Default::default()
+        };
+        let updated = account_profile(
+            existing,
+            "fastaiapi-test".into(),
+            "test-only".into(),
+            "gpt-5.6-sol".into(),
+            vec!["gpt-5.6-sol".into()],
+        );
+        assert_eq!(updated.context_window, "200000");
+        assert_eq!(updated.auto_compact_limit, "160000");
+        assert!(updated.model_windows.contains("200000"));
+        assert_eq!(updated.model, "gpt-5.6-sol");
+    }
     #[test]
     fn bundled_skill_installs_complete_and_preserves_user_changes() {
         let tmp = tempfile::tempdir().unwrap();

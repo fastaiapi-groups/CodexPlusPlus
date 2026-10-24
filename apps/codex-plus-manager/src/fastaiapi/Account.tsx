@@ -37,8 +37,9 @@ export default function Account() {
     setNotice("已登录，请选择对话分组 Key 和模型，完成配置后启动 Codex。");
   });
   const selectKey = (id: number) => work(async () => {
-    setKeyId(id); setModels([]); setModel("");
+    setKeyId(id); setModels([]); setModel(""); setNotice("");
     const list = await invoke<string[]>("fastaiapi_models", {keyId: id}); setModels(list); setModel(list[0] ?? "");
+    if (!list.length) setNotice("该 Key 没有可用的对话模型，请选择对话分组 Key。");
   });
   return <section className="fast-account" aria-label="FastAiApi 账户">
     <header><img src={logo} alt="FastAiApi"/><div><h2>FastAiApi</h2><p>{user ? user.email : "登录账号，连接模型，开始工作。"}</p></div>{user && <div className="fast-balance"><small>API 余额（美元额度）</small><strong>{Number.isFinite(user.balance) ? `$${user.balance.toFixed(2)}` : "暂不可用"}</strong></div>}</header>
@@ -81,16 +82,31 @@ function Recharge({packages, orders, onClose, onPaid}: {packages: Package[]; ord
   }, [session?.order.id, session?.order.status, session?.state]);
   const checkout = async (existing?: Order) => {
     setBusy(true); setAttempted(true); setError(""); setQr(""); if (existing) paid.current = false;
-    try { const order = existing ?? session?.order ?? (await api<{order: Order}>("create_order", {package_id: packageId, payment_type: channel, request_id: requestId.current})).order;
+    let order = existing ?? session?.order;
+    try { order ??= (await api<{order: Order}>("create_order", {package_id: packageId, payment_type: channel, request_id: requestId.current})).order;
       if (!disposed.current) setSession({order, state: "pending"});
       await apply(await api<Checkout>("checkout", {}, order.id));
-    } catch(e) { if (!disposed.current) setError(`${String(e)}。重试将沿用原订单，请勿重复付款。`); } finally { if (!disposed.current) setBusy(false); }
+    } catch(e) {
+      // 续付失败也重新读取状态，避免把过期/异常订单继续显示为可付款。
+      if (order) { try { await apply(await api<Checkout>("order", undefined, order.id)); } catch { /* 保留原错误，等待手动查单 */ } }
+      if (!disposed.current) setError(`${String(e)}。重试将沿用原订单，请勿重复付款。`);
+    } finally { if (!disposed.current) setBusy(false); }
   };
   const selected = packages.find(p => p.id === packageId);
+  const recheck = async () => {
+    if (!session) return;
+    setBusy(true); setError("");
+    try {
+      await api("recheck", {}, session.order.id);
+      await apply(await api<Checkout>("order", undefined, session.order.id));
+    } catch (e) { if (!disposed.current) setError(`${String(e)}。已付款请勿重复扫码，可稍后再次查询。`); }
+    finally { if (!disposed.current) setBusy(false); }
+  };
   return <div className="fast-payment" role="region" aria-label="在线充值"><h3>支付宝 / 微信充值</h3><button disabled={busy} onClick={onClose}>关闭充值</button>{error && <p role="alert">{error}</p>}
     {!session && <><label>充值套餐<select disabled={attempted} value={packageId} onChange={e => setPackageId(e.target.value)}>{packages.map(p => <option key={p.id} value={p.id}>{p.name} · ¥{(p.amount_cents / 100).toFixed(2)}</option>)}</select></label><label>支付方式<select disabled={attempted} value={channel} onChange={e => setChannel(e.target.value)}><option value="alipay">支付宝</option><option value="wxpay">微信支付</option></select></label><p>应付人民币 ¥{((selected?.amount_cents ?? 0)/100).toFixed(2)}，到账 API 额度 ${selected?.credit}。</p></>}
     {session && <p>订单 {session.order.id} · {session.order.payment_type === "wxpay" ? "微信支付" : "支付宝"} · {session.order.status === "paid" ? "已到账" : session.state === "expired" ? "已过期" : "待支付 / 确认中"} · ¥{(session.order.amount_cents/100).toFixed(2)}</p>}
     {qr && <img className="fast-qr" src={qr} alt="请使用所选支付方式扫码付款"/>}
+    {session && session.order.status !== "paid" && !session.order.reversed_at && <button disabled={busy} onClick={() => void recheck()}>我已付款，查询到账</button>}
     {session?.order.status !== "paid" && session?.state !== "expired" && session?.order.gateway_status !== "expired" && !session?.order.reversed_at && <button disabled={busy || !packageId} onClick={() => void checkout()}>{busy ? "正在处理…" : session ? "继续原订单" : "确认并提交订单"}</button>}
     <p>请按订单金额付款，支付成功后自动刷新余额。关闭后可从下方订单继续。</p>
     <details><summary>最近充值订单</summary>{orders.map(o => <div key={o.id}>{o.id} · {o.status} · ¥{(o.amount_cents/100).toFixed(2)} {o.status !== "paid" && <button disabled={busy} onClick={() => void checkout(o)}>继续支付</button>}</div>)}</details>
