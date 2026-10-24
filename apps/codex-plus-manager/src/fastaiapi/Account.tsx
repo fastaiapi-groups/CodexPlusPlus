@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 const logo = new URL("./logo.svg", import.meta.url).href;
 import "./account.css";
@@ -7,6 +7,8 @@ import { RefreshCw, Plus, ArrowUpRight, LogOut, Sparkles } from "lucide-react";
 import { Recharge, type Package, type Order } from "./Recharge";
 import "./gate.css";
 import { ModelPicker } from "./ModelPicker";
+import { KeyDialog } from "./KeyDialog";
+import { createGroupCache, type AccountGroup } from "./groupCache";
 import { configureAccount } from "./onboarding";
 
 type User = { email: string; username?: string; balance: number; session_persistent?: boolean; password_remembered?: boolean };
@@ -30,7 +32,16 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
   const [code, setCode] = useState(""), [invitation, setInvitation] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [keys, setKeys] = useState<Key[]>([]), [keyId, setKeyId] = useState(0), [models, setModels] = useState<string[]>([]), [model, setModel] = useState("");
-  const [groups, setGroups] = useState<{id: number; name: string}[]>([]), [group, setGroup] = useState("");
+  const [groups, setGroups] = useState<AccountGroup[]>([]), [keyDialog, setKeyDialog] = useState(false);
+  const [groupsLoading, setGroupsLoading] = useState(false), [groupsError, setGroupsError] = useState("");
+  const groupCache = useRef(createGroupCache(() => api<AccountGroup[]>("groups")));
+  const loadGroups = async () => {
+    const cache = groupCache.current;
+    setGroupsLoading(true); setGroupsError("");
+    try { const data = await cache(); if (cache === groupCache.current) setGroups(data); return data; }
+    catch(e) { if(cache === groupCache.current) setGroupsError(String(e)); throw e; }
+    finally { if(cache === groupCache.current) setGroupsLoading(false); }
+  };
   const [recharge, setRecharge] = useState(false), [packages, setPackages] = useState<Package[]>([]), [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<{registration_enabled?: boolean; email_verify_enabled?: boolean; invitation_code_enabled?: boolean} | null>(null);
   const work = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch(e) { setError(String(e)); } finally { setBusy(false); } };
@@ -38,7 +49,7 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
   const loadKeys = async () => { const data = await api<{items: Key[]}>("keys"); setKeys(data.items ?? []); return data.items ?? []; };
   const configure = async (available: Key[]) => {
     const configured = await configureAccount(available, {
-      groups: () => api("groups"),
+      groups: loadGroups,
       createKey: groupId => api("create_key", {name: "Codex++ FastAiApi", group_id: groupId}),
       models: keyId => invoke("fastaiapi_models", {keyId}),
       current: () => api("configuration"),
@@ -52,7 +63,7 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
     void restoreLogin().catch(() => {});
     api<typeof settings>("settings").then(setSettings).catch(e => setError(String(e)));
     api<User>("me").then(async u => {
-      setUser(u); setRestoring(false);
+      setUser(u); setRestoring(false); void loadGroups().catch(() => {});
       const available = await loadKeys();
       const selected = available.find(k => k.status === "active" && k.name === "Codex++ FastAiApi");
       if (selected) {
@@ -68,7 +79,8 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
   const login = () => work(async () => {
     if (register && password !== confirm) throw new Error("两次密码不一致");
     const u = await api<User>(register ? "register" : "login", {email, password, remember_password: remember, verify_code: code, invitation_code: invitation || undefined});
-    setUser(u); setPassword(""); setConfirm("");
+    groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]);
+    setUser(u); setPassword(""); setConfirm(""); void loadGroups().catch(() => {});
     await configure(await loadKeys());
     if (remember && !u.password_remembered) setError("登录成功，但系统钥匙串未保存账号密码。请允许访问钥匙串后重新登录保存。");
     if (!u.session_persistent) setNotice("模型服务已配置。系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
@@ -91,10 +103,11 @@ export function FastAiApiGate({children}: {children: ReactNode}) {
       <p className="fast-muted">勾选后，账号密码仅保存在 macOS 系统钥匙串。取消勾选即可清除；未勾选不保存密码。</p>
     </form> : <>
       <div className="fast-service-grid"><div className="fast-endpoint"><span>模型服务</span><strong>fastaiapi.cloud<span>/v1</span></strong><small>已连接你的 FastAiApi 账户</small></div>
-      <ModelPicker models={models} value={model} busy={busy || !keyId} onReload={() => void selectKey(keyId)} onApply={next => void work(async () => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); })}/>
+      <ModelPicker models={models} value={model} busy={busy || !keyId} onReload={() => void selectKey(keyId)} onApply={async next => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); }}/>
       </div><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><div className="fast-row"><label>对话 API Key<select value={keyId} disabled={busy} onChange={e => void selectKey(Number(e.target.value))}><option value={0} disabled>选择账户 Key</option>{keys.filter(k => k.status === "active").map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label><button disabled={busy} onClick={() => void work(async () => configure(await loadKeys()))}>重试自动配置</button></div>
-      <details><summary>创建专用 API Key</summary><button disabled={busy} onClick={() => void work(async () => setGroups(await api("groups")))}>读取可用分组</button><select aria-label="模型分组" value={group} onChange={e => setGroup(e.target.value)}><option value="">选择对话模型分组</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select><button disabled={busy || !group} onClick={() => void work(async () => { await api("create_key", {name: "Codex++ FastAiApi", group_id: Number(group)}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。"); })}>创建 Key</button></details></details>
-      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频创作技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: "https://fastaiapi.cloud"}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); await restoreLogin(); setUser(null); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
+      <div className="fast-row"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button></div></details>
+      {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
+      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频创作技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: "https://fastaiapi.cloud"}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); await restoreLogin(); setUser(null); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && <Recharge packages={packages} orders={orders} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>}
     </>}
 
