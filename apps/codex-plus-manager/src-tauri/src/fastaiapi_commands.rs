@@ -7,6 +7,16 @@ pub async fn fastaiapi_account(
     id: Option<String>,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    if action == "configuration" {
+        let settings = SettingsStore::default()
+            .load()
+            .map_err(|_| "无法读取本地配置")?;
+        let profile = settings
+            .relay_profiles
+            .iter()
+            .find(|p| p.id == settings.active_relay_id && p.id.starts_with("fastaiapi-"));
+        return Ok(profile.map(|p| json!({"model": p.model, "key_id": p.id.strip_prefix("fastaiapi-").and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
+    }
     codex_plus_core::fastaiapi::account(
         &action,
         id.as_deref().unwrap_or(""),
@@ -40,7 +50,7 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
         .find(|p| p.id == profile_id)
         .cloned()
         .unwrap_or_default();
-    let profile = account_profile(existing, profile_id, key, model.clone(), models);
+    let profile = account_profile(existing, profile_id, key, model.clone(), models)?;
     settings.active_relay_id = profile.id.clone();
     settings.relay_profiles.retain(|p| p.id != profile.id);
     settings.relay_profiles.push(profile);
@@ -63,8 +73,14 @@ fn account_profile(
     key: String,
     model: String,
     models: Vec<String>,
-) -> RelayProfile {
-    RelayProfile {
+) -> Result<RelayProfile, String> {
+    // 配置模板优先于 profile.model；显式选模型时必须同步更新，保留其他高级项。
+    let mut config = existing
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| "已有供应商配置格式无效，请先修复配置后再切换模型")?;
+    config["model"] = toml_edit::value(model.as_str());
+    Ok(RelayProfile {
         id: profile_id,
         name: "FastAiApi".into(),
         model,
@@ -79,8 +95,9 @@ fn account_profile(
         active_api_key_id: "account".into(),
         relay_mode: RelayMode::PureApi,
         model_list: models.join("\n"),
+        config_contents: config.to_string(),
         ..existing
-    }
+    })
 }
 
 pub fn install_media_skill() -> Result<(), String> {
@@ -114,6 +131,7 @@ mod tests {
     #[test]
     fn model_switch_preserves_context_settings() {
         let existing = RelayProfile {
+            config_contents: "model = \"gpt-old\"\nmodel_reasoning_effort = \"high\"\n".into(),
             context_window: "200000".into(),
             auto_compact_limit: "160000".into(),
             model_windows: r#"{"gpt-5.6-sol":"200000"}"#.into(),
@@ -125,11 +143,22 @@ mod tests {
             "test-only".into(),
             "gpt-5.6-sol".into(),
             vec!["gpt-5.6-sol".into()],
-        );
+        )
+        .unwrap();
         assert_eq!(updated.context_window, "200000");
         assert_eq!(updated.auto_compact_limit, "160000");
         assert!(updated.model_windows.contains("200000"));
         assert_eq!(updated.model, "gpt-5.6-sol");
+        assert_eq!(
+            codex_plus_core::relay_config::relay_profile_model(&updated),
+            "gpt-5.6-sol"
+        );
+        assert!(
+            updated
+                .config_contents
+                .contains("model_reasoning_effort = \"high\"")
+        );
+        assert!(!updated.config_contents.contains("gpt-old"));
     }
     #[test]
     fn bundled_skill_installs_complete_and_preserves_user_changes() {

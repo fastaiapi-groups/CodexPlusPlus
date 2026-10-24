@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { FastAiApiGate } from "./fastaiapi/Account";
 import "./styles.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
@@ -12,5 +13,5 @@ import "@fontsource/jetbrains-mono";
 const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
-  createRoot(app).render(<App />);
+  createRoot(app).render(<FastAiApiGate><App /></FastAiApiGate>);
 }

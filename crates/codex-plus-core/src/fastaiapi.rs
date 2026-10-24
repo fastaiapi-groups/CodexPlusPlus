@@ -1,11 +1,11 @@
-//! FastAiApi 账户接口。固定来源、禁用重定向，凭据只留在原生进程内。
+//! FastAiApi 账户接口。固定来源、禁用重定向，凭据由原生层和系统凭据库管理。
 use serde_json::{Value, json};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 static TOKEN: OnceLock<Mutex<String>> = OnceLock::new();
 fn token() -> &'static Mutex<String> {
-    TOKEN.get_or_init(|| Mutex::new(String::new()))
+    TOKEN.get_or_init(|| Mutex::new(crate::fastaiapi_session::load().unwrap_or_default()))
 }
 
 fn route(action: &str, id: &str) -> Result<(&'static str, String), String> {
@@ -76,6 +76,7 @@ async fn request(method: &str, path: &str, body: &Value, bearer: &str) -> Result
 
 pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, String> {
     if action == "logout" {
+        crate::fastaiapi_session::clear()?;
         *token().lock().map_err(|_| "账户状态不可用")? = String::new();
         return Ok(json!({}));
     }
@@ -95,7 +96,9 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             .filter(|s| !s.is_empty())
             .ok_or("登录需要额外验证，请在平台网站完成")?;
         *token().lock().map_err(|_| "账户状态不可用")? = access.to_owned();
+        let persistent = crate::fastaiapi_session::save(access);
         data = data["user"].clone();
+        data["session_persistent"] = json!(persistent);
     }
     if action == "create_key" {
         if let Some(obj) = data.as_object_mut() {

@@ -1,16 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 const logo = new URL("./logo.svg", import.meta.url).href;
 import "./account.css";
+import "./gate.css";
+import { ModelPicker } from "./ModelPicker";
+import { configureAccount } from "./onboarding";
 
-type User = { email: string; username?: string; balance: number };
+type User = { email: string; username?: string; balance: number; session_persistent?: boolean };
 type Key = { id: number; name: string; status: string };
 type Package = { id: string; name: string; amount_cents: number; credit: string };
 type Order = { id: string; status: string; amount_cents: number; credit: string; gateway_status: string; payment_type: string; reversed_at?: string };
 type Checkout = { order: Order; state: string; qr_code?: string; qr_kind?: string };
 const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", { action, body, id });
 
-export default function Account() {
+const AccountView = createContext<ReactNode>(null);
+export default function Account() { return useContext(AccountView); }
+
+// 根入口只包一层；登录状态和账户卡片共享生命周期，不修改上游 App 的路由。
+export function FastAiApiGate({children}: {children: ReactNode}) {
+  const [restoring, setRestoring] = useState(true);
   const [user, setUser] = useState<User | null>(null), [register, setRegister] = useState(false);
   const [email, setEmail] = useState(""), [password, setPassword] = useState(""), [confirm, setConfirm] = useState("");
   const [code, setCode] = useState(""), [invitation, setInvitation] = useState("");
@@ -22,41 +30,69 @@ export default function Account() {
   const work = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch(e) { setError(String(e)); } finally { setBusy(false); } };
   const refresh = async () => setUser(await api<User>("me"));
   const loadKeys = async () => { const data = await api<{items: Key[]}>("keys"); setKeys(data.items ?? []); return data.items ?? []; };
-  useEffect(() => { api<typeof settings>("settings").then(setSettings).catch(e => setError(String(e))); api<User>("me").then(u => { setUser(u); void loadKeys(); }).catch(() => {}); }, []);
+  const configure = async (available: Key[]) => {
+    const configured = await configureAccount(available, {
+      groups: () => api("groups"),
+      createKey: groupId => api("create_key", {name: "Codex++ FastAiApi", group_id: groupId}),
+      models: keyId => invoke("fastaiapi_models", {keyId}),
+      current: () => api("configuration"),
+      apply: (keyId, model) => invoke("fastaiapi_configure", {keyId, model}),
+    });
+    setKeyId(configured.id); setModels(configured.models); setModel(configured.model);
+    await loadKeys();
+    setNotice("已自动配置模型服务，可以启动 Codex。");
+  };
+  useEffect(() => {
+    api<typeof settings>("settings").then(setSettings).catch(e => setError(String(e)));
+    api<User>("me").then(async u => {
+      setUser(u);
+      const available = await loadKeys();
+      const selected = available.find(k => k.status === "active" && k.name === "Codex++ FastAiApi");
+      if (selected) {
+        setKeyId(selected.id);
+        const list = await invoke<string[]>("fastaiapi_models", {keyId: selected.id});
+        setModels(list);
+        const current = await api<{key_id?: number; model?: string}>("configuration");
+        if (current.key_id === selected.id) setModel(current.model ?? "");
+        // 恢复会话仅展示已有默认模型，不覆盖配置。
+      }
+    }).catch(() => {}).finally(() => setRestoring(false));
+  }, []);
   const login = () => work(async () => {
     if (register && password !== confirm) throw new Error("两次密码不一致");
     const u = await api<User>(register ? "register" : "login", {email, password, verify_code: code, invitation_code: invitation || undefined});
-    setUser(u); setPassword(""); setConfirm(""); const available = (await loadKeys()).filter(k => k.status === "active");
-    if (available.length === 1) {
-      const id = available[0].id; const list = await invoke<string[]>("fastaiapi_models", {keyId: id});
-      setKeyId(id); setModels(list);
-      const preferred = list.find(m => m === "gpt-5.6-sol") ?? list.find(m => /^(gpt-|deepseek|claude|qwen|glm|kimi)/i.test(m) && !/image|audio|video|realtime|tts|embedding/i.test(m));
-      setModel(preferred ?? "");
-      if (preferred) { await invoke("fastaiapi_configure", {keyId: id, model: preferred}); setNotice("已登录并自动配置模型服务，可以启动 Codex。"); return; }
-    }
-    setNotice("已登录，请选择对话分组 Key 和模型，完成配置后启动 Codex。");
+    setUser(u); setPassword(""); setConfirm("");
+    await configure(await loadKeys());
+    if (!u.session_persistent) setNotice("模型服务已配置。系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
   });
   const selectKey = (id: number) => work(async () => {
     setKeyId(id); setModels([]); setModel(""); setNotice("");
-    const list = await invoke<string[]>("fastaiapi_models", {keyId: id}); setModels(list); setModel(list[0] ?? "");
+    const list = await invoke<string[]>("fastaiapi_models", {keyId: id}); setModels(list);
+    const current = await api<{key_id?: number; model?: string}>("configuration");
+    if (current.key_id === id) setModel(current.model ?? "");
     if (!list.length) setNotice("该 Key 没有可用的对话模型，请选择对话分组 Key。");
   });
-  return <section className="fast-account" aria-label="FastAiApi 账户">
-    <header><img src={logo} alt="FastAiApi"/><div><h2>FastAiApi</h2><p>{user ? user.email : "登录账号，连接模型，开始工作。"}</p></div>{user && <div className="fast-balance"><small>API 余额（美元额度）</small><strong>{Number.isFinite(user.balance) ? `$${user.balance.toFixed(2)}` : "暂不可用"}</strong></div>}</header>
+  const card = <section className="fast-account" aria-label="FastAiApi 账户">
+    <header><img src={logo} alt="FastAiApi"/><div><h2>FastAiApi {user && <span className="fast-connected">已连接</span>}</h2><p>{user ? user.email : "登录账号，连接模型，开始工作。"}</p></div>{user && <div className="fast-balance"><small>API 余额（美元额度）</small><strong>{Number.isFinite(user.balance) ? `$${user.balance.toFixed(2)}` : "暂不可用"}</strong></div>}</header>
     {error && <p role="alert" className="fast-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {!user ? <form onSubmit={e => { e.preventDefault(); void login(); }}>
       <nav><button type="button" onClick={() => setRegister(false)} aria-pressed={!register}>登录</button><button type="button" onClick={() => setRegister(true)} aria-pressed={register}>注册账号</button></nav>
-      <div className="fast-fields"><label>邮箱<input type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}/></label><label>密码<input type="password" minLength={8} autoComplete={register ? "new-password" : "current-password"} required value={password} onChange={e => setPassword(e.target.value)}/></label>
+      <h2>{register ? "创建你的账号" : "欢迎回来"}</h2><p>{register ? "注册成功后自动完成 Codex 配置。" : "登录后自动连接模型服务。"}</p><div className="fast-fields"><label>邮箱<input type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}/></label><label>密码<input type="password" minLength={8} autoComplete={register ? "new-password" : "current-password"} required value={password} onChange={e => setPassword(e.target.value)}/></label>
       {register && <><label>确认密码<input type="password" autoComplete="new-password" required value={confirm} onChange={e => setConfirm(e.target.value)}/></label>{settings?.email_verify_enabled && <label>邮箱验证码<div className="fast-row"><input required value={code} onChange={e => setCode(e.target.value)}/><button type="button" disabled={busy || !email} onClick={() => void work(async () => { await api("verify", {email}); setNotice("验证码已发送，请查收邮箱。"); })}>发送验证码</button></div></label>}{settings?.invitation_code_enabled && <label>邀请码<input value={invitation} onChange={e => setInvitation(e.target.value)}/></label>}</>}
-      </div><button disabled={busy || (register && (!settings || !settings.registration_enabled))} type="submit">{busy ? "处理中…" : register ? "注册并登录" : "登录 FastAiApi"}</button>
+      </div><button disabled={busy || (register && (!settings || !settings.registration_enabled))} type="submit">{busy ? "处理中…" : register ? "注册并自动配置" : "登录并自动配置"}</button>
+      <p className="fast-muted">密码不会保存在本机。macOS 登录状态保存在系统钥匙串，到期后需重新登录。</p>
     </form> : <>
-      <div className="fast-row"><span>模型服务 https://fastaiapi.cloud/v1</span><button disabled={busy} onClick={() => void work(refresh)}>刷新余额</button><button onClick={() => void work(async () => { setPackages(await api<Package[]>("packages")); setOrders(await api<Order[]>("orders")); setRecharge(true); })}>去充值</button><button onClick={() => void work(async () => { await api("logout"); setUser(null); setKeys([]); setModels([]); setRecharge(false); setNotice("已退出账户；已配置的模型服务可在供应商配置中管理。"); })}>退出登录</button></div>
-      <div className="fast-row"><label>对话 API Key<select value={keyId} disabled={busy} onChange={e => void selectKey(Number(e.target.value))}><option value={0} disabled>选择账户 Key</option>{keys.filter(k => k.status === "active").map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label><label>切换模型<select value={model} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m}>{m}</option>)}</select></label><button disabled={busy || !model} onClick={() => void work(async () => { await invoke("fastaiapi_configure", {keyId, model}); setNotice("模型服务已配置。点击右上角启动或重启 Codex 生效。"); })}>应用模型配置</button></div>
+      <div className="fast-row"><span>模型服务 https://fastaiapi.cloud/v1</span><button disabled={busy} onClick={() => void work(refresh)}>刷新余额</button><button disabled={busy} onClick={() => void work(async () => { setPackages(await api<Package[]>("packages")); setOrders(await api<Order[]>("orders")); setRecharge(true); })}>去充值</button><button onClick={() => void work(async () => { await invoke("open_external_url", {url: "https://fastaiapi.cloud"}); })}>平台网站 ↗</button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); setUser(null); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出账户；已配置的模型服务可在供应商配置中管理。"); })}>退出登录</button></div>
+      <ModelPicker models={models} value={model} busy={busy} onReload={() => void selectKey(keyId)} onApply={next => void work(async () => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); })}/>
+      <details><summary>高级：API Key 与自动配置</summary><div className="fast-row"><label>对话 API Key<select value={keyId} disabled={busy} onChange={e => void selectKey(Number(e.target.value))}><option value={0} disabled>选择账户 Key</option>{keys.filter(k => k.status === "active").map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label><button disabled={busy} onClick={() => void work(async () => configure(await loadKeys()))}>重试自动配置</button></div></details>
       <details><summary>创建专用 API Key</summary><button disabled={busy} onClick={() => void work(async () => setGroups(await api("groups")))}>读取可用分组</button><select aria-label="模型分组" value={group} onChange={e => setGroup(e.target.value)}><option value="">选择对话模型分组</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select><button disabled={busy || !group} onClick={() => void work(async () => { await api("create_key", {name: "Codex++ FastAiApi", group_id: Number(group)}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。"); })}>创建 Key</button></details>
       {recharge && <Recharge packages={packages} orders={orders} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>}
     </>}
     <p className="fast-muted">内置图片 / Grok / H3 技能随应用提供。图片、Grok 和 H3 分别使用各自分组密钥；H3 使用 newapi.fastaiapi.cloud。</p>
   </section>;
+  if (restoring) return <div className="fast-gate fast-loading" role="status">正在恢复 FastAiApi 登录状态…</div>;
+  if (user) return <AccountView.Provider value={card}>{children}</AccountView.Provider>;
+  return <main className="fast-gate"><div className="fast-intro"><small>CODEX · 开始工作</small><div className="fast-wordmark"><img src={logo} alt=""/><h1>FastAi<span>Api</span></h1></div><p>登录账号，连接模型，开始工作。</p><ol><li>登录或注册</li><li>自动配置密钥</li><li>启动 Codex</li></ol><small>默认模型 gpt-5.6-sol</small></div>{card}</main>;
 }
 
 function Recharge({packages, orders, onClose, onPaid}: {packages: Package[]; orders: Order[]; onClose: () => void; onPaid: () => void}) {
