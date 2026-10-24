@@ -1,0 +1,1702 @@
+/* apps/codex-plus-manager/src/fastaiapi/account.css */
+.fast-account {
+  padding: 26px;
+  border: 1px solid #2b5356;
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      120deg,
+      #14272b,
+      #171b27);
+  color: #e7eeee;
+  margin-bottom: 22px;
+}
+.fast-account header,
+.fast-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.fast-account header img {
+  width: 56px;
+  height: 56px;
+}
+.fast-account h2 {
+  font-size: 26px;
+  margin: 0;
+}
+.fast-account p {
+  margin: 12px 0;
+  line-height: 1.6;
+}
+.fast-balance {
+  margin-left: auto;
+  display: grid;
+}
+.fast-balance strong {
+  font-size: 30px;
+}
+.fast-account button {
+  background: #2dd4bf;
+  color: #072b29;
+  border-radius: 8px;
+  padding: 10px 16px;
+  border: 0;
+  cursor: pointer;
+  margin: 6px 6px 6px 0;
+}
+.fast-account button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+.fast-account input,
+.fast-account select {
+  background: #111c25;
+  color: #f1f5f9;
+  border: 1px solid #42565e;
+  border-radius: 8px;
+  padding: 11px;
+  min-width: 160px;
+  max-width: 100%;
+}
+.fast-account label {
+  display: grid;
+  gap: 7px;
+}
+.fast-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+.fast-account nav button[aria-pressed=false] {
+  background: #273640;
+  color: #e7eeee;
+}
+.fast-error {
+  color: #ffb6b6;
+}
+.fast-muted {
+  color: #a4b9bd;
+  font-size: 12px;
+}
+.fast-payment {
+  border-top: 1px solid #42565e;
+  margin-top: 20px;
+  padding-top: 20px;
+}
+.fast-payment label {
+  margin: 14px 0;
+}
+.fast-qr {
+  display: block;
+  width: 280px;
+  height: 280px;
+  background: white;
+  padding: 10px;
+  border-radius: 10px;
+}
+.fast-account details {
+  margin: 16px 0;
+}
+.fast-account summary {
+  cursor: pointer;
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/overview.css */
+.fast-account.is-connected {
+  padding: 28px 30px 0;
+  border: 1px solid #ffffff12;
+  border-radius: 20px;
+  background:
+    radial-gradient(
+      ellipse at 0 0,
+      #29bca510,
+      transparent 60%),
+    #171c25;
+  box-shadow: 0 12px 40px #00000012;
+  color: #e9eff5;
+  overflow: hidden;
+}
+.fast-account.is-connected button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: #ffffff06;
+  color: #b6c2cf;
+  border: 1px solid #ffffff12;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 9px 13px;
+  margin: 0;
+  border-radius: 9px;
+  transition: background .15s, border-color .15s;
+}
+.fast-account.is-connected button:hover:not(:disabled) {
+  background: #ffffff0e;
+  border-color: #ffffff26;
+  color: #eef4fa;
+}
+.fast-account.is-connected button:focus-visible {
+  outline: 2px solid #49d4bf;
+  outline-offset: 3px;
+}
+.fast-account.is-connected .fast-primary {
+  background: #37c9b2;
+  color: #062d28;
+  border-color: #37c9b2;
+  font-weight: 650;
+  padding: 12px 17px;
+  box-shadow: 0 3px 14px #25b59f16;
+}
+.fast-account.is-connected .fast-primary:hover:not(:disabled) {
+  background: #53d8c2;
+  color: #062d28;
+  border-color: #53d8c2;
+}
+.fast-account.is-connected .fast-account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 24px;
+  flex-wrap: wrap;
+}
+.fast-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.fast-account.is-connected .fast-brand img {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+}
+.fast-brand-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.fast-account.is-connected h2 {
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -.7px;
+}
+.fast-account.is-connected .fast-brand p {
+  font-size: 13px;
+  color: #97a6b5;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+.fast-account.is-connected .fast-connected {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  border: 1px solid #40c8a528;
+  background: #24b29510;
+  color: #5cd0b7;
+  padding: 4px 7px;
+  border-radius: 6px;
+}
+.fast-connected i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fast-wallet {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+.fast-wallet-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #93a3b4;
+  font-size: 12px;
+}
+.fast-account.is-connected .fast-icon-button {
+  padding: 4px;
+  border: 0;
+  background: none;
+}
+.fast-wallet strong {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.fast-wallet strong small {
+  font-size: 10px;
+  color: #7c8c9d;
+  font-weight: 500;
+  letter-spacing: 1px;
+}
+.fast-service-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  border-top: 1px solid #ffffff0b;
+  border-bottom: 1px solid #ffffff0b;
+  padding: 22px 0;
+}
+.fast-endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fast-endpoint > span,
+.fast-models .fast-row > span > small {
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: #8596a7;
+}
+.fast-endpoint strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.fast-endpoint strong span {
+  color: #8b9cad;
+}
+.fast-endpoint small {
+  font-size: 11px;
+  color: #65798d;
+}
+.fast-models .fast-row {
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  height: 100%;
+}
+.fast-models .fast-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fast-models .fast-row > span > strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.fast-models .fast-row > button {
+  white-space: nowrap;
+}
+.fast-models fieldset {
+  background: #111720;
+  border-color: #ffffff12;
+}
+.fast-model-options label {
+  font-size: 13px;
+}
+.fast-model-options input {
+  accent-color: #37c9b2;
+}
+.fast-model-options small {
+  font-size: 10px;
+}
+.fast-account.is-connected .fast-advanced {
+  margin: 0;
+  padding: 15px 0;
+  color: #97a6b5;
+  font-size: 12px;
+}
+.fast-advanced > summary {
+  list-style: none;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.fast-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.fast-advanced > summary:before {
+  content: "\203a";
+  font-size: 19px;
+  line-height: 1;
+  color: #5f7488;
+}
+.fast-advanced[open] > summary:before {
+  transform: rotate(90deg);
+}
+.fast-advanced > summary > span {
+  margin-left: auto;
+  font-size: 11px;
+  color: #63778c;
+}
+.fast-advanced > .fast-row {
+  padding-top: 18px;
+}
+.fast-advanced label {
+  font-size: 12px;
+}
+.fast-account.is-connected .fast-advanced select {
+  padding: 8px;
+  font-size: 12px;
+  background: #111720;
+  border-color: #ffffff14;
+}
+.fast-account.is-connected .fast-advanced details {
+  border-top: 1px solid #ffffff0b;
+  padding-top: 14px;
+}
+.fast-account-footer {
+  border-top: 1px solid #ffffff0b;
+  margin: 0 -30px;
+  padding: 13px 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: #080c121c;
+}
+.fast-account-footer > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: #70879a;
+}
+.fast-account-footer > div {
+  display: flex;
+  gap: 6px;
+}
+.fast-account.is-connected .fast-account-footer button {
+  border: 0;
+  background: none;
+  padding: 6px 8px;
+  color: #8c9caf;
+  font-size: 11px;
+}
+.fast-account.is-connected .fast-notice {
+  padding: 9px 12px;
+  background: #2bc5a209;
+  border: 1px solid #2bc5a21c;
+  color: #78c8b6;
+  font-size: 12px;
+  border-radius: 8px;
+  margin: 0 0 18px;
+}
+.fast-account.is-connected .fast-error {
+  background: #ef686810;
+  padding: 10px 12px;
+  border: 1px solid #ef686825;
+  border-radius: 8px;
+  font-size: 12px;
+}
+@media (max-width: 1050px) {
+  .fast-wallet {
+    margin-left: 70px;
+  }
+  .fast-service-grid {
+    grid-template-columns: 1fr;
+  }
+  .fast-account-footer {
+    flex-wrap: wrap;
+  }
+  .fast-models .fast-row {
+    justify-content: flex-start;
+    gap: 20px;
+  }
+}
+.fast-account.is-connected {
+  min-height: max-content;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.fast-account.is-connected .fast-advanced > .fast-row {
+  align-items: flex-end;
+}
+.fast-account.is-connected .fast-advanced label {
+  min-width: 0;
+  max-width: 100%;
+}
+.fast-account.is-connected .fast-advanced > details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.fast-account.is-connected .fast-advanced > details > summary {
+  width: 100%;
+}
+.fast-account.is-connected .fast-advanced > details:not([open]) {
+  display: block;
+}
+@media (max-width: 700px) {
+  .fast-account.is-connected {
+    padding: 20px 18px 0;
+  }
+  .fast-account.is-connected .fast-account-footer {
+    margin-inline: -18px;
+    padding-inline: 18px;
+  }
+  .fast-account.is-connected .fast-advanced > .fast-row {
+    align-items: stretch;
+  }
+  .fast-account.is-connected .fast-advanced label {
+    flex: 1 1 100%;
+  }
+  .fast-advanced > summary {
+    flex-wrap: wrap;
+  }
+  .fast-advanced > summary > span {
+    margin-left: 0;
+  }
+  .fast-wallet {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+}
+.screen:has(> .fast-account.is-connected) {
+  display: block;
+}
+.screen:has(> .fast-account.is-connected) > .panel {
+  margin-bottom: 14px;
+}
+.fast-account.is-connected {
+  overflow: visible;
+}
+.fast-account.is-connected .fast-account-footer {
+  border-radius: 0 0 20px 20px;
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/recharge.css */
+.fast-payment-dialog {
+  box-sizing: border-box;
+  border: 1px solid #e7eaf0;
+  border-radius: 24px;
+  padding: 0;
+  width: 560px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 64px);
+  margin: auto;
+  background: #fff;
+  color: #1c2635;
+  color-scheme: light;
+  box-shadow: 0 30px 120px #0005;
+  overflow: auto;
+  font-family: system-ui, sans-serif;
+}
+.fast-payment-dialog::backdrop {
+  background: #080e1ba6;
+  backdrop-filter: blur(7px);
+}
+.fast-dialog-content {
+  padding: 30px;
+}
+.fast-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+.fast-dialog-eyebrow {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  font-weight: 650;
+  color: #8493a4;
+}
+.fast-dialog-head h2 {
+  font-size: 24px;
+  letter-spacing: -.7px;
+  margin: 9px 0 0;
+  font-weight: 650;
+}
+.fast-payment-dialog button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  border: 1px solid #e2e7ee;
+  border-radius: 10px;
+  background: #f7f9fb;
+  color: #526173;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 550;
+}
+.fast-payment-dialog button:hover:not(:disabled) {
+  background: #edf2f6;
+}
+.fast-payment-dialog button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+.fast-payment-dialog button:focus-visible,
+.fast-payment-dialog summary:focus-visible {
+  outline: 2px solid #20ad95;
+  outline-offset: 3px;
+}
+.fast-payment-dialog .fast-dialog-close {
+  align-self: flex-start;
+  padding: 7px;
+  border: 0;
+  border-radius: 50%;
+  background: #f4f6f8;
+  color: #8090a0;
+}
+.fast-payment-dialog fieldset {
+  border: 0;
+  margin: 0 0 24px;
+  padding: 0;
+  min-width: 0;
+}
+.fast-payment-dialog legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 12px;
+}
+.fast-payment-dialog legend small {
+  font-size: 10px;
+  font-weight: 400;
+  color: #91a0b0;
+}
+.fast-package-picker > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 2px;
+}
+.fast-payment-dialog label {
+  cursor: pointer;
+  position: relative;
+  border: 1px solid #e5e9ee;
+  border-radius: 12px;
+  transition: border-color .15s, background .15s;
+}
+.fast-payment-dialog label:focus-within {
+  outline: 2px solid #1baa93;
+  outline-offset: 2px;
+}
+.fast-payment-dialog label.selected {
+  border-color: #39bba4;
+  background: #f0fbf7;
+}
+.fast-payment-dialog label > input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.fast-package-picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 10px;
+  text-align: center;
+}
+.fast-package-picker label > strong {
+  font-size: 23px;
+  letter-spacing: -.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.fast-package-picker strong small {
+  font-size: 13px;
+  margin-right: 2px;
+  font-weight: 500;
+}
+.fast-package-picker label > span {
+  font-size: 10px;
+  color: #8997a5;
+}
+.fast-package-picker label > svg {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  color: #1fa88e;
+}
+.fast-channel-picker > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.fast-channel-picker label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px;
+}
+.fast-channel-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 33px;
+  height: 33px;
+  border-radius: 9px;
+  background: #139ce9;
+}
+.fast-channel-icon.wxpay {
+  background: #19b965;
+}
+.fast-channel-icon img {
+  width: 23px;
+  height: 23px;
+  filter: brightness(0) invert(1);
+}
+.fast-channel-picker label > span:not(.fast-channel-icon) {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 550;
+}
+.fast-channel-picker label small {
+  font-size: 9px;
+  font-weight: 400;
+  color: #93a1ae;
+}
+.fast-channel-picker label > i {
+  margin-left: auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid #d6dee6;
+  display: grid;
+  place-items: center;
+}
+.fast-channel-picker label.selected > i {
+  background: #20ae94;
+  border-color: #20ae94;
+  color: white;
+}
+.fast-payment-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-top: 1px solid #edf0f4;
+  padding: 18px 0;
+}
+.fast-payment-total > span {
+  font-size: 12px;
+  color: #8593a2;
+}
+.fast-payment-total strong {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -.6px;
+}
+.fast-payment-dialog .fast-pay-primary {
+  width: 100%;
+  border-color: #122e2b;
+  background: #122e2b;
+  color: white;
+  padding: 14px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+.fast-payment-dialog .fast-pay-primary:hover:not(:disabled) {
+  background: #1b4640;
+}
+.fast-payment-security {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  color: #93a0ad;
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 16px 0 0;
+}
+.fast-payment-error {
+  padding: 12px;
+  border: 1px solid #f0d6ce;
+  background: #fff6f3;
+  border-radius: 10px;
+  color: #b5654d;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.fast-recent-orders {
+  margin-top: 22px;
+  border-top: 1px solid #edf0f4;
+  padding-top: 16px;
+}
+.fast-recent-orders summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #768798;
+}
+.fast-recent-orders summary > span {
+  float: right;
+  color: #9ca8b5;
+}
+.fast-recent-orders > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f2f5;
+}
+.fast-recent-orders .fast-channel-icon {
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+}
+.fast-recent-orders .fast-channel-icon img {
+  width: 17px;
+  height: 17px;
+}
+.fast-recent-orders > div > span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.fast-recent-orders strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+.fast-recent-orders small {
+  font-size: 10px;
+  color: #95a1ad;
+  margin-left: 6px;
+}
+.fast-recent-orders code {
+  font-size: 9px;
+  color: #a0aab4;
+  overflow-wrap: anywhere;
+}
+.fast-recent-orders button {
+  font-size: 10px;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.fast-recent-orders > p {
+  font-size: 12px;
+  color: #8492a1;
+}
+.fast-scan-view {
+  text-align: center;
+}
+.fast-scan-channel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  font-weight: 550;
+}
+.fast-scan-amount {
+  display: block;
+  font-size: 40px;
+  font-weight: 650;
+  letter-spacing: -1.5px;
+  margin-top: 16px;
+  line-height: 1.2;
+}
+.fast-scan-amount > small {
+  font-size: 22px;
+  margin-right: 3px;
+}
+.fast-scan-credit {
+  color: #93a0ad;
+  font-size: 11px;
+  margin: 6px 0 20px;
+}
+.fast-qr-frame {
+  box-sizing: border-box;
+  width: 260px;
+  height: 260px;
+  max-width: 100%;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #fff;
+  border: 1px solid #e5eaf0;
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: 0 6px 26px #14283e08;
+  color: #8c9aab;
+  font-size: 12px;
+}
+.fast-qr-frame > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.fast-qr-frame.is-paid {
+  background: #f2fbf7;
+  color: #20a37f;
+  border-color: #d5eee4;
+}
+.fast-scan-tip {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #536475;
+  margin: 18px 0;
+}
+.fast-scan-tip > span {
+  font-size: 11px;
+  color: #99a5b1;
+}
+.fast-order-id {
+  margin: 17px 0;
+  color: #9ca7b3;
+  font-size: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fast-order-id code {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.fast-scan-actions {
+  display: grid;
+  gap: 9px;
+}
+@media (max-width: 560px) {
+  .fast-dialog-content {
+    padding: 22px;
+  }
+  .fast-payment-dialog {
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+  .fast-channel-picker > div {
+    grid-template-columns: 1fr;
+  }
+  .fast-package-picker > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/gate.css */
+.fast-gate {
+  box-sizing: border-box;
+  height: 100vh;
+  width: 100%;
+  padding: 5vh 7vw;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: safe center;
+  gap: 6vw;
+  background:
+    radial-gradient(
+      ellipse at top left,
+      #123a3e 0,
+      transparent 65%),
+    #10141e;
+  color: #e7eeee;
+  font-family: system-ui, sans-serif;
+  overflow: auto;
+}
+.fast-intro small {
+  color: #5ecdbd;
+  letter-spacing: 2px;
+}
+.fast-intro > p {
+  font-size: 22px;
+  color: #c3cdd4;
+}
+.fast-wordmark {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin-top: 32px;
+}
+.fast-wordmark img {
+  width: 76px;
+  height: 76px;
+}
+.fast-wordmark h1 {
+  font-size: clamp(32px, 4vw, 54px);
+  margin: 0;
+  font-weight: 700;
+}
+.fast-wordmark span {
+  color: #31cdbb;
+}
+.fast-intro ol {
+  list-style: decimal-leading-zero;
+  padding-left: 28px;
+  margin: 60px 0;
+  display: grid;
+  gap: 28px;
+  color: #bfccd2;
+}
+.fast-gate > .fast-account {
+  margin: 0;
+  padding: 30px 36px;
+  background: #ffffff04;
+  border-color: #36434d;
+  border-radius: 28px;
+  box-shadow: 0 12px 40px #0002;
+}
+.fast-gate .fast-account > header,
+.fast-gate .fast-account > .fast-muted {
+  display: none;
+}
+.fast-gate .fast-fields {
+  grid-template-columns: 1fr;
+}
+.fast-gate .fast-account nav {
+  display: flex;
+  background: #0c1822;
+  border-radius: 10px;
+  margin: 0 0 30px;
+}
+.fast-gate .fast-account nav button {
+  flex: 1;
+  margin: 0;
+  background: #344b58;
+  color: #eef2f4;
+}
+.fast-gate .fast-account nav button[aria-pressed=false] {
+  background: transparent;
+  color: #a9bac4;
+}
+.fast-gate form > button {
+  width: 100%;
+  margin-top: 18px;
+}
+.fast-gate input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.fast-gate label {
+  color: #bdc8cf;
+}
+.fast-gate .fast-fields input {
+  min-height: 46px;
+}
+.fast-gate .fast-row {
+  flex-wrap: nowrap;
+}
+.fast-gate .fast-row button {
+  white-space: nowrap;
+}
+.fast-loading {
+  display: grid;
+  place-items: center;
+}
+.fast-connected {
+  font-size: 13px;
+  font-weight: 400;
+  background: #13483e;
+  color: #5ce1ba;
+  padding: 5px 9px;
+  border-radius: 5px;
+  vertical-align: middle;
+}
+.fast-models fieldset {
+  border: 1px solid #42565e;
+  border-radius: 10px;
+  padding: 18px;
+  margin-top: 12px;
+}
+.fast-models fieldset > input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+.fast-model-options {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+.fast-model-options label {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  background: #ffffff05;
+  border-radius: 8px;
+}
+.fast-model-options input {
+  min-width: 0;
+  width: auto;
+}
+.fast-model-options small {
+  margin-left: auto;
+  color: #54d7ba;
+}
+@media (max-width: 760px) {
+  .fast-gate {
+    grid-template-columns: 1fr;
+    padding: 28px 20px;
+    gap: 28px;
+  }
+  .fast-intro ol,
+  .fast-intro > small:last-child {
+    display: none;
+  }
+  .fast-wordmark {
+    margin-top: 12px;
+  }
+  .fast-gate > .fast-account {
+    padding: 24px;
+  }
+  .fast-intro > p {
+    font-size: 16px;
+  }
+}
+.fast-gate .fast-remember {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.fast-gate .fast-remember input {
+  width: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  height: 16px;
+  accent-color: #2dd4bf;
+  margin: 0;
+}
+.fast-gate.fast-loading {
+  grid-template-columns: 1fr;
+  text-align: center;
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/responsive.css */
+.fast-key-dialog .fast-dialog-content {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 66px);
+  box-sizing: border-box;
+  gap: 18px;
+}
+.fast-key-dialog .fast-dialog-head {
+  margin: 0;
+  flex-shrink: 0;
+}
+.fast-key-intro {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #269f8c;
+  flex-shrink: 0;
+}
+.fast-key-intro p {
+  color: #526173;
+  font-size: 13px;
+  margin: 0;
+  line-height: 1.6;
+}
+.fast-key-intro small {
+  display: block;
+  color: #91a0af;
+  font-size: 11px;
+}
+.fast-key-dialog .fast-group-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #dfe6eb;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: #8b99a7;
+  flex-shrink: 0;
+}
+.fast-group-search input {
+  border: 0;
+  outline: 0;
+  min-width: 0;
+  flex: 1;
+  background: transparent;
+  color: #1c2635;
+  font: inherit;
+  font-size: 13px;
+}
+.fast-key-dialog .fast-group-list {
+  overflow: auto;
+  min-height: 70px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 3px;
+  flex: 1;
+}
+.fast-group-list label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  font-size: 13px;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+}
+.fast-group-list label span {
+  flex: 1;
+  min-width: 0;
+}
+.fast-group-list label svg {
+  color: #20a58d;
+  flex-shrink: 0;
+}
+.fast-key-dialog .fast-pay-primary {
+  flex-shrink: 0;
+}
+@media (max-width: 800px) {
+  .fast-brand-title {
+    flex-wrap: wrap;
+  }
+  .fast-service-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fast-models,
+  .fast-endpoint {
+    min-width: 0;
+  }
+  .fast-models .fast-row > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+@media (max-height: 620px) {
+  .fast-payment-dialog {
+    max-height: calc(100dvh - 24px);
+  }
+  .fast-key-dialog .fast-dialog-content {
+    max-height: calc(100dvh - 26px);
+    padding: 18px;
+    gap: 12px;
+  }
+  .fast-key-intro {
+    display: none;
+  }
+}
+.fast-key-dialog .fast-group-search > input {
+  position: static;
+  opacity: 1;
+  width: 100%;
+  height: auto;
+}
+.fast-group-search input::placeholder {
+  color: #91a0af;
+}
+.fast-group-caption {
+  display: flex;
+  justify-content: space-between;
+  color: #536475;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.fast-group-caption span {
+  color: #91a0af;
+}
+.fast-key-dialog .fast-group-list {
+  border: 0;
+}
+.fast-key-dialog .fast-group-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 10px;
+}
+.fast-key-dialog .fast-group-list label {
+  min-width: 0;
+  min-height: 48px;
+  box-sizing: border-box;
+}
+.fast-group-list > p {
+  grid-column: 1/-1;
+}
+.fast-gate:not(.fast-loading) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.fast-gate > .fast-account,
+.fast-gate .fast-fields > label {
+  min-width: 0;
+}
+.fast-gate .fast-row input {
+  min-width: 0;
+}
+.fast-models .fast-model-options label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex-wrap: wrap;
+}
+.fast-payment-dialog .fast-dialog-head h2 {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .fast-gate:not(.fast-loading) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fast-gate .fast-row {
+    flex-wrap: wrap;
+  }
+  .fast-gate .fast-row input {
+    flex: 1 1 140px;
+  }
+  .fast-account.is-connected .fast-account-footer > div {
+    flex-wrap: wrap;
+  }
+}
+.fast-model-current {
+  margin: 0;
+  color: #8593a2;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.fast-model-current strong {
+  display: block;
+  color: #334353;
+  font-size: 14px;
+}
+.fast-model-hint {
+  margin: 0;
+  color: #8997a5;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.fast-model-dialog .fast-group-list small {
+  display: block;
+  color: #1f9e88;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.fast-model-dialog .fast-group-caption {
+  align-items: center;
+}
+.fast-model-dialog .fast-group-caption button {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.fast-key-dialog .fast-group-description {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: #8b99a7;
+  font-size: 11px;
+  line-height: 1.6;
+  font-weight: 400;
+}
+.fast-key-dialog .fast-group-description > span:first-child {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fast-key-dialog .fast-group-description > .fast-group-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  box-sizing: border-box;
+  border: 1px solid #a8b6c1;
+  border-radius: 50%;
+  font-size: 10px;
+  cursor: help;
+  color: #6d8394;
+}
+.fast-group-help:focus-visible {
+  outline: 2px solid #20a58d;
+  outline-offset: 2px;
+}
+.fast-group-preview {
+  display: block;
+  margin-top: 6px;
+  color: #8b99a7;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.fast-key-dialog .fast-group-list .fast-group-help {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid #a8b6c1;
+  border-radius: 50%;
+  background: transparent;
+  color: #6d8394;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fast-group-details {
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.fast-group-details-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #526173;
+  font-size: 14px;
+  line-height: 1.9;
+  margin: 0;
+}
+.fast-group-details h2 {
+  overflow-wrap: anywhere;
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/key-selector.css */
+.fast-account .fast-key-selector {
+  border: 0;
+  margin: 18px 0 0;
+  padding: 0;
+  min-width: 0;
+}
+.fast-key-selector legend {
+  padding: 0;
+  margin-bottom: 10px;
+  color: #97a6b5;
+  font-size: 12px;
+}
+.fast-key-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.fast-account.is-connected .fast-key-choices label {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: 1px solid #ffffff18;
+  border-radius: 10px;
+  background: #ffffff04;
+  color: #b6c2cf;
+  cursor: pointer;
+}
+.fast-key-choices label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fast-key-choices label svg {
+  flex-shrink: 0;
+  color: #49d4bf;
+}
+.fast-account .fast-key-choices input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+.fast-account.is-connected .fast-key-choices label.is-selected {
+  background: #2bc5a213;
+  border-color: #37c9b27a;
+  color: #b5eee1;
+}
+.fast-key-choices label:focus-within {
+  outline: 2px solid #49d4bf;
+  outline-offset: 3px;
+}
+.fast-key-selector:disabled label {
+  opacity: .55;
+  cursor: wait;
+}
+.fast-key-choices p {
+  margin: 0;
+  color: #8596a7;
+  font-size: 12px;
+}
+.fast-account.is-connected .fast-advanced > .fast-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.fast-key-retry {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 100%;
+}
+.fast-key-retry small {
+  font-size: 11px;
+  color: #70879a;
+  text-align: right;
+  line-height: 1.6;
+  max-width: 300px;
+}
+
+/* apps/codex-plus-manager/src/fastaiapi/support.css */
+.fast-support {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 1000px;
+  margin: 0 auto 24px;
+  padding: 28px;
+  background: var(--panel,#171c25);
+  border: 1px solid #8195ab25;
+  border-radius: 18px;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+.fast-support-intro > span {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #37bba5;
+}
+.fast-support h2 {
+  font-size: 26px;
+  margin: 12px 0;
+}
+.fast-support p {
+  line-height: 1.8;
+  color: #91a0b0;
+  font-size: 13px;
+}
+.fast-support fieldset {
+  border: 0;
+  padding: 0;
+  margin: 24px 0 0;
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+.fast-support label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.fast-support input,
+.fast-support select,
+.fast-support textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px;
+  border: 1px solid #8195ab35;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.fast-support select option {
+  color: #17212c;
+}
+.fast-support textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+.fast-support button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid #37bba555;
+  border-radius: 9px;
+  color: inherit;
+  background: #37bba51a;
+  cursor: pointer;
+}
+.fast-support button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+.fast-support small {
+  font-size: 11px;
+  color: #91a0b0;
+  line-height: 1.7;
+}
+.fast-support-submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.fast-support-submit button {
+  margin-left: auto;
+  background: #37c9b2;
+  color: #072b29;
+  flex-shrink: 0;
+}
+.fast-upload {
+  padding: 14px;
+  border: 1px dashed #8195ab55;
+  border-radius: 10px;
+}
+.fast-image-previews {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.fast-image-previews figure {
+  position: relative;
+  width: 150px;
+  margin: 12px 0 0;
+  max-width: 100%;
+}
+.fast-image-previews img {
+  width: 100%;
+  height: 100px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #8195ab12;
+}
+.fast-image-previews figcaption {
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.fast-image-previews button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 4px;
+  background: #17212c;
+  color: white;
+}
+.fast-support .fast-support-error {
+  color: #e78686;
+}
+.fast-support-success {
+  padding: 24px;
+  border: 1px solid #37bba555;
+  border-radius: 12px;
+}
+.fast-faqs {
+  margin-top: 20px;
+}
+.fast-faqs details {
+  padding: 16px 0;
+  border-bottom: 1px solid #8195ab25;
+}
+.fast-faqs summary {
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.fast-support-contacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 24px;
+}
+.fast-support-contacts h3 {
+  grid-column: 1/-1;
+}
+.fast-support-contacts article {
+  padding: 18px;
+  border: 1px solid #8195ab25;
+  border-radius: 12px;
+}
+.fast-support-contacts h4 {
+  margin-top: 0;
+}
+.screen:has(> .fast-support) {
+  display: block;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .fast-support {
+    padding: 18px;
+  }
+  .fast-support h2 {
+    font-size: 22px;
+  }
+  .fast-support-contacts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.fast-contact-qr {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  height: auto;
+  margin: 12px auto;
+  border-radius: 10px;
+  background: white;
+}
+.fast-support-contacts small {
+  display: block;
+}
+.fast-support .fast-contact-preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  margin: 12px 0;
+  background: transparent;
+  border: 0;
+}
+.fast-contact-preview .fast-contact-qr {
+  margin: 0;
+  max-height: 300px;
+  object-fit: contain;
+}
+.fast-contact-dialog {
+  width: min(540px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 16px;
+  border: 1px solid #8195ab55;
+  border-radius: 18px;
+  background: var(--panel,#fff);
+  color: var(--text,#17212c);
+  overflow: auto;
+  box-sizing: border-box;
+}
+.fast-contact-dialog::backdrop {
+  background: #07111dc0;
+  backdrop-filter: blur(4px);
+}
+.fast-contact-dialog header {
+  position: sticky;
+  top: -16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  background: var(--panel,#fff);
+}
+.fast-contact-dialog button {
+  padding: 8px 14px;
+  border: 1px solid #8195ab55;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.fast-contact-dialog > img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 110px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: auto;
+}

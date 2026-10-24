@@ -1,0 +1,42 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"sub-adds/backend/internal/feedback"
+)
+
+func (a *app) feedbackRoute(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != "POST" {
+		w.Header().Set("Allow", "POST")
+		failText(w, 405, "method not allowed")
+		return
+	}
+	uid, ok := a.userID(w, r)
+	if !ok {
+		return
+	}
+	var input feedback.Input
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 5*1024*1024))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil {
+		failText(w, 400, "反馈内容或截图格式无效")
+		return
+	}
+	if err := feedback.Validate(&input); err != nil {
+		failText(w, 400, err.Error())
+		return
+	}
+	id, err := a.feedback.Submit(r.Context(), uid, input)
+	if errors.Is(err, feedback.ErrRateLimit) {
+		failText(w, 429, err.Error())
+		return
+	}
+	if err != nil {
+		failText(w, 503, "反馈暂时无法保存，请稍后重试")
+		return
+	}
+	success(w, map[string]string{"id": id, "status": "received"})
+}
