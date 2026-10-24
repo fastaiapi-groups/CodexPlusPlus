@@ -47,3 +47,14 @@
 .fast-key-dialog .fast-group-choice-content .fast-group-name{flex:none;width:100%;overflow-wrap:anywhere}
 .fast-key-dialog .fast-group-choice-content .fast-group-rate-badge{margin:0;flex:none}
 @media(max-width:420px){.fast-key-dialog:not(.fast-model-dialog) .fast-group-list{grid-template-columns:minmax(0,1fr)}}
+
+/* 在线教程占满可用区域，正文由网页自身滚动。 */
+.screen.fast-api-guide-screen{display:flex;overflow:hidden;padding-bottom:18px}
+.fast-api-guide{display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden;border:1px solid #8593a230;border-radius:14px;background:var(--panel)}
+.fast-api-guide-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid #8593a225;color:var(--muted);font-size:12px}
+.fast-api-guide-toolbar>div{display:flex;gap:8px}
+.fast-api-guide-toolbar button{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid #8593a230;border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.fast-api-guide-toolbar button:hover{background:#20a58d12;color:#159b83}
+.fast-api-guide-toolbar button:focus-visible{outline:2px solid #20a58d;outline-offset:2px}
+.fast-api-guide iframe{display:block;flex:1;width:100%;min-height:0;border:0;background:#fff}
+@media(max-width:560px){.fast-api-guide-toolbar{flex-wrap:wrap}}
