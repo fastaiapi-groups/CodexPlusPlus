@@ -25,7 +25,7 @@ PROVIDERS = {"main": (ORIGIN, "FASTAIAPI_API_KEY"), "grok": (ORIGIN, "FASTAIAPI_
 HTTP_USER_AGENT = "Mozilla/5.0"
 
 
-MANAGED_ORIGINS = ("http://8.137.194.180:90", "https://tumeiapi.com")
+MANAGED_ORIGINS = ("http://8.137.194.180:90", "https://tumeiapi.com", "https://newapi.fastaiapi.cloud")
 MANAGED_DESCRIPTOR = Path(os.environ.get("FASTAIAPI_CONNECTION_FILE", str(Path(__file__).resolve().parents[1] / "connection.json")))
 
 def managed_connection():

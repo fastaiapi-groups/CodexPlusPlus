@@ -1,6 +1,6 @@
 # 图片生成与编辑
 
-Codex++ 托管模式优先使用当前路线及 default 分组的系统环境变量，下面的固定站点与独立 provider 配置仅适用于没有 connection.json 的独立技能。托管模式两条路线共用同一后台状态。
+Codex++ 托管模式优先使用当前路线及 default 分组的系统环境变量，下面的固定站点与独立 provider 配置仅适用于没有 connection.json 的独立技能。托管模式所有路线共用同一后台状态。
 
 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-flare` 与 `gpt-image-2.5-sunburst` 共用以下全部逻辑，仅请求 `model` 不同。
 

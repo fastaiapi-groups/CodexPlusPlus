@@ -1,4 +1,4 @@
-//! New API 账户适配。两条白名单路线共用同一后台会话；完整密钥不经过前端。
+//! New API 账户适配。白名单路线共用同一后台会话；完整密钥不经过前端。
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -6,7 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const ORIGINS: [&str; 2] = ["http://8.137.194.180:90", "https://tumeiapi.com"];
+pub const ORIGINS: [&str; 3] = [
+    "http://8.137.194.180:90",
+    "https://tumeiapi.com",
+    "https://newapi.fastaiapi.cloud",
+];
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Session {
     #[serde(default)]
@@ -1010,7 +1014,10 @@ mod tests {
             key_view(&json!({"status":1,"expired_time":-1,"remain_quota":0}))["status"],
             "inactive"
         );
-        assert_eq!(profile_id(0, 1), profile_id(1, 1));
+        for route in 1..ORIGINS.len() {
+            assert_eq!(profile_id(0, 1), profile_id(route, 1));
+            assert_eq!(service(0, "session"), service(route, "session"));
+        }
         assert_eq!(service(0, "session"), service(1, "session"));
     }
     #[test]

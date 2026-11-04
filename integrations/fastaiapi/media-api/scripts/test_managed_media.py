@@ -27,9 +27,10 @@ class ManagedMediaTests(unittest.TestCase):
             run=Path(directory)/"run"
             with patch.object(common,"managed_connection",return_value={"managed":True,"origin":common.MANAGED_ORIGINS[0]}):
                 api.prepare_run(run,api.image_request("gpt-image-2","test"))
-            with patch.object(common,"managed_connection",return_value={"managed":True,"origin":common.MANAGED_ORIGINS[1]}):
-                path,record,body=api.read_run(run,verify_body=True)
-                self.assertEqual(record["origin"],common.MANAGED_ORIGINS[0])
+            for origin in common.MANAGED_ORIGINS[1:]:
+                with patch.object(common,"managed_connection",return_value={"managed":True,"origin":origin}):
+                    path,record,body=api.read_run(run,verify_body=True)
+                    self.assertEqual(record["origin"],common.MANAGED_ORIGINS[0])
 
     def test_image_url_is_downloaded_and_recoverable_without_paid_resubmission(self):
         with tempfile.TemporaryDirectory() as directory:
