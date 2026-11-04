@@ -13,14 +13,14 @@ from pathlib import Path
 import sys
 import time
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import common
 from common import MediaError, json_bytes, read_json, write_private
 import h3
 import grok
 
-IMAGE_MODELS = ("gpt-image-2", "gpt-image-2.5")
+IMAGE_MODELS = ("gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
 VIDEO_MODELS = ("minimax-h3", "grok-imagine-video-1.5")
 MODELS = IMAGE_MODELS + VIDEO_MODELS
 SIZES = ("1024x1024", "720x1280", "1280x720", "1248x832", "1152x864", "864x1152",
@@ -82,7 +82,7 @@ def read_run(directory, verify_body=False):
     record = read_json(path / "receipt.json")
     if record.get("schema") != 2 or record.get("model") not in MODELS:
         raise MediaError("Unrecognized run receipt.")
-    if record.get("origin") != common.provider_origin(common.provider_for(record["model"])):
+    if record.get("origin") != common.provider_origin(common.provider_for(record["model"])) and not (common.managed_connection() and record.get("origin") in common.MANAGED_ORIGINS):
         raise MediaError("Run provider differs; refusing to send a job to another origin.")
     body = None
     if verify_body:
@@ -134,13 +134,25 @@ def collect_image(path, record, value):
     files = []
     for index, item in enumerate(items):
         encoded = item.get("b64_json") if isinstance(item, dict) else None
-        if not isinstance(encoded, str):
-            raise MediaError("Image response missing base64 content.")
-        if encoded.startswith("data:"):
-            encoded = encoded.partition(",")[2]
-        raw = base64.b64decode(encoded, validate=True)
+        if isinstance(encoded, str):
+            if encoded.startswith("data:"):
+                encoded = encoded.partition(",")[2]
+            raw = base64.b64decode(encoded, validate=True)
+        elif isinstance(item, dict) and isinstance(item.get("url"), str):
+            url = urljoin(record["origin"] + "/", item["url"])
+            temporary = path / f"image-{index + 1:03d}.download"
+            if not temporary.exists():
+                key = common.load_key(common.provider_for(record["model"])) if common.origin(url) == common.origin(record["origin"]) else None
+                common.download_file(url, temporary, key, provider=common.provider_for(record["model"]))
+            raw = temporary.read_bytes()
+        else:
+            raise MediaError("Image response missing base64 content or URL.")
         output = path / f"{record['model']}-{index + 1:03d}{image_extension(raw)}"
-        write_private(output, raw)
+        if output.exists():
+            if output.read_bytes() != raw:
+                raise MediaError("Image output already exists with different content.")
+        else:
+            write_private(output, raw)
         files.append({"path": str(output), "bytes": len(raw)})
         record["files"] = files
         save_record(path, record)
@@ -181,6 +193,7 @@ def submit(directory, *, retry_ambiguous=False, key=None):
             response = common.api_request("POST", route, key, body, headers,
                                           retry=False, timeout=300, provider=common.provider_for(record["model"]))
             if record["kind"] == "image":
+                write_private(path / "response.json", json_bytes(response))
                 collect_image(path, record, response)
             else:
                 record["job_id"] = response_job_id(response)
@@ -264,6 +277,10 @@ def download(directory, output):
             if all(Path(item["path"]).is_file() for item in record.get("files", [])):
                 return public_record(path, record)
             raise MediaError("Downloaded file is missing; preserve the receipt and inspect its recorded path.")
+        if record["kind"] == "image" and (path / "response.json").is_file():
+            collect_image(path, record, read_json(path / "response.json"))
+            save_record(path, record)
+            return public_record(path, record)
         if record["kind"] != "video" or not record.get("job_id"):
             raise MediaError("Download requires a submitted video job.")
         key = common.load_key(common.provider_for(record["model"]))
@@ -349,6 +366,30 @@ def image_batch(args):
     return manifest
 
 
+def audio_generate(model, text_file, output, voice="alloy"):
+    output = Path(output).expanduser().resolve()
+    receipt = output.with_name(output.name + ".receipt.json")
+    if output.exists() or receipt.exists():
+        raise MediaError("音频输出或提交回执已存在，请核对原任务，不重复提交。")
+    text = Path(text_file).read_text(encoding="utf-8").strip()
+    if not text or len(text) > 4096:
+        raise MediaError("音频文本须为 1–4096 字符。")
+    record = {"model": model, "origin": common.provider_origin("main"), "state": "submitting"}
+    write_private(receipt, json_bytes(record))
+    try:
+        raw = common.audio_request({"model":model, "input":text, "voice":voice, "response_format":"wav"}, common.load_key("main"))
+        if not (raw.startswith(b"RIFF") and raw[8:12] == b"WAVE"):
+            raise MediaError("音频响应不是请求的 WAV 格式。")
+        write_private(output, raw)
+        record.update(state="downloaded", files=[{"path":str(output),"bytes":len(raw)}])
+        write_private(receipt, json_bytes(record), replace=True)
+        return record
+    except Exception:
+        record["state"] = "submission_unknown"
+        write_private(receipt, json_bytes(record), replace=True)
+        raise
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     subs = p.add_subparsers(dest="command", required=True)
@@ -361,7 +402,7 @@ def parser():
     models.add_argument("--provider", choices=("main", "grok", "h3"), default="main")
     models.add_argument("--type", choices=("all", "image", "video"), default="all")
     prep = subs.add_parser("prepare", help="Prepare a new immutable request and receipt offline")
-    prep.add_argument("--model", required=True, choices=MODELS + ("grok",))
+    prep.add_argument("--model", default="minimax-h3", choices=MODELS + ("grok",))
     prep.add_argument("--prompt-file", type=Path, required=True)
     prep.add_argument("--run", type=Path, required=True)
     prep.add_argument("--size", choices=SIZES)
@@ -384,6 +425,11 @@ def parser():
             sub.add_argument("--job-id", required=True, help="Verified public task ID from this exact submission")
         elif name == "download":
             sub.add_argument("--output", type=Path, required=True)
+    audio = subs.add_parser("audio", help="Generate WAV speech using the selected route")
+    audio.add_argument("--model", default="gpt-4o-mini-tts")
+    audio.add_argument("--text-file", type=Path, required=True)
+    audio.add_argument("--output", type=Path, required=True)
+    audio.add_argument("--voice", default="alloy")
     img = subs.add_parser("image", help="Synchronous image generation/editing, optional parallel batch")
     img.add_argument("--model", choices=IMAGE_MODELS, default="gpt-image-2")
     img.add_argument("--prompt-file", type=Path, required=True)
@@ -410,6 +456,8 @@ def main(argv=None):
                                           retry=True, provider=args.provider)
             result = {"provider": args.provider, "models": [item["id"] for item in response.get("data", [])
                                   if isinstance(item, dict) and isinstance(item.get("id"), str)]}
+        elif args.command == "audio":
+            result = audio_generate(args.model, args.text_file, args.output, args.voice)
         elif args.command == "prepare":
             result = prepare_run(args.run, build_from_args(args))
         elif args.command == "submit":

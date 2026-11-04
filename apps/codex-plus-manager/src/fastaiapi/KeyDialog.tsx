@@ -7,10 +7,10 @@ import "./recharge.css";
 import "./responsive.css";
 export function KeyDialog({groups, loading, loadError, onRetry, onClose, onCreate}: {
   groups: AccountGroup[]; loading: boolean; loadError: string; onRetry: () => void;
-  onClose: () => void; onCreate: (id: number) => Promise<void>;
+  onClose: () => void; onCreate: (id: string) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [query, setQuery] = useState(""), [selected, setSelected] = useState<number | undefined>(groups[0]?.id);
+  const [query, setQuery] = useState(""), [selected, setSelected] = useState<string | undefined>(groups[0]?.id);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   useEffect(() => { setSelected(current => groups.some(g => g.id === current) ? current : groups[0]?.id); }, [groups]);
   useEffect(() => { const opener = document.activeElement as HTMLElement; dialog.current?.showModal(); return () => { dialog.current?.close(); opener?.focus(); }; }, []);

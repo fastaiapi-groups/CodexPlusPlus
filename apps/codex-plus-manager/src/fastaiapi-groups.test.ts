@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createGroupCache } from './fastaiapi/groupCache.ts';
 test('group cache coalesces requests and retains results for the login session', async () => {
   let calls = 0;
-  const cached = createGroupCache(async () => { calls++; return [{id:1,name:'gpt-pro'}]; });
+  const cached = createGroupCache(async () => { calls++; return [{id:'default',name:'default'}]; });
   await Promise.all([cached(), cached()]); await cached();
   assert.equal(calls, 1);
 });

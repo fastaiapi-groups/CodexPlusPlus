@@ -93,6 +93,7 @@ class MediaTests(unittest.TestCase):
                 request = client.return_value.open.call_args.args[0]
                 self.assertEqual(request.full_url, origin + "/v1/models")
                 self.assertEqual(request.get_header("Authorization"), "Bearer " + provider + "-secret")
+                self.assertEqual(request.get_header("User-agent"), common.HTTP_USER_AGENT)
         with self.assertRaises(common.MediaError):
             common.download_file(common.H3_ORIGIN + "/v1/videos/a/content", self.root / "x", "main-secret")
 
@@ -113,10 +114,16 @@ class MediaTests(unittest.TestCase):
     def test_image_models_differ_only_in_model(self):
         bodies = [json.loads(api.image_request(m, "Exact text", "1440x2560", [self.image]))
                   for m in api.IMAGE_MODELS]
-        self.assertNotEqual(bodies[0].pop("model"), bodies[1].pop("model"))
-        self.assertEqual(bodies[0], bodies[1])
+        models = [body.pop("model") for body in bodies]
+        self.assertEqual(models, list(api.IMAGE_MODELS))
+        for body in bodies[1:]:
+            self.assertEqual(body, bodies[0])
         self.assertEqual(bodies[0]["n"], 1)
         self.assertTrue(bodies[0]["images"][0].startswith("data:image/png;base64,"))
+
+    def test_image_default_size_is_small(self):
+        body = json.loads(api.image_request("gpt-image-2", "Exact text"))
+        self.assertEqual(body["size"], "1024x1024")
 
     def test_image_reference_limit(self):
         with self.assertRaises(common.MediaError):

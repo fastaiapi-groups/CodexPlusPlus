@@ -177,6 +177,7 @@ pub fn run() {
             fastaiapi_commands::fastaiapi_qr,
             fastaiapi_commands::fastaiapi_models,
             fastaiapi_commands::fastaiapi_configure,
+            fastaiapi_commands::fastaiapi_media_configure,
             agent_collaboration_commands::agent_collaboration_request,
             commands::backend_version,
             commands::startup_options,

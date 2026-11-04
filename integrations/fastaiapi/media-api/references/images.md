@@ -1,6 +1,8 @@
 # 图片生成与编辑
 
-`gpt-image-2` 与 `gpt-image-2.5` 共用以下全部逻辑，仅请求 `model` 不同。
+Codex++ 托管模式优先使用当前路线及 default 分组的系统环境变量，下面的固定站点与独立 provider 配置仅适用于没有 connection.json 的独立技能。托管模式两条路线共用同一后台状态。
+
+`gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-flare` 与 `gpt-image-2.5-sunburst` 共用以下全部逻辑，仅请求 `model` 不同。
 
 - 文生图：`POST /v1/images/generations`。
 - 本地参考图编辑：`POST /v1/images/edits`，最多四张参考图。
@@ -28,7 +30,9 @@ python3 <skill>/scripts/media_api.py image \
 图片 POST 不自动重试，避免同步请求超时或网关 5xx 后重复计费；需要重试时先解释已知状态，
 按现有授权重新准备所需失败项，而非重跑整个批次。
 
-默认 `1024x1024`。允许尺寸：
+默认 `1024x1024` 小图。用户未明确指定尺寸时必须保持该默认值，不根据质量描述、用途或提示词自行升级到更大尺寸；用户明确指定时使用对应的允许尺寸。
+
+允许尺寸：
 
 ```text
 1024x1024 720x1280 1280x720 1248x832 1152x864 864x1152 832x1248

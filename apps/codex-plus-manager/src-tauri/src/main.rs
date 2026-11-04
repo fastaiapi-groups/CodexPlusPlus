@@ -2,6 +2,15 @@
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--sync-media-environment")
+    {
+        if codex_plus_core::fastaiapi_media_env::restore().is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     // MCP 是独立 stdio 进程，必须在 GUI、单实例锁和启动日志之前处理。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-cu-mcp") {
         if let Err(error) = codex_plus_manager_lib::run_computer_use_mcp() {
@@ -10,7 +19,10 @@ fn main() {
         }
         return;
     }
-    if args.get(1).is_some_and(|arg| arg == "--codex-plus-browser-mcp") {
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--codex-plus-browser-mcp")
+    {
         if let Err(error) = codex_plus_manager_lib::run_browser_use_mcp() {
             eprintln!("浏览器控制 MCP 退出：{error:#}");
             std::process::exit(1);
@@ -24,7 +36,10 @@ fn main() {
         }
         return;
     }
-    if args.get(1).is_some_and(|arg| arg == "--codex-plus-agent-mcp") {
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--codex-plus-agent-mcp")
+    {
         if let Err(error) = codex_plus_manager_lib::run_agent_collaboration_mcp(&args[2..]) {
             eprintln!("Agent 协作 MCP 启动失败：{error:#}");
             std::process::exit(1);

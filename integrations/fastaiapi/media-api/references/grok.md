@@ -1,5 +1,7 @@
 # Grok Imagine Video 1.5
 
+Codex++ 托管模式优先使用当前路线及 default 分组的系统环境变量，下面的固定站点与独立 provider 配置仅适用于没有 connection.json 的独立技能。托管模式两条路线共用同一后台状态。
+
 实际模型为 `grok-imagine-video-1.5`，CLI 的 `grok` 只是该精确 ID 的简写。
 
 | 模式 | 参考输入 | 时长 |

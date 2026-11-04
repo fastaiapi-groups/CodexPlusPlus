@@ -1,7 +1,7 @@
-type Key = {id: number; name: string; status: string};
+type Key = {id: number; name: string; status: string; group?: string};
 type Client = {
-  groups(): Promise<{id: number; name: string}[]>;
-  createKey(groupId: number): Promise<Key>;
+  groups(): Promise<{id: string; name: string}[]>;
+  createKey(groupId: string): Promise<Key>;
   models(keyId: number): Promise<string[]>;
   current(): Promise<{key_id?: number; model?: string}>;
   apply(keyId: number, model: string): Promise<unknown>;
@@ -9,10 +9,12 @@ type Client = {
 
 // 与界面解耦，失败后可重试；优先复用专用 Key，保留用户已经选好的模型。
 export async function configureAccount(keys: Key[], client: Client) {
-  let key = keys.find(k => k.status === "active" && k.name === "Codex++ FastAiApi");
+  let key = keys.find(k => k.status === "active" && k.name === "Codex++ FastAiApi")
+    ?? keys.find(k => k.status === "active" && k.group === "default");
   if (!key) {
-    const group = (await client.groups()).find(g => g.name.toLowerCase() === "gpt-pro");
-    if (!group) throw new Error("未找到 gpt-pro 分组，请在概览中选择对话分组后创建专用 Key。");
+    const groups = await client.groups();
+    const group = groups.find(g => g.id === "default") ?? groups.find(g => /openai|gpt|对话|文本/i.test(g.name));
+    if (!group) throw new Error("未找到可用对话分组，请在概览中选择分组后创建专用 Key。");
     key = await client.createKey(group.id);
   }
   const models = await client.models(key.id);

@@ -3,6 +3,7 @@ import { ApiGuide } from "./fastaiapi/ApiGuide";
 import { Manual } from "./fastaiapi/Manual";
 import { showAccountRoute, showAccountTool } from "./fastaiapi/navigation";
 import FastAiApiAccount from "./fastaiapi/Account";
+import { RouteSelector } from "./fastaiapi/ServiceRoutes";
 import {
   closestCenter,
   DndContext,
@@ -4105,6 +4106,7 @@ export function App() {
           </div>
           {/* data-topbar-actions：页面级操作的挂载点，Claude 增强页把「启动增强版」portal 进来。 */}
           <div className="topbar-actions" data-topbar-actions>
+            <RouteSelector/>
             {activeTool === "codex" && !isGlobalPage ? (
               <>
                 <span className="codex-app-state" aria-live="polite">

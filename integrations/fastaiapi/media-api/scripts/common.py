@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import hashlib
+import subprocess
 import getpass
 import json
 import os
@@ -19,6 +22,82 @@ from urllib.parse import urlsplit
 ORIGIN = "https://fastaiapi.cloud"
 H3_ORIGIN = "https://newapi.fastaiapi.cloud"
 PROVIDERS = {"main": (ORIGIN, "FASTAIAPI_API_KEY"), "grok": (ORIGIN, "FASTAIAPI_GROK_API_KEY"), "h3": (H3_ORIGIN, "FASTAIAPI_H3_API_KEY")}
+HTTP_USER_AGENT = "Mozilla/5.0"
+
+
+MANAGED_ORIGINS = ("http://8.137.194.180:90", "https://tumeiapi.com")
+MANAGED_DESCRIPTOR = Path(os.environ.get("FASTAIAPI_CONNECTION_FILE", str(Path(__file__).resolve().parents[1] / "connection.json")))
+
+def managed_connection():
+    if not MANAGED_DESCRIPTOR.is_file():
+        return None
+    descriptor = read_json(MANAGED_DESCRIPTOR)
+    if descriptor.get("managed") is not True or descriptor.get("origin") not in MANAGED_ORIGINS:
+        raise MediaError("Codex++ 媒体路线无效，请在应用内一键修复。")
+    return descriptor
+
+def managed_environment(name):
+    # 托管模式读取当前用户级环境，避免已运行应用继承的旧值在一键修复后继续遮蔽新 Key。
+    if sys.platform == "darwin":
+        result = subprocess.run(["/bin/launchctl", "getenv", name], capture_output=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.decode("utf-8").strip()
+    elif sys.platform == "win32":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as registry:
+                value, _ = winreg.QueryValueEx(registry, name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        except OSError:
+            pass
+    return os.environ.get(name)
+
+
+def managed_key(descriptor, provider):
+    origin = descriptor["origin"]
+    if (managed_environment("FASTAIAPI_BASE_URL") or origin).rstrip("/") != origin:
+        raise MediaError("系统环境变量与当前路线不匹配，请在 Codex++ 中一键修复并重启 Codex。")
+    name = PROVIDERS[provider][1]
+    value = managed_environment(name)
+    if value:
+        return normalize_key(value)
+    service, account = descriptor.get("service", ""), descriptor.get("account", "")
+    if service not in {"com.fastaiapi.codexplusplus.newapi.media", "com.fastaiapi.codexplusplus.newapi.0.media", "com.fastaiapi.codexplusplus.newapi.1.media"}:
+        raise MediaError("媒体凭据来源无效，请在 Codex++ 中一键修复。")
+    if sys.platform == "darwin":
+        result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"], capture_output=True)
+        if result.returncode:
+            raise MediaError("无法读取系统凭据库，请允许钥匙串访问或在 Codex++ 手动配置。")
+        raw = result.stdout
+    elif sys.platform == "win32":
+        raw = windows_secret(service, account)
+    else:
+        raise MediaError("请先配置 FASTAIAPI_* 环境变量。")
+    secret = json.loads(raw)
+    if secret.get("origin") != origin:
+        raise MediaError("媒体 Key 与路线不匹配，请一键修复。")
+    return normalize_key(secret.get("api_key"))
+
+def windows_secret(service, account):
+    from ctypes import wintypes
+    class Credential(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.DWORD), ("Type", wintypes.DWORD), ("TargetName", wintypes.LPWSTR),
+                    ("Comment", wintypes.LPWSTR), ("LastWritten", wintypes.FILETIME), ("CredentialBlobSize", wintypes.DWORD),
+                    ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)), ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD),
+                    ("Attributes", ctypes.c_void_p), ("TargetAlias", wintypes.LPWSTR), ("UserName", wintypes.LPWSTR)]
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    pointer = ctypes.POINTER(Credential)()
+    api.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(Credential))]
+    api.CredReadW.restype = wintypes.BOOL
+    api.CredFree.argtypes = [ctypes.c_void_p]
+    target = service + ":" + hashlib.sha256(account.encode()).hexdigest()
+    if not api.CredReadW(target, 1, 0, ctypes.byref(pointer)):
+        raise MediaError("系统凭据库没有当前路线的创作 Key。")
+    try:
+        return ctypes.string_at(pointer.contents.CredentialBlob, pointer.contents.CredentialBlobSize)
+    finally:
+        api.CredFree(pointer)
 
 
 def provider_for(model):
@@ -28,7 +107,8 @@ def provider_for(model):
 def provider_origin(provider="main"):
     if provider not in PROVIDERS:
         raise MediaError("Unknown provider; use main, grok or h3.")
-    return PROVIDERS[provider][0]
+    descriptor = managed_connection()
+    return descriptor["origin"] if descriptor else PROVIDERS[provider][0]
 
 
 def config_name(provider):
@@ -51,7 +131,7 @@ class HttpError(MediaError):
         self.retry_after = retry_after
         if status in (401, 403):
             message = (f"FastAiApi HTTP {status}：API Key 无效、已删除或没有该模型权限。"
-                       "请用户核对 Key 是否完整，或发送新的 Key 后重新保存。")
+                       "请在 Codex++ 中点击“一键修复”，或手动配置有效的 default 分组 Key。")
         elif status == 402:
             message = "FastAiApi HTTP 402：账户余额不足，请用户充值后再试。"
         else:
@@ -98,6 +178,8 @@ def active_config(provider="main"):
     # Project copy first: it only exists because the global save was blocked (or refreshed with it),
     # so it is never older than the global file. Environment variable is a CI/server fallback.
     provider_origin(provider)
+    if managed_connection():
+        return ("managed-environment" if os.environ.get(PROVIDERS[provider][1]) else "managed-keychain"), None
     project = project_config_path(provider=provider)
     if project:
         return "project", project
@@ -109,6 +191,9 @@ def active_config(provider="main"):
 
 
 def load_key(provider="main"):
+    descriptor = managed_connection()
+    if descriptor:
+        return managed_key(descriptor, provider)
     source, path = active_config(provider)
     if source == "environment":
         return normalize_key(os.environ[PROVIDERS[provider][1]])
@@ -298,7 +383,12 @@ def retry_seconds(value):
 def api_request(method, route, key, body=None, headers=None, *, retry=False, timeout=60, provider="main"):
     if not route.startswith("/v1/") or "://" in route:
         raise MediaError("Invalid API route.")
-    request_headers = {"Authorization": "Bearer " + key, "Accept": "application/json"}
+    request_headers = {
+        "Authorization": "Bearer " + key,
+        "Accept": "application/json",
+        # Cloudflare rejects Python urllib's default browser signature with Error 1010.
+        "User-Agent": HTTP_USER_AGENT,
+    }
     if body is not None:
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
@@ -338,7 +428,9 @@ def download_file(url, destination, key=None, *, provider="main"):
         raise MediaError("Download destination already exists; select another path.")
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
-    headers = {"Authorization": "Bearer " + key} if key else {}
+    headers = {"User-Agent": HTTP_USER_AGENT}
+    if key:
+        headers["Authorization"] = "Bearer " + key
     try:
         with opener().open(urllib.request.Request(url, headers=headers), timeout=300) as response:
             content_type = response.headers.get("Content-Type", "").lower()
@@ -364,3 +456,20 @@ def download_file(url, destination, key=None, *, provider="main"):
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         raise MediaError("Download interrupted; partial file retained. Retry to a new destination.") from exc
     return {"path": str(path), "bytes": total}
+
+
+def audio_request(value, key):
+    body = json_bytes(value)
+    req = urllib.request.Request(provider_origin("main") + "/v1/audio/speech", data=body,
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": HTTP_USER_AGENT}, method="POST")
+    try:
+        with opener().open(req, timeout=300) as response:
+            content_type = response.headers.get("Content-Type", "").lower()
+            raw = response.read()
+            if not raw or "json" in content_type or content_type.startswith("text/"):
+                raise MediaError("音频接口未返回有效音频。")
+            return raw
+    except urllib.error.HTTPError as error:
+        raise HttpError(error.code) from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        raise MediaError(NETWORK_HINT) from None

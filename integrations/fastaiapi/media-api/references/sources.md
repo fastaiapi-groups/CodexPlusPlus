@@ -20,3 +20,7 @@
 从教程下载、安装到 Codex 用户技能目录后，用主站图片分组 Key 完成 gpt-image-2 的一次实际生成；PNG 已保存并打开核验，1254×1254，1,610,313 字节。
 Grok 分组 Key 可读取模型目录，但一次6秒 grok-imagine-video-1.5 提交返回 HTTP 503，没有任务ID。对应 grok 分组渠道暂停且调度关闭；用户要求保持暂停，因此未验证视频生成和下载，未重复提交。
 实测发现同一主站不同分组需要不同 Key，本机修正版增加 --provider grok（FASTAIAPI_GROK_API_KEY）独立配置，防止覆盖图片 main Key。两个 API origin 保持不变。此记录不代表 H3 已完成付费实测。
+
+## 2026-11-04 Windows 图片请求修复
+
+FastAiApi 前置 Cloudflare 会以 Error 1010 拦截 Python urllib 默认浏览器签名。客户端现对 API 请求和下载统一发送稳定的浏览器 User-Agent；同一 Key 的 `/v1/models` 请求已由 403 恢复为 200，并完成一次 `gpt-image-2` 图片生成和本地 PNG 校验。
