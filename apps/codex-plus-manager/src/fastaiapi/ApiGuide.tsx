@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ExternalLink, RefreshCw } from "lucide-react";
 
-const GUIDE_URL = "https://ui.fastaiapi.cloud/help/codex/";
+const GUIDE_URL = "https://fastaiapi.cloud/help/codex/";
 
 export function ApiGuide({ onOpenExternal }: { onOpenExternal: (url: string) => Promise<void> }) {
   const [revision, setRevision] = useState(0);
