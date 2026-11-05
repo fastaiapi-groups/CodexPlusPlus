@@ -35,7 +35,7 @@ function PlatformGate({children}: {children: ReactNode}) {
 function AccountGate({children, register, setRegister}: {children: ReactNode; register: boolean; setRegister: (value: boolean)=>void}) {
   const invoke = usePlatformInvoke();
   const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
-  const {routes, setLocked, warning: routeWarning} = useServiceRoutes();
+  const {routes, setLocked, setAuthenticated, warning: routeWarning} = useServiceRoutes();
   const platformName = routes.platforms.find(p=>p.id === routes.platform)!.name;
   const origin = routes.items.find(r => r.id === routes.selected)!.origin;
   const [restoring, setRestoring] = useState(true);
@@ -83,7 +83,8 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     setLocked(true);
     void restoreLogin().catch(() => {});
     api<User>("me").then(async u => {
-      setUser(u); setRestoring(false); void loadGroups().catch(() => {});
+      if (disposed) return;
+      setUser(u); setAuthenticated(true); setRestoring(false); void loadGroups().catch(() => {});
       const available = await loadKeys();
       const current = await api<{key_id?: number; model?: string}>("configuration");
       const selected = available.find(k => k.status === "active" && k.id === current.key_id)
@@ -111,7 +112,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     if (u.requires_2fa) {setRequires2fa(true); setPassword(""); setNotice("请输入身份验证器中的六位验证码。"); return;}
     setRequires2fa(false); setTotp("");
     groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]);
-    setUser(u); setPassword(""); setConfirm(""); void loadGroups().catch(() => {});
+    setUser(u); setAuthenticated(true); setPassword(""); setConfirm(""); void loadGroups().catch(() => {});
     await configure(await loadKeys());
     if (u.warning) setError(u.warning);
     if (u.media_setup?.warning) setError(`媒体环境配置需要处理：${u.media_setup.warning}`);
@@ -143,7 +144,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       </div>{routes.platform === "subapi" && <SubApiSubscriptions/>}<MediaModels keyId={keyId} models={models}/><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
       <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
       {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
-      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); await restoreLogin(); setUser(null); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
+      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { await api("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice("已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
 

@@ -7,7 +7,7 @@ type Route = {id: number; name: string; origin: string};
 export type Platform = "newapi" | "subapi";
 type Routes = {platform: Platform; platforms: {id: Platform; name: string}[]; selected: number; items: Route[]};
 type Probe = {id: number; latency_ms: number | null; error: string | null};
-const Context = createContext<{routes: Routes; locked: boolean; warning: string; setLocked: (value: boolean) => void; selectPlatform: (id: Platform) => Promise<void>; select: (id: number) => Promise<void>} | null>(null);
+const Context = createContext<{routes: Routes; locked: boolean; authenticated: boolean; setAuthenticated: (value: boolean) => void; warning: string; setLocked: (value: boolean) => void; selectPlatform: (id: Platform) => Promise<void>; select: (id: number) => Promise<void>} | null>(null);
 export const useServiceRoutes = () => useContext(Context)!;
 // 捕获本次渲染的平台，异步请求不依赖可变的全局选择。
 export function usePlatformInvoke() {
@@ -16,12 +16,14 @@ export function usePlatformInvoke() {
 }
 export function ServiceRouteProvider({children}: {children: ReactNode}) {
   const [routes, setRoutes] = useState<Routes | null>(null), [error, setError] = useState("");
+  const [authenticated, setAuthenticated] = useState(false);
   const [locked, setLocked] = useState(false), [warning, setWarning] = useState("");
   const load = () => {setError(""); invoke<Routes>("fastaiapi_account", {action: "routes"}).then(setRoutes).catch(e => setError(String(e)));};
   useEffect(load, []);
   if (!routes) return <div className="fast-gate fast-loading" role="status">{error || "正在读取服务路线…"}{error && <button onClick={load}>重试</button>}</div>;
-  return <Context.Provider value={{routes, locked, warning, setLocked, selectPlatform: async platform => {
+  return <Context.Provider value={{routes, locked, authenticated, setAuthenticated, warning, setLocked, selectPlatform: async platform => {
     if (platform === routes.platform) return;
+    if (authenticated) throw new Error("已登录当前平台，请退出登录后再选择平台。");
     setLocked(true);
     try {
       const next = await invoke<Routes>("fastaiapi_account", {action: "select_platform", platform: routes.platform, body: {platform}});
@@ -35,13 +37,13 @@ export function ServiceRouteProvider({children}: {children: ReactNode}) {
   }}}>{children}</Context.Provider>;
 }
 export function RouteSelector({login = false}: {login?: boolean}) {
-  const {routes, locked, select, selectPlatform} = useServiceRoutes();
+  const {routes, locked, authenticated, select, selectPlatform} = useServiceRoutes();
   const [open, setOpen] = useState(false), [platformOpen, setPlatformOpen] = useState(false);
   const name = routes.platforms.find(p => p.id === routes.platform)?.name;
   return <><div className={`fast-service-selectors${login ? " is-login" : ""}`}>
-    <button type="button" className="fast-route-trigger" aria-label={`选择平台：${name}`} disabled={locked} onClick={() => setPlatformOpen(true)}><Globe size={16}/>{name}<span>⌄</span></button>
+    {authenticated ? <span className="fast-route-trigger fast-platform-fixed" aria-label={`当前平台：${name}`}><Globe size={16}/>{name}</span> : <button type="button" className="fast-route-trigger" aria-label={`选择平台：${name}`} disabled={locked} onClick={() => setPlatformOpen(true)}><Globe size={16}/>{name}<span>⌄</span></button>}
     <button type="button" className="fast-route-trigger" disabled={locked} onClick={() => setOpen(true)}><Globe size={16}/>{routes.items.find(r => r.id === routes.selected)?.name}<span>⌄</span></button>
-    </div>{platformOpen && <PlatformDialog routes={routes} onSelect={selectPlatform} onClose={() => setPlatformOpen(false)}/>}{open && <RouteDialog routes={routes} onSelect={select} onClose={() => setOpen(false)}/>}</>;
+    </div>{platformOpen && !authenticated && <PlatformDialog routes={routes} onSelect={selectPlatform} onClose={() => setPlatformOpen(false)}/>}{open && <RouteDialog routes={routes} onSelect={select} onClose={() => setOpen(false)}/>}</>;
 }
 function PlatformDialog({routes, onSelect, onClose}: {routes: Routes; onSelect: (id: Platform) => Promise<void>; onClose: () => void}) {
   const dialog = useRef<HTMLDialogElement>(null);

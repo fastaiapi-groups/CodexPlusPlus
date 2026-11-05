@@ -1,6 +1,32 @@
 //! 面板选择与分发。平台身份随请求传递，切换页面不改变已应用的模型或媒体连接。
 use serde_json::{Value, json};
 
+#[derive(Default)]
+struct PlatformLock(Option<Platform>);
+impl PlatformLock {
+    fn check(&self, platform: Platform) -> Result<(), String> {
+        if self.0.is_some_and(|current| current != platform) {
+            return Err("已登录当前平台，请退出登录后再选择平台。".into());
+        }
+        Ok(())
+    }
+    fn record(&mut self, platform: Platform, action: &str, result: &Value) {
+        match action {
+            "login" | "register" | "login_2fa" | "me" if result["requires_2fa"] != true => {
+                self.0 = Some(platform)
+            }
+            "logout" => self.0 = None,
+            _ => {}
+        }
+    }
+}
+static SESSION_PLATFORM: tokio::sync::Mutex<PlatformLock> =
+    tokio::sync::Mutex::const_new(PlatformLock(None));
+
+pub async fn ensure_current(platform: Platform) -> Result<(), String> {
+    SESSION_PLATFORM.lock().await.check(platform)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
     NewApi,
@@ -89,6 +115,8 @@ pub async fn account(
     }
     if action == "select_platform" {
         let next = Platform::parse(body["platform"].as_str().unwrap_or(""))?;
+        let lock = SESSION_PLATFORM.lock().await;
+        lock.check(next)?;
         let path = selection_path();
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法保存平台选择")?;
         std::fs::write(path, next.id()).map_err(|_| "无法保存平台选择")?;
@@ -97,10 +125,15 @@ pub async fn account(
     if action == "routes" {
         return routes(platform).await;
     }
-    match platform {
+    // 与平台切换串行化，认证成功后立即固定平台，包括恢复已有会话。
+    let mut lock = SESSION_PLATFORM.lock().await;
+    lock.check(platform)?;
+    let result = match platform {
         Platform::NewApi => crate::fastaiapi::account(action, id, body).await,
         Platform::SubApi => crate::fastaiapi_subapi::account(action, id, body).await,
-    }
+    }?;
+    lock.record(platform, action, &result);
+    Ok(result)
 }
 async fn routes(platform: Platform) -> Result<Value, String> {
     Ok(
@@ -112,6 +145,7 @@ pub async fn key_and_models(
     platform: Platform,
     key_id: i64,
 ) -> Result<(String, Vec<String>), String> {
+    ensure_current(platform).await?;
     match platform {
         Platform::NewApi => crate::fastaiapi::key_and_models(key_id).await,
         Platform::SubApi => crate::fastaiapi_subapi::key_and_models(key_id).await,
@@ -124,6 +158,23 @@ pub async fn configure_media(platform: Platform, key_id: i64) -> Result<Value, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authentication_pins_platform_until_logout_but_not_route_changes() {
+        for action in ["login", "register", "login_2fa", "me"] {
+            let mut lock = PlatformLock::default();
+            assert!(lock.check(Platform::SubApi).is_ok());
+            lock.record(Platform::NewApi, action, &json!({"email":"test"}));
+            assert!(lock.check(Platform::SubApi).is_err());
+            assert!(lock.check(Platform::NewApi).is_ok());
+            lock.record(Platform::NewApi, "select_route", &json!({}));
+            assert!(lock.check(Platform::SubApi).is_err());
+            lock.record(Platform::NewApi, "logout", &json!({}));
+            assert!(lock.check(Platform::SubApi).is_ok());
+        }
+        let mut lock = PlatformLock::default();
+        lock.record(Platform::SubApi, "login", &json!({"requires_2fa":true}));
+        assert!(lock.check(Platform::NewApi).is_ok());
+    }
     #[test]
     fn platform_identity_is_separate_from_routes() {
         assert_ne!(

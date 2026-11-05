@@ -2,6 +2,7 @@
 export function createAccountFixture() {
   type Panel = "newapi" | "subapi";
   let selected: Panel = "newapi";
+  let authenticated: Panel | null = null;
   const panels = {newapi:{name:"New API",email:"",route:1,balance:12.34,model:"gpt-newapi-test",keyId:7},subapi:{name:"SubAPI",email:"",route:0,balance:56.78,model:"gpt-subapi-test",keyId:7}};
   const configurations: Record<string,{key_id?:number;model?:string}> = {};
   const calls: {command:string;platform: string;action?: string}[]=[];
@@ -10,6 +11,7 @@ export function createAccountFixture() {
     const platform=(args.platform||selected) as Panel;
     if(!(platform in panels))throw new Error("平台无效");
     const p=panels[platform],action=args.action;
+    if(authenticated && authenticated !== platform && action !== "routes")throw new Error("已登录当前平台，请退出登录后再选择平台。");
     calls.push({command,platform,action});
     let value:any;
     if(command==="open_external_url")value={preview:true};
@@ -18,14 +20,14 @@ export function createAccountFixture() {
     else if(command==="fastaiapi_account"){
       const body=args.body||{};
       if(action==="routes")value=routes(platform);
-      else if(action==="select_platform"){selected=body.platform;value=routes(selected);}
+      else if(action==="select_platform"){if(authenticated && authenticated !== body.platform)throw new Error("已登录当前平台，请退出登录后再选择平台。");selected=body.platform;value=routes(selected);}
       else if(action==="select_route"){p.route=body.route;value={};}
       else if(action==="test_routes")value=routes(platform).items.map(r=>({id:r.id,latency_ms:88+r.id*10,error:null}));
       else if(action==="settings")value={registration_enabled:true,email_verify_enabled:true,invitation_code_enabled:false};
       else if(action==="remembered_login")value={};
       else if(action==="forget_login"||action==="verify")value={};
-      else if(action==="logout"){p.email="";value={};}
-      else if(action==="login"||action==="register"){p.email=body.email;value={email:p.email,username:p.email.split("@")[0],balance:p.balance,currency:platform==="newapi"?"CNY":"USD",session_persistent:true};}
+      else if(action==="logout"){p.email="";authenticated=null;value={};}
+      else if(action==="login"||action==="register"){p.email=body.email;authenticated=platform;value={email:p.email,username:p.email.split("@")[0],balance:p.balance,currency:platform==="newapi"?"CNY":"USD",session_persistent:true};}
       else {
         if(!p.email)throw new Error(`请先登录 ${p.name}`);
         if(action==="me")value={email:p.email,balance:p.balance,currency:platform==="newapi"?"CNY":"USD"};

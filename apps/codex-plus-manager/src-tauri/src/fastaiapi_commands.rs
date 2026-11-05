@@ -10,6 +10,9 @@ pub async fn fastaiapi_account(
     platform: Option<String>,
 ) -> Result<Value, String> {
     let platform = panels::resolve(platform.as_deref())?;
+    if action != "select_platform" && action != "routes" && action != "feedback" {
+        panels::ensure_current(platform).await?;
+    }
     if action == "configuration" {
         let settings = SettingsStore::default()
             .load()
