@@ -1,7 +1,8 @@
+import { usePlatformInvoke } from "./ServiceRoutes";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, X, Check, RefreshCw } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+
 import "./recharge.css";
 import "./responsive.css";
 type ModelPrice = {model: string; time_pricing: boolean; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
@@ -11,6 +12,8 @@ const priceYuan = (price: number | null, currency = "USD") => price !== null && 
 export function ModelDialog({keyId, models, value, busy, onApply, onReload, onClose}: {
   keyId: number; models: string[]; value: string; busy: boolean; onApply: (model: string) => Promise<void>; onReload: () => void; onClose: () => void;
 }) {
+  const invoke = usePlatformInvoke();
+  const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
   const dialog = useRef<HTMLDialogElement>(null);
   const [query, setQuery] = useState(""), [selected, setSelected] = useState(value);
   const [saving, setSaving] = useState(false), [error, setError] = useState("");
@@ -19,7 +22,7 @@ export function ModelDialog({keyId, models, value, busy, onApply, onReload, onCl
   useEffect(() => {
     let cancelled = false;
     setPricing(null); setPriceError(""); setPriceLoading(true);
-    invoke<ModelPricing>("fastaiapi_account", {action: "model_pricing", id: String(keyId)}).then(data => {
+    api<ModelPricing>("model_pricing", undefined, String(keyId)).then(data => {
       if (!cancelled) setPricing(data);
     }).catch(e => {if (!cancelled) setPriceError(String(e));}).finally(() => {if (!cancelled) setPriceLoading(false);});
     return () => {cancelled = true;};
@@ -40,7 +43,7 @@ export function ModelDialog({keyId, models, value, busy, onApply, onReload, onCl
       </span>{selected === m && <Check className="fast-model-selected-check" size={17}/>}</label>;
     })}{!models.some(m => m.toLowerCase().includes(query.toLowerCase())) && <p>{busy ? "正在加载模型…" : "没有匹配的模型"}</p>}</div>
     {error && <p className="fast-payment-error" role="alert">{error}</p>}
-    <p className="fast-model-hint">{pricing && <>价格来自 {pricing.group} 分组 <span className="fast-group-rate-badge">生效倍率 {pricing.rate_multiplier}×</span>，已计入价格。<br/></>}金额均为人民币，实际扣费以平台使用记录为准。切换后重启 Codex 生效。</p>
+    <p className="fast-model-hint">{pricing && <>价格来自 {pricing.group} 分组 <span className="fast-group-rate-badge">生效倍率 {pricing.rate_multiplier}×</span>，已计入价格。<br/></>}金额按上述币种展示，实际扣费以平台使用记录为准。切换后重启 Codex 生效。</p>
     <button className="fast-pay-primary" disabled={busy || saving || !models.includes(selected)} onClick={async () => {setSaving(true); setError(""); try{await onApply(selected); onClose();}catch(e){setError(String(e));}finally{setSaving(false);}}}>{saving ? "正在应用…" : "确认切换模型"}</button>
   </div></dialog>, document.body);
 }

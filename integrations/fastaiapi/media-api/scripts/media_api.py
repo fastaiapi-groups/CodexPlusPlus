@@ -82,7 +82,7 @@ def read_run(directory, verify_body=False):
     record = read_json(path / "receipt.json")
     if record.get("schema") != 2 or record.get("model") not in MODELS:
         raise MediaError("Unrecognized run receipt.")
-    if record.get("origin") != common.provider_origin(common.provider_for(record["model"])) and not (common.managed_connection() and record.get("origin") in common.MANAGED_ORIGINS):
+    if record.get("origin") != common.provider_origin(common.provider_for(record["model"])) and not common.same_managed_backend(record.get("origin")):
         raise MediaError("Run provider differs; refusing to send a job to another origin.")
     body = None
     if verify_body:

@@ -3,19 +3,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[tokio::main]
 async fn main() {
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).unwrap();
-    let login: Value = serde_json::from_str(&input).expect("需要标准输入登录信息");
-    codex_plus_core::fastaiapi::account("select_route", "", json!({"route":1}))
-        .await
-        .expect("路线失败");
-    let user = codex_plus_core::fastaiapi::account("login", "", login)
-        .await
-        .expect("登录失败");
-    println!(
-        "网页接口桥已就绪：http://127.0.0.1:1440；环境配置={}",
-        user["media_setup"]["environment_configured"]
-    );
+    println!("网页接口桥已就绪：http://127.0.0.1:1440；不打开 App，不应用 Codex 配置");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:1440")
         .await
         .unwrap();
@@ -75,6 +63,8 @@ async fn main() {
                 let request: Value = serde_json::from_slice(&bytes[offset..offset + length])
                     .map_err(|_| "请求格式无效")?;
                 let args = &request["args"];
+                let platform =
+                    codex_plus_core::fastaiapi_platform::resolve(args["platform"].as_str())?;
                 match request["command"].as_str().unwrap_or("") {
                     "fastaiapi_account" => {
                         let action = args["action"].as_str().unwrap_or("");
@@ -86,7 +76,8 @@ async fn main() {
                         if action == "configuration" {
                             return Ok(json!({}));
                         }
-                        codex_plus_core::fastaiapi::account(
+                        codex_plus_core::fastaiapi_platform::account(
+                            platform,
                             action,
                             args["id"].as_str().unwrap_or(""),
                             args.get("body").cloned().unwrap_or(json!({})),
@@ -94,7 +85,8 @@ async fn main() {
                         .await
                     }
                     "fastaiapi_models" => Ok(json!(
-                        codex_plus_core::fastaiapi::key_and_models(
+                        codex_plus_core::fastaiapi_platform::key_and_models(
+                            platform,
                             args["keyId"].as_i64().unwrap_or(0)
                         )
                         .await?

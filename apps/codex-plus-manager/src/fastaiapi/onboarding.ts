@@ -1,6 +1,6 @@
 type Key = {id: number; name: string; status: string; group?: string};
 type Client = {
-  groups(): Promise<{id: string; name: string}[]>;
+  groups(): Promise<{id: string; name: string; recommended?: boolean}[]>;
   createKey(groupId: string): Promise<Key>;
   models(keyId: number): Promise<string[]>;
   current(): Promise<{key_id?: number; model?: string}>;
@@ -13,7 +13,7 @@ export async function configureAccount(keys: Key[], client: Client) {
     ?? keys.find(k => k.status === "active" && k.group === "default");
   if (!key) {
     const groups = await client.groups();
-    const group = groups.find(g => g.id === "default") ?? groups.find(g => /openai|gpt|对话|文本/i.test(g.name));
+    const group = groups.find(g => g.id === "default" || g.name.toLowerCase() === "default") ?? groups.find(g => g.recommended || /openai|gpt|对话|文本/i.test(g.name)) ?? (groups.length === 1 ? groups[0] : undefined);
     if (!group) throw new Error("未找到可用对话分组，请在概览中选择分组后创建专用 Key。");
     key = await client.createKey(group.id);
   }

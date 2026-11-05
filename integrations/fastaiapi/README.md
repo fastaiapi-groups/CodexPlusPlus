@@ -1,6 +1,8 @@
-# Codex++ 的 FastAiApi / New API 接入
+# Codex++ 的 FastAiApi / New API / SubAPI 接入
 
-账户、模型与充值随右上角路线切换：
+登录和注册页先选择 New API 或 SubAPI；登录后展示对应平台的账号、余额、Key、分组、模型及充值。两个平台分别保存会话和记住的登录信息，浏览切换不会应用 Codex 配置或接管媒体环境。
+
+New API 路线：
 
 | 路线 | 服务来源 | 模型地址 |
 |---|---|---|
@@ -8,7 +10,7 @@
 | 路线2 | https://tumeiapi.com | https://tumeiapi.com/v1 |
 | 路线3 | https://newapi.fastaiapi.cloud | https://newapi.fastaiapi.cloud/v1 |
 
-路线选择保存在应用状态目录。所有路线指向同一个 New API 后台，共用账号会话、Key、余额、分组和模型选择；切换仅改变请求来源，不退出登录、不重建页面状态。完整密码、会话和媒体 Key 使用系统凭据库保存；不复用原 Sub2API 账号会话。账户生成的 Codex 连接随路线更新，保留上下文等高级设置；其他供应商配置不受影响。
+路线选择保存在应用状态目录。所有路线指向同一个 New API 后台，共用账号会话、Key、余额、分组和模型选择；切换仅改变请求来源，不退出登录、不重建页面状态。完整密码、会话和媒体 Key 使用系统凭据库保存；与 SubAPI 的会话、Key 和配置命名空间隔离。账户生成的 Codex 连接随路线更新，保留上下文等高级设置；其他供应商配置不受影响。
 
 注册直接调用 `/api/user/register`，用户名精确取用户邮箱 `@` 前的内容，不另设用户名输入框、不自动截断。用户名冲突或超出站点限制时由站点拒绝；不会静默换名。邮箱验证码紧随邮箱字段，通过 `/api/verification?email=...` 发送，使用 `verification_code` 提交；邀请码对应 `aff_code`。注册成功后使用自动生成的用户名登录。后续支持邮箱或用户名登录。
 
@@ -17,6 +19,16 @@
 分组来自 `/api/user/self/groups`，保持 New API 的字符串分组名称；Key 通过 `/api/token/` 管理，仅原生层读取完整密钥。自动配置优先复用名为 `Codex++ FastAiApi` 的有效专用 Key，没有时优先选 `default` 或已开放的对话分组。余额使用站点 `quota_per_unit` 与货币设置换算；定价来自 `/api/pricing`，按当前 Key 分组倍率显示，未知价格不填为零。
 
 充值使用 `/api/user/topup/info`、`/api/user/amount`、`/api/user/topup/self`、`/api/user/topup`。按后台开关支持易支付收银台、多彩付款码与兑换码。多彩沿用原 `request_id` 和订单号；易支付提交结果未知时先查订单，不自动重建。其他支付渠道可从当前路线的平台钱包继续。
+
+## SubAPI
+
+入口为 `https://fastaiapi.cloud`，界面显示路线1。使用本地 `sub2apiSelf` 的用户接口契约：邮箱登录 `/api/v1/auth/login`、注册 `/api/v1/auth/register`、邮箱验证码 `/api/v1/auth/send-verify-code`。注册后通过 `/api/v1/user` 设置邮箱前缀用户名，失败保留注册成功状态并给出提示；支持 `/auth/login/2fa` 的六位 TOTP。访问 Token 仅在 HTTP401 时用 refresh Token 刷新，网络/5xx 不重放写操作。人机验证开启时提示去平台处理，不绕过验证。
+
+账号来自 `/api/v1/auth/me`，余额保持 SubAPI 的 USD 单位；Key 来自 `/api/v1/keys`，原生层剥离完整 Key 后才返回前端。分组来自 `/groups/available`，保持数字 ID，在前端规范为字符串。自动配置优先复用专用 Key 或默认组 Key；创建时校验当前账号可用分组，选择默认组、推荐 OpenAI/composite 分组或唯一可用分组，不能假设 New API 的 default 名称就是 SubAPI 分组 ID。
+
+模型通过当前 Key 的 `/v1/models` 查询；定价来自 `/api/v1/model-plaza`，按 Key 绑定分组及用户倍率转换为美元/百万 tokens。未公布价格保持未知，不补零。套餐来自 `/api/v1/subscriptions`；充值配置、套餐销售和订单使用 `/api/v1/payment/checkout-info`、`/payment/orders`、`/payment/orders/my`，兑换使用 `/api/v1/redeem`。提交结果不确定时查询原订单，不自动重建。需要 Stripe/Airwallex 等专用网页收银流程时可前往平台钱包继续。
+
+两平台可同时保持登录。显式应用模型后以 `fastaiapi-newapi-*`、`fastaiapi-subapi-*` 保存各自配置和选择；仅查看另一个平台不改当前生效配置。媒体凭据同样按平台分别保存，全局 FASTAIAPI_* 和技能连接描述仅指向当前应用的媒体连接。跨面板媒体任务不得互相查询或恢复；同一 New API 后台仍可跨路线查询。SubAPI 不同分组的实际媒体协议和模型权限仍须逐项实测，不能把模型出现在目录视为全部生成接口已验收。
 
 ## 图片与视频
 
@@ -32,14 +44,14 @@
 
 ## 网页开发
 
-先启动原生接口联调桥（仅回环，凭据从无回显标准输入读取），再启动前端：
+先启动原生接口联调桥（仅回环，不自动登录、不打开 App），再启动前端：
 
 ```sh
 cargo run -p codex-plus-core --example serve_newapi_preview
 node scripts/preview-newapi.mjs
 ```
 
-网页地址为 `http://127.0.0.1:1439`，注册布局预览为 `http://127.0.0.1:1439/?register`。联调桥只接受该来源，账户与生成请求走真实后台；默认模型应用仅预览，充值订单与兑换写入关闭，因此网页调试不会改动本机 Codex 配置。测试账号不写在示例或脚本中。
+网页地址为 `http://127.0.0.1:1439`，注册布局预览为 `http://127.0.0.1:1439/?register`。联调桥只接受该来源，账户与生成请求走真实后台；默认模型应用仅预览，充值订单与兑换写入关闭，因此网页调试不会改动本机 Codex 配置。测试账号不写在示例或脚本中。`?fixture=1` 为显式启用的离线模拟账号场景，完全不调用真实后台或系统配置，可用于双平台登录、注册、余额、模型和切换验证。
 
 ## 验证边界
 

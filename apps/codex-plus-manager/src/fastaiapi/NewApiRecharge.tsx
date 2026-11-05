@@ -1,13 +1,15 @@
+import { usePlatformInvoke } from "./ServiceRoutes";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+
 import { ExternalLink, RefreshCw, X } from "lucide-react";
 import "./recharge.css";
 type Info = {enable_online_topup?: boolean; enable_duocai_topup?: boolean; enable_redemption?: boolean; min_topup?: number; amount_options?: number[]; pay_methods?: {type: string; name: string}[]};
 type Order = {trade_no: string; amount: number; money: number; status: string; payment_method: string; payment_provider?: string};
 type Checkout = {trade_no: string; state: string; qr_code?: string; qr_kind?: string; money: string; credit_amount: number};
-const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
 export function NewApiRecharge({origin, onClose, onPaid}: {origin: string; onClose: () => void; onPaid: () => void}) {
+  const invoke = usePlatformInvoke();
+  const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
   const dialog = useRef<HTMLDialogElement>(null), requestId = useRef(crypto.randomUUID());
   const [info, setInfo] = useState<Info | null>(null), [orders, setOrders] = useState<Order[]>([]);
   const [amount, setAmount] = useState(10), [method, setMethod] = useState("");

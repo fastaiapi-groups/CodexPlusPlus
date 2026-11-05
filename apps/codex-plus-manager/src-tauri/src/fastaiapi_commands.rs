@@ -1,3 +1,4 @@
+use codex_plus_core::fastaiapi_platform::{self as panels, Platform};
 use codex_plus_core::settings::{RelayApiKey, RelayMode, RelayProfile, SettingsStore};
 use serde_json::{Value, json};
 
@@ -6,44 +7,68 @@ pub async fn fastaiapi_account(
     action: String,
     id: Option<String>,
     body: Option<Value>,
+    platform: Option<String>,
 ) -> Result<Value, String> {
+    let platform = panels::resolve(platform.as_deref())?;
     if action == "configuration" {
         let settings = SettingsStore::default()
             .load()
             .map_err(|_| "无法读取本地配置")?;
-        let prefix = "fastaiapi-newapi-";
-        let profile = settings
-            .relay_profiles
-            .iter()
-            .find(|p| p.id == settings.active_relay_id && p.id.starts_with(prefix));
-        return Ok(profile.map(|p| json!({"model": p.model, "key_id": p.id.strip_prefix(prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
+        let prefix = platform.profile_prefix();
+        let saved_id =
+            std::fs::read_to_string(account_selection_path(platform)).unwrap_or_default();
+        let profile = account_configuration(
+            &settings.relay_profiles,
+            &settings.active_relay_id,
+            &saved_id,
+            platform,
+        );
+        return Ok(profile.map(|p| json!({"model": p.model, "key_id": p.id.strip_prefix(&prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
     }
     if action == "select_route" {
-        let mut result =
-            codex_plus_core::fastaiapi::account(&action, "", body.unwrap_or(json!({}))).await?;
-        let route = codex_plus_core::fastaiapi::selected_route().await;
-        if let Err(error) = update_account_route(codex_plus_core::fastaiapi::ORIGINS[route]) {
+        let mut result = panels::account(platform, &action, "", body.unwrap_or(json!({}))).await?;
+        if let Err(error) = update_account_route(platform, panels::origin(platform).await) {
             result["configuration_warning"] = json!(error);
         }
         return Ok(result);
     }
-    codex_plus_core::fastaiapi::account(
+    panels::account(
+        platform,
         &action,
         id.as_deref().unwrap_or(""),
         body.unwrap_or(json!({})),
     )
     .await
 }
-fn update_account_route(origin: &str) -> Result<(), String> {
+// 查看另一个平台时恢复它最后保存的选择，不将当前平台的同编号 Key 当作配置。
+fn account_configuration<'a>(
+    profiles: &'a [RelayProfile],
+    active: &str,
+    saved: &str,
+    platform: Platform,
+) -> Option<&'a RelayProfile> {
+    let prefix = platform.profile_prefix();
+    let matching = |id: &str| {
+        profiles
+            .iter()
+            .find(|p| p.id == id && p.id.starts_with(&prefix))
+    };
+    matching(active)
+        .or_else(|| matching(saved))
+        .or_else(|| profiles.iter().rev().find(|p| p.id.starts_with(&prefix)))
+}
+fn account_selection_path(platform: Platform) -> std::path::PathBuf {
+    codex_plus_core::paths::default_app_state_dir()
+        .join(format!("account-{}-profile", platform.id()))
+}
+fn update_account_route(platform: Platform, origin: &str) -> Result<(), String> {
     let mut settings = SettingsStore::default()
         .load()
         .map_err(|_| "无法读取账户模型配置")?;
     let previous = settings.active_relay_id.clone();
-    let Some(index) = settings
-        .relay_profiles
-        .iter()
-        .position(|profile| profile.id == previous && profile.id.starts_with("fastaiapi-newapi-"))
-    else {
+    let Some(index) = settings.relay_profiles.iter().position(|profile| {
+        profile.id == previous && profile.id.starts_with(&platform.profile_prefix())
+    }) else {
         return Ok(());
     };
     let profile = settings.relay_profiles[index].clone();
@@ -73,14 +98,26 @@ pub fn fastaiapi_qr(text: String) -> Result<String, String> {
     codex_plus_core::fastaiapi::qr_image(&text)
 }
 #[tauri::command]
-pub async fn fastaiapi_models(key_id: i64) -> Result<Vec<String>, String> {
-    Ok(codex_plus_core::fastaiapi::key_and_models(key_id).await?.1)
+pub async fn fastaiapi_models(
+    key_id: i64,
+    platform: Option<String>,
+) -> Result<Vec<String>, String> {
+    Ok(
+        panels::key_and_models(panels::resolve(platform.as_deref())?, key_id)
+            .await?
+            .1,
+    )
 }
 #[tauri::command]
-pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, String> {
-    let route = codex_plus_core::fastaiapi::selected_route().await;
-    let (key, models) = codex_plus_core::fastaiapi::key_and_models(key_id).await?;
-    if codex_plus_core::fastaiapi::selected_route().await != route {
+pub async fn fastaiapi_configure(
+    key_id: i64,
+    model: String,
+    platform: Option<String>,
+) -> Result<Value, String> {
+    let platform = panels::resolve(platform.as_deref())?;
+    let route = panels::route(platform).await;
+    let (key, models) = panels::key_and_models(platform, key_id).await?;
+    if panels::route(platform).await != route {
         return Err("路线已切换，请重新选择模型".into());
     }
     let models: Vec<String> = models
@@ -94,7 +131,7 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
         .load()
         .map_err(|_| "无法读取本地配置")?;
     let previous = settings.active_relay_id.clone();
-    let profile_id = codex_plus_core::fastaiapi::profile_id(route, key_id);
+    let profile_id = platform.profile_id(key_id);
     // 切换模型只更新账户连接信息，保留该供应商已有的上下文等高级配置。
     let existing = settings
         .relay_profiles
@@ -104,11 +141,11 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
         .unwrap_or_default();
     let profile = account_profile(
         existing,
-        profile_id,
+        profile_id.clone(),
         key,
         model.clone(),
         models,
-        codex_plus_core::fastaiapi::ORIGINS[route],
+        panels::origin(platform).await,
     )?;
     settings.active_relay_id = profile.id.clone();
     settings.relay_profiles.retain(|p| p.id != profile.id);
@@ -122,14 +159,19 @@ pub async fn fastaiapi_configure(key_id: i64, model: String) -> Result<Value, St
     if result.status != "ok" {
         return Err(result.message);
     }
+    std::fs::write(account_selection_path(platform), profile_id)
+        .map_err(|_| "模型已应用，但平台选择未保存，请重新应用以保存")?;
     install_media_skill()?;
     Ok(json!({"model": model, "message": "已配置 FastAiApi，可启动 Codex"}))
 }
 
 #[tauri::command]
-pub async fn fastaiapi_media_configure(key_id: i64) -> Result<Value, String> {
+pub async fn fastaiapi_media_configure(
+    key_id: i64,
+    platform: Option<String>,
+) -> Result<Value, String> {
     install_media_skill()?;
-    codex_plus_core::fastaiapi::configure_media(key_id).await
+    panels::configure_media(panels::resolve(platform.as_deref())?, key_id).await
 }
 
 fn account_profile(
@@ -229,6 +271,47 @@ fn install_media_skill_at(root: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_model_selection_is_scoped_to_platform() {
+        let profiles = vec![
+            RelayProfile {
+                id: "fastaiapi-newapi-7".into(),
+                model: "new-model".into(),
+                ..Default::default()
+            },
+            RelayProfile {
+                id: "fastaiapi-subapi-7".into(),
+                model: "sub-model".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            account_configuration(
+                &profiles,
+                "fastaiapi-subapi-7",
+                "fastaiapi-newapi-7",
+                Platform::NewApi
+            )
+            .unwrap()
+            .model,
+            "new-model"
+        );
+        assert_eq!(
+            account_configuration(&profiles, "fastaiapi-newapi-7", "", Platform::SubApi)
+                .unwrap()
+                .model,
+            "sub-model"
+        );
+        assert!(
+            account_configuration(
+                &profiles[..1],
+                "fastaiapi-newapi-7",
+                "fastaiapi-newapi-7",
+                Platform::SubApi
+            )
+            .is_none()
+        );
+    }
     #[test]
     fn model_switch_preserves_context_settings() {
         let existing = RelayProfile {

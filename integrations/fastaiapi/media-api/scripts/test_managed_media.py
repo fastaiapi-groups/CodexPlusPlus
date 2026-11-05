@@ -76,4 +76,22 @@ class ManagedMediaTests(unittest.TestCase):
                 self.assertEqual(remote.call_count,1)
                 self.assertEqual(common.read_json(root/"speech.wav.receipt.json")["state"],"submission_unknown")
 
+
+class PlatformIsolationTests(unittest.TestCase):
+    def test_job_cannot_cross_panels_but_can_change_newapi_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run=Path(directory)/"run"
+            with patch.object(common,"managed_connection",return_value={"managed":True,"platform":"newapi","origin":"https://tumeiapi.com"}):
+                api.prepare_run(run,api.image_request("gpt-image-2","test"))
+            with patch.object(common,"managed_connection",return_value={"managed":True,"platform":"subapi","origin":"https://fastaiapi.cloud"}):
+                with self.assertRaisesRegex(common.MediaError,"another origin"):
+                    api.read_run(run)
+    def test_descriptor_rejects_cross_panel_origin_and_service(self):
+        with patch.object(common,"MANAGED_DESCRIPTOR") as file, patch.object(common,"read_json",return_value={"managed":True,"platform":"subapi","origin":"https://tumeiapi.com","service":"com.fastaiapi.codexplusplus.subapi.media"}):
+            file.is_file.return_value=True
+            with self.assertRaises(common.MediaError): common.managed_connection()
+        with patch.object(common,"MANAGED_DESCRIPTOR") as file, patch.object(common,"read_json",return_value={"managed":True,"platform":"subapi","origin":"https://fastaiapi.cloud","service":"com.fastaiapi.codexplusplus.newapi.media"}):
+            file.is_file.return_value=True
+            with self.assertRaises(common.MediaError): common.managed_connection()
+
 if __name__ == "__main__":unittest.main()

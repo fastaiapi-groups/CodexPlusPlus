@@ -1,4 +1,6 @@
 pub mod fastaiapi;
+pub mod fastaiapi_platform;
+mod fastaiapi_subapi;
 pub mod fastaiapi_media_env;
 mod fastaiapi_secret_store;
 pub mod ads;

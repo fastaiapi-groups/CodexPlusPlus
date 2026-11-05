@@ -1,6 +1,6 @@
 # FastAiApi 凭据配置
 
-Codex++ 内置时优先使用应用托管连接：登录后自动获取 default Key，统一配置三种 provider 环境变量及 FASTAIAPI_BASE_URL，来源跟随路线选择。旧项目和系统 JSON Key 不覆盖托管连接；失效时在应用中一键修复。下述独立 provider 分流仅适用于没有 connection.json 的独立技能。
+Codex++ 内置时优先使用应用托管连接：按当前平台获取可用分组 Key（New API 优先 default），统一配置三种 provider 环境变量及 FASTAIAPI_BASE_URL，来源跟随已应用的媒体平台及路线。切换查看其他平台不覆盖连接；跨平台任务不得混查。旧项目和系统 JSON Key 不覆盖托管连接；失效时在应用中一键修复。下述独立 provider 分流仅适用于没有 connection.json 的独立技能。
 
 | provider | 使用模型 | Key 页面 | 环境变量 |
 | --- | --- | --- | --- |

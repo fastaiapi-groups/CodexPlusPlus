@@ -12,7 +12,7 @@ pub const ORIGINS: [&str; 3] = [
     "https://newapi.fastaiapi.cloud",
 ];
 #[derive(Clone, Default, Serialize, Deserialize)]
-struct Session {
+pub(crate) struct Session {
     #[serde(default)]
     cookie: String,
     #[serde(default)]
@@ -93,7 +93,7 @@ fn payload(value: Value) -> Result<Value, String> {
     }
     Ok(value)
 }
-fn data(value: Value) -> Value {
+pub(crate) fn data(value: Value) -> Value {
     value.get("data").cloned().unwrap_or(value)
 }
 fn merge_cookies(current: &str, headers: &reqwest::header::HeaderMap) -> String {
@@ -125,7 +125,7 @@ fn client() -> Result<reqwest::Client, String> {
         .build()
         .map_err(|_| "无法初始化网络连接".into())
 }
-async fn send(
+pub(crate) async fn send(
     origin: &str,
     session: &mut Session,
     method: &str,
@@ -329,7 +329,7 @@ fn valid_trade(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn registration_username(email: &str) -> Result<String, String> {
+pub(crate) fn registration_username(email: &str) -> Result<String, String> {
     email
         .split_once('@')
         .filter(|(name, domain)| !name.is_empty() && !domain.is_empty())
@@ -402,12 +402,26 @@ async fn setup_default_media(s: &mut State) -> Result<Value, String> {
     Ok(result)
 }
 async fn media_status(s: &mut State) -> Result<Value, String> {
-    let origin = ORIGINS[s.route];
-    let Some(secret) = crate::fastaiapi_media_env::load(s.route) else {
+    media_status_for(
+        crate::fastaiapi_platform::Platform::NewApi,
+        ORIGINS[s.route],
+    )
+    .await
+}
+pub(crate) async fn media_status_for(
+    platform: crate::fastaiapi_platform::Platform,
+    origin: &str,
+) -> Result<Value, String> {
+    let Some(secret) = crate::fastaiapi_media_env::load_for(platform) else {
         return Ok(
             json!({"state":"missing","message":"尚未配置媒体 Key，可一键配置 default 分组连接。"}),
         );
     };
+    if !crate::fastaiapi_media_env::is_active(platform) {
+        return Ok(
+            json!({"state":"inactive","message":"媒体环境当前使用其他连接，点击一键配置可切换到当前平台。"}),
+        );
+    }
     let saved = secret["api_key"].as_str().unwrap_or("");
     if !crate::fastaiapi_media_env::matches(saved, origin) {
         return Ok(
@@ -443,19 +457,31 @@ async fn media_status(s: &mut State) -> Result<Value, String> {
     }
 }
 async fn media_test(s: &mut State, kind: &str) -> Result<Value, String> {
+    media_test_for(
+        crate::fastaiapi_platform::Platform::NewApi,
+        ORIGINS[s.route],
+        kind,
+    )
+    .await
+}
+pub(crate) async fn media_test_for(
+    platform: crate::fastaiapi_platform::Platform,
+    origin: &str,
+    kind: &str,
+) -> Result<Value, String> {
     if !matches!(kind, "text" | "image") {
         return Err("请选择文本或图片测试".into());
     }
-    let secret = crate::fastaiapi_media_env::load(s.route).ok_or("请先配置媒体 Key")?;
+    let secret = crate::fastaiapi_media_env::load_for(platform).ok_or("请先配置媒体 Key")?;
     let saved = secret["api_key"].as_str().ok_or("媒体 Key 缺失")?;
     let key = crate::fastaiapi_media_env::user_value("FASTAIAPI_API_KEY")
         .ok_or("环境变量缺失，请点击一键修复")?;
-    if saved != key || !crate::fastaiapi_media_env::matches(&key, ORIGINS[s.route]) {
+    if saved != key || !crate::fastaiapi_media_env::matches(&key, origin) {
         return Err("环境变量已变更，请先一键修复，再测试。".into());
     }
     let raw = data(
         send(
-            ORIGINS[s.route],
+            origin,
             &mut Session::default(),
             "GET",
             "/v1/models",
@@ -494,7 +520,7 @@ async fn media_test(s: &mut State, kind: &str) -> Result<Value, String> {
         )
     };
     let value = send(
-        ORIGINS[s.route],
+        origin,
         &mut Session::default(),
         "POST",
         path,
@@ -570,9 +596,9 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         let path = route_path();
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法保存路线")?;
         std::fs::write(&path, route.to_string()).map_err(|_| "无法保存路线")?;
-        crate::fastaiapi_media_env::write_descriptor(route)?;
         s.route = route;
-        if s.session.user_id > 0
+        if crate::fastaiapi_media_env::is_active(crate::fastaiapi_platform::Platform::NewApi)
+            && s.session.user_id > 0
             && let Some(secret) = crate::fastaiapi_media_env::load(route)
         {
             if let Some(key) = secret["api_key"].as_str() {

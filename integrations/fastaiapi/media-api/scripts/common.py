@@ -26,15 +26,23 @@ HTTP_USER_AGENT = "Mozilla/5.0"
 
 
 MANAGED_ORIGINS = ("http://8.137.194.180:90", "https://tumeiapi.com", "https://newapi.fastaiapi.cloud")
+MANAGED_BACKENDS = {"newapi": MANAGED_ORIGINS, "subapi": ("https://fastaiapi.cloud",)}
 MANAGED_DESCRIPTOR = Path(os.environ.get("FASTAIAPI_CONNECTION_FILE", str(Path(__file__).resolve().parents[1] / "connection.json")))
 
 def managed_connection():
     if not MANAGED_DESCRIPTOR.is_file():
         return None
     descriptor = read_json(MANAGED_DESCRIPTOR)
-    if descriptor.get("managed") is not True or descriptor.get("origin") not in MANAGED_ORIGINS:
+    if descriptor.get("managed") is not True or descriptor.get("origin") not in MANAGED_BACKENDS.get(descriptor.get("platform", "newapi"), ()):
         raise MediaError("Codex++ 媒体路线无效，请在应用内一键修复。")
+    expected_service = "com.fastaiapi.codexplusplus." + descriptor.get("platform", "newapi") + ".media"
+    if descriptor.get("service") != expected_service:
+        raise MediaError("媒体凭据与平台不匹配，请在 Codex++ 中一键修复。")
     return descriptor
+
+def same_managed_backend(origin):
+    descriptor = managed_connection()
+    return bool(descriptor and origin in MANAGED_BACKENDS.get(descriptor.get("platform", "newapi"), ()))
 
 def managed_environment(name):
     # 托管模式读取当前用户级环境，避免已运行应用继承的旧值在一键修复后继续遮蔽新 Key。
@@ -63,7 +71,7 @@ def managed_key(descriptor, provider):
     if value:
         return normalize_key(value)
     service, account = descriptor.get("service", ""), descriptor.get("account", "")
-    if service not in {"com.fastaiapi.codexplusplus.newapi.media", "com.fastaiapi.codexplusplus.newapi.0.media", "com.fastaiapi.codexplusplus.newapi.1.media"}:
+    if service not in {"com.fastaiapi.codexplusplus.subapi.media", "com.fastaiapi.codexplusplus.newapi.media", "com.fastaiapi.codexplusplus.newapi.0.media", "com.fastaiapi.codexplusplus.newapi.1.media"}:
         raise MediaError("媒体凭据来源无效，请在 Codex++ 中一键修复。")
     if sys.platform == "darwin":
         result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"], capture_output=True)

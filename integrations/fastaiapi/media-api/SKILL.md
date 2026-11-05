@@ -11,7 +11,7 @@ Windows 用 `py -3` 或可用的 Python 3.10+ 命令，macOS/Linux 用 `python3`
 
 ## Codex++ 内置模式（优先于下述独立包配置）
 
-本包以用户提供的 fastaiapi-media-fixed-20261104.zip 为基础。Codex++ 登录后自动复用或创建当前路线的 default 分组 Key，并配置 FASTAIAPI_API_KEY、FASTAIAPI_GROK_API_KEY、FASTAIAPI_H3_API_KEY 与 FASTAIAPI_BASE_URL。路线为 http://8.137.194.180:90、https://tumeiapi.com 或 https://newapi.fastaiapi.cloud；有 connection.json 时，三种 provider 均使用当前路线，忽略旧项目/全局凭据，避免串站。没有托管连接时，独立包仍按下表分流。
+本包以用户提供的 fastaiapi-media-fixed-20261104.zip 为基础。Codex++ 先选择 New API 或 SubAPI 平台，登录后自动复用或创建对应可用分组 Key（New API 优先 default），并配置 FASTAIAPI_API_KEY、FASTAIAPI_GROK_API_KEY、FASTAIAPI_H3_API_KEY 与 FASTAIAPI_BASE_URL。New API 路线为 http://8.137.194.180:90、https://tumeiapi.com 或 https://newapi.fastaiapi.cloud，SubAPI 入口为 https://fastaiapi.cloud；有 connection.json 时，三种 provider 均使用当前路线，忽略旧项目/全局凭据，避免串站。没有托管连接时，独立包仍按下表分流。
 
 **视频默认使用 minimax-h3**，除非用户明确指定其他模型。缺少参考图时先向用户补齐，不自动换成 Grok 或 -f / -x。prepare 的 --model 可省略，默认 minimax-h3。当前路线未开放该精确模型时，提示用户在平台开通或明确选择其他型号，不静默替换。
 
@@ -28,7 +28,7 @@ Windows 用 `py -3` 或可用的 Python 3.10+ 命令，macOS/Linux 用 `python3`
 | `minimax-h3` | `h3` | https://newapi.fastaiapi.cloud | [H3](references/h3.md) |
 
 图片 main、Grok grok、H3 h3 三种凭据分别配置，不自动共用、不读取旧平台配置或旧环境变量。
-独立包由模型决定服务站点；Codex++ 托管模式的所有路线属于同一后台，切换保留账号和任务，只改变请求入口。不因失败自动换模型或账号。
+独立包由模型决定服务站点；Codex++ 托管模式中，同一平台的路线属于同一后台，切换保留账号和任务，只改变请求入口。不因失败自动换模型或账号。
 配置命令见 [首次使用](references/setup.md)。主站 Key 页面为 https://fastaiapi.cloud/keys，
 H3 Key 页面为 https://newapi.fastaiapi.cloud/keys。主站图片 Key 需选图片分组，Grok Key 选“其他 → grok”分组；图片 Key 的模型权限不代表能调用 Grok。
 
@@ -46,7 +46,7 @@ H3 Key 页面为 https://newapi.fastaiapi.cloud/keys。主站图片 Key 需选�
 
 提交结果不确定时不重发 POST；从对应平台核对任务 ID，再用 `recover` 恢复。
 H3 请求携带稳定的 Idempotency-Key，但新站服务端幂等性尚未验证，因此禁用自动 POST 重试和未知结果重发。
-独立包旧站任务不能迁移到新后台；Codex++ 的所有托管路线共用任务状态。
+独立包旧站任务不能迁移到新后台；Codex++ 同一平台的托管路线共用任务状态；New API 与 SubAPI 的任务不可混用。
 
 ## 权限和验证边界
 
