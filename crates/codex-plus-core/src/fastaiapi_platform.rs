@@ -153,7 +153,9 @@ pub async fn key_and_models(
 }
 pub async fn configure_media(platform: Platform, key_id: i64) -> Result<Value, String> {
     let (key, _) = key_and_models(platform, key_id).await?;
-    crate::fastaiapi_media_env::store_for(platform, origin(platform).await, &key)
+    let result = crate::fastaiapi_media_env::store_for(platform, origin(platform).await, &key)?;
+    crate::fastaiapi_media_env::set_pricing_key_id(platform, Some(key_id))?;
+    Ok(result)
 }
 #[cfg(test)]
 mod tests {

@@ -285,6 +285,60 @@ pub fn read_current_user_string_values(
     read_registry_string_values(HKEY_CURRENT_USER, subkey)
 }
 
+// 媒体环境快照不能把访问被拒绝当成空配置，否则无法安全回滚。
+#[cfg(windows)]
+pub fn read_current_user_string_values_checked(
+    subkey: &str,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    read_registry_string_values_with_checks(HKEY_CURRENT_USER, subkey, true)
+}
+
+#[cfg(windows)]
+pub fn delete_current_user_value_checked(subkey: &str, name: &str) -> anyhow::Result<()> {
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(wide_null(subkey).as_ptr()),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    status.ok().context("无法打开用户环境变量注册表")?;
+    let _guard = RegistryKeyGuard(key);
+    let status = unsafe { RegDeleteValueW(key, PCWSTR(wide_null(name).as_ptr())) };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    status.ok().context("无法恢复用户环境变量")
+}
+
+#[cfg(windows)]
+pub fn broadcast_environment_change() -> anyhow::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
+    };
+    let environment = wide_null("Environment");
+    let result = unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            WPARAM(0),
+            LPARAM(environment.as_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            100,
+            None,
+        )
+    };
+    anyhow::ensure!(result.0 != 0, "系统环境更新通知失败");
+    Ok(())
+}
+
 #[cfg(windows)]
 pub fn read_local_machine_string_values(
     subkey: &str,
@@ -297,9 +351,23 @@ fn read_registry_string_values(
     root: HKEY,
     subkey: &str,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    read_registry_string_values_with_checks(root, subkey, false)
+}
+
+#[cfg(windows)]
+fn read_registry_string_values_with_checks(
+    root: HKEY,
+    subkey: &str,
+    checked: bool,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS};
     let subkey = wide_null(subkey);
     let mut key = HKEY::default();
-    if unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut key) }.is_err() {
+    let status = unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut key) };
+    if status.is_err() {
+        if checked && status != ERROR_FILE_NOT_FOUND {
+            status.ok().context("无法读取用户环境变量注册表")?;
+        }
         return Ok(Vec::new());
     }
     let _guard = RegistryKeyGuard(key);
@@ -308,7 +376,7 @@ fn read_registry_string_values(
         let mut name = vec![0u16; 256];
         let mut name_len = name.len() as u32;
         let mut value_type = 0u32;
-        let mut data = vec![0u8; 8192];
+        let mut data = vec![0u8; if checked { 65536 } else { 8192 }];
         let mut data_len = data.len() as u32;
         let result = unsafe {
             RegEnumValueW(
@@ -323,11 +391,21 @@ fn read_registry_string_values(
             )
         };
         if result.is_err() {
+            if checked && result != ERROR_NO_MORE_ITEMS {
+                result.ok().context("无法完整读取用户环境变量")?;
+            }
             break;
         }
         let name = OsString::from_wide(&name[..name_len as usize])
             .to_string_lossy()
             .to_string();
+        if checked
+            && name.starts_with("FASTAIAPI_")
+            && value_type != REG_SZ.0
+            && value_type != REG_EXPAND_SZ.0
+        {
+            anyhow::bail!("媒体环境变量不是字符串，请手动检查用户环境配置");
+        }
         let value = if value_type == REG_SZ.0 || value_type == REG_EXPAND_SZ.0 {
             let units = unsafe {
                 std::slice::from_raw_parts(
@@ -518,16 +596,26 @@ pub(crate) fn terminate_verified_multi_worker(
     }
     let _guard = HandleGuard(handle);
     let actual_birth = process_birth_id_from_handle(handle);
-    if actual_birth != expected_birth { return Ok(false); }
-    let Some(command_line) = process_command_line_from_handle(handle) else { return Ok(false); };
+    if actual_birth != expected_birth {
+        return Ok(false);
+    }
+    let Some(command_line) = process_command_line_from_handle(handle) else {
+        return Ok(false);
+    };
     let wide = wide_null(&command_line);
     let mut count = 0;
     let argv = unsafe { CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut count) };
-    if argv.is_null() { return Ok(false); }
+    if argv.is_null() {
+        return Ok(false);
+    }
     let arguments = if count == 3 {
-        unsafe { std::slice::from_raw_parts(argv, count as usize) }.iter()
-            .map(|value| unsafe { value.to_string() }.ok()).collect::<Option<Vec<_>>>()
-    } else { None };
+        unsafe { std::slice::from_raw_parts(argv, count as usize) }
+            .iter()
+            .map(|value| unsafe { value.to_string() }.ok())
+            .collect::<Option<Vec<_>>>()
+    } else {
+        None
+    };
     // CommandLineToArgvW 分配的 argv 必须用 LocalFree 释放。
     unsafe { LocalFree(HLOCAL(argv.cast())) };
     let Some(arguments) = arguments else {
@@ -541,10 +629,15 @@ pub(crate) fn terminate_verified_multi_worker(
     ) {
         return Ok(false);
     }
-    let Some(image) = process_image_path_from_handle(handle) else { return Ok(false); };
-    let Ok(expected_image) = std::env::current_exe().and_then(|path| path.canonicalize())
-        else { return Ok(false); };
-    if image.canonicalize().ok().as_ref() != Some(&expected_image) { return Ok(false); }
+    let Some(image) = process_image_path_from_handle(handle) else {
+        return Ok(false);
+    };
+    let Ok(expected_image) = std::env::current_exe().and_then(|path| path.canonicalize()) else {
+        return Ok(false);
+    };
+    if image.canonicalize().ok().as_ref() != Some(&expected_image) {
+        return Ok(false);
+    }
     unsafe { TerminateProcess(handle, 0) }.context("结束已验证的多开 worker 失败")?;
     Ok(true)
 }
@@ -1161,12 +1254,24 @@ pub(crate) struct WindowIconApplyState {
 
 #[cfg(any(windows, test))]
 impl WindowIconApplyState {
-    fn apply(&mut self, target: usize, icon: impl FnOnce() -> bool, taskbar: impl FnOnce() -> bool) -> bool {
+    fn apply(
+        &mut self,
+        target: usize,
+        icon: impl FnOnce() -> bool,
+        taskbar: impl FnOnce() -> bool,
+    ) -> bool {
         if self.target != Some(target) {
-            *self = Self { target: Some(target), ..Self::default() };
+            *self = Self {
+                target: Some(target),
+                ..Self::default()
+            };
         }
-        if !self.window_icon { self.window_icon = icon(); }
-        if !self.taskbar { self.taskbar = taskbar(); }
+        if !self.window_icon {
+            self.window_icon = icon();
+        }
+        if !self.taskbar {
+            self.taskbar = taskbar();
+        }
         self.window_icon && self.taskbar
     }
 }
@@ -1176,7 +1281,11 @@ pub fn apply_codexplusplus_icon_to_process_window(
     process_id: u32,
     icon_resource_path: PathBuf,
 ) -> bool {
-    apply_codexplusplus_icon_attempt(process_id, &icon_resource_path, &mut WindowIconApplyState::default())
+    apply_codexplusplus_icon_attempt(
+        process_id,
+        &icon_resource_path,
+        &mut WindowIconApplyState::default(),
+    )
 }
 
 #[cfg(windows)]
@@ -1188,13 +1297,18 @@ pub(crate) fn apply_codexplusplus_icon_attempt(
     let Some(hwnd) = visible_window_for_process(process_id) else {
         return false;
     };
-    let complete = state.apply(hwnd.0 as usize,
+    let complete = state.apply(
+        hwnd.0 as usize,
         || apply_window_icons(hwnd, icon_resource_path),
-        || apply_taskbar_properties(hwnd, icon_resource_path).is_ok());
+        || apply_taskbar_properties(hwnd, icon_resource_path).is_ok(),
+    );
     if !complete {
-        let _ = crate::diagnostic_log::append_diagnostic_log("launcher.window_icon.partial", serde_json::json!({
-            "process_id": process_id, "window_icon": state.window_icon, "taskbar": state.taskbar,
-        }));
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.window_icon.partial",
+            serde_json::json!({
+                "process_id": process_id, "window_icon": state.window_icon, "taskbar": state.taskbar,
+            }),
+        );
     }
     complete
 }

@@ -348,6 +348,7 @@ async fn setup_media(s: &mut State) -> Result<Value, String> {
         match models(&s.origin, &key).await {
             Ok(_) => {
                 let mut value = crate::fastaiapi_media_env::store_for(PLATFORM, &s.origin, &key)?;
+                crate::fastaiapi_media_env::set_pricing_key_id(PLATFORM, item["id"].as_i64())?;
                 value["key_id"] = item["id"].clone();
                 return Ok(value);
             }
@@ -363,6 +364,7 @@ async fn setup_media(s: &mut State) -> Result<Value, String> {
     let key = key_secret(s, item["id"].as_i64().ok_or("Key 已创建，请刷新后选择")?).await?;
     models(&s.origin, &key).await?;
     let mut value = crate::fastaiapi_media_env::store_for(PLATFORM, &s.origin, &key)?;
+    crate::fastaiapi_media_env::set_pricing_key_id(PLATFORM, item["id"].as_i64())?;
     value["key_id"] = item["id"].clone();
     Ok(value)
 }
@@ -583,8 +585,19 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             .await?;
             Ok(json!({}))
         }
-        "model_pricing" => {
-            let key_id = valid_order(id)?;
+        "model_pricing" | "media_pricing" => {
+            let key_id = if action == "media_pricing" {
+                let key_id = crate::fastaiapi_media_env::pricing_key_id(PLATFORM)?;
+                let actual = key_secret(&mut s, key_id).await?;
+                let saved =
+                    crate::fastaiapi_media_env::load_for(PLATFORM).ok_or("请先配置媒体 Key")?;
+                if saved["api_key"] != actual {
+                    return Err("媒体 Key 已变更，请一键修复后查看价格".into());
+                }
+                key_id
+            } else {
+                valid_order(id)?
+            };
             let key = request(
                 &mut s,
                 "GET",
@@ -597,14 +610,8 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
         }
         "media_setup" => setup_media(&mut s).await,
         "media_status" => crate::fastaiapi::media_status_for(PLATFORM, &s.origin).await,
-        "media_test" => {
-            crate::fastaiapi::media_test_for(
-                PLATFORM,
-                &s.origin,
-                body["kind"].as_str().unwrap_or("text"),
-            )
-            .await
-        }
+        "media_select" => crate::fastaiapi::select_media_model(PLATFORM, &s.origin, &body).await,
+        "media_test" => crate::fastaiapi::media_test_for(PLATFORM, &s.origin, &body).await,
         "media_manual" => {
             let key = body["api_key"]
                 .as_str()

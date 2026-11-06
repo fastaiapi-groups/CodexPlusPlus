@@ -13,11 +13,13 @@ Windows 用 `py -3` 或可用的 Python 3.10+ 命令，macOS/Linux 用 `python3`
 
 本包以用户提供的 fastaiapi-media-fixed-20261104.zip 为基础。Codex++ 先选择 New API 或 SubAPI 平台，登录后自动复用或创建对应可用分组 Key（New API 优先 default），并配置 FASTAIAPI_API_KEY、FASTAIAPI_GROK_API_KEY、FASTAIAPI_H3_API_KEY 与 FASTAIAPI_BASE_URL。New API 路线为 http://8.137.194.180:90、https://tumeiapi.com 或 https://newapi.fastaiapi.cloud，SubAPI 入口为 https://fastaiapi.cloud；有 connection.json 时，三种 provider 均使用当前路线，忽略旧项目/全局凭据，避免串站。没有托管连接时，独立包仍按下表分流。
 
-**视频默认使用 minimax-h3**，除非用户明确指定其他模型。缺少参考图时先向用户补齐，不自动换成 Grok 或 -f / -x。prepare 的 --model 可省略，默认 minimax-h3。当前路线未开放该精确模型时，提示用户在平台开通或明确选择其他型号，不静默替换。
+**视频初始默认使用 minimax-h3**。用户可在 Codex++ 概览选择默认图片／视频模型，`image` 或 `prepare` 省略 `--model` 时读取 connection.json 中当前平台的 model_defaults；对话中明确指定型号时传 `--model`，优先于界面选择。缺少参考图时先向用户补齐，不自动换成 Grok 或 -f / -x。未保存过选择时，prepare 默认 minimax-h3，image 默认 gpt-image-2。当前路线未开放该精确模型时，提示用户在平台开通或明确选择其他型号，不静默替换。
 
 New API 托管模式使用当前站点公共视频协议（`prompt`、`seconds`、参考图数组），默认480p，可显式选择768p或1080p；不再向 New API 发送旧 `content` 协议。独立包及 SubAPI 仍保留原有720p协议，兼容性分别验收。协议和当前素材限制见 [H3](references/h3.md)。
 
 环境变量 Key 失效或路线不一致时，请用户在 Codex++ 概览“媒体创作与环境配置”中点击“一键配置／修复”；也支持手动输入 Key，再分别进行文本测试与图片测试。权限不足会提示系统凭据库或环境变量写入错误，不要求 sudo。新环境变量供重启后的 Codex/终端使用；不可用时可读取系统凭据库中的当前路线凭据，Key 不输出到日志。
+
+自动写入会先快照并校验四项用户级变量，失败时回滚；回滚不完整会明确提示。`connection.json` 的 `environment_configured: false` 表示系统环境尚未配置完成，此时技能只尝试读取该连接的系统凭据，不使用继承的旧 Key。macOS 环境查询限时3秒、凭据查询限时15秒；被拒绝或超时均停止并提示授权／修复，不绕过系统弹窗。Windows 读取 HKCU 用户环境和当前用户凭据管理器，不写系统级变量；Linux 当前不支持应用自动凭据保存，需按独立包教程配置。`config-status` 会检查凭据是否可读，不代表模型联网验证已通过。
 
 音频生成：`python3 <skill>/scripts/media_api.py audio --text-file <project>/speech.txt --output <project>/speech.wav`。默认语音模型 gpt-4o-mini-tts，可用 --model 指定；需要当前站点开放语音模型及 /v1/audio/speech。原包没有单独音频生成接口，此为 Codex++ 补充；视频引用音频仍按原有 H3/Grok 工作流处理。
 
@@ -40,7 +42,7 @@ H3 Key 页面为 https://newapi.fastaiapi.cloud/keys。主站图片 Key 需选�
 2. 根据模型运行 `config-status --provider main`、`config-status --provider grok` 或 `config-status --provider h3`。
    未配置时请用户提供对应站点的 Key，按 setup.md 保存；不复述密钥。
 3. 检查实际参考素材。H3 必须有 1–9 张参考图；提交前按 [H3](references/h3.md) 的专用规则优化提示词。
-   视频默认 H3；只有用户明确指定 Grok 时才用 Grok。缺少 H3 参考图先补齐素材。
+   视频未保存选择时默认 H3；保存过选择时跟随该型号。用户选择 Grok 时按 Grok 规则调用，其他 New API 兼容型号按公共协议构造，不能擅自更换成 H3。缺少 H3 参考图先补齐素材。
    图片默认使用 `1024x1024` 小图；只有用户明确指定尺寸时才改用该尺寸，不因“高清”“最终稿”等泛化表述自行升级到 2K 或 4K。
 4. 视频先离线 `prepare`，再 `submit`。任务 ID 立即持久化，用 `status` 或最多60秒的 `wait` 查询。
    图片可用 `image`，或 `prepare` / `submit`。完整命令见 [工作流](references/workflow.md)。
@@ -58,4 +60,4 @@ H3 请求携带稳定的 Idempotency-Key，但新站服务端幂等性尚未验�
 
 本包包含隔离用户配置的离线模拟测试；安装后可在技能目录直接运行，不读取真实系统凭据。
 实际生成结果按平台、型号及日期记录在 [来源与验证边界](references/sources.md)，不把其他平台或原供应商的成功记录写成当前站点实测。
-模型目录中出现其他 ID 不代表本适配器已支持。详见 [来源与验证边界](references/sources.md)。
+New API 托管模式另提供公共协议兼容路径：图片通过 /v1/images/generations（编辑走 /v1/images/edits），其他视频通过 /v1/videos 的 prompt/seconds/size 和可选参考图／音频数组；H3 系列沿用参考图与专用提示词规则，精确 Grok 型号沿用其专用参数。兼容路径保留精确型号，服务端拒绝参数时报告限制，不换型号；不能据此声称全部目录型号已付费验收。SubAPI 视频仍仅支持包内 H3/Grok 协议。详见 [来源与验证边界](references/sources.md)。

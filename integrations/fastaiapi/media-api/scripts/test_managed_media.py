@@ -58,7 +58,8 @@ class ManagedMediaTests(unittest.TestCase):
 
     def test_video_defaults_to_h3_and_explicit_model_wins(self):
         args=api.parser().parse_args(["prepare","--prompt-file","prompt.txt","--run","test"])
-        self.assertEqual(args.model,"minimax-h3")
+        self.assertIsNone(args.model)
+        self.assertEqual(common.default_model("video"),"minimax-h3")
         args=api.parser().parse_args(["prepare","--model","grok","--prompt-file","prompt.txt","--run","test"])
         self.assertEqual(args.model,"grok")
 
@@ -158,5 +159,146 @@ class PlatformIsolationTests(unittest.TestCase):
         with patch.object(common,"MANAGED_DESCRIPTOR") as file, patch.object(common,"read_json",return_value={"managed":True,"platform":"subapi","origin":"https://fastaiapi.cloud","service":"com.fastaiapi.codexplusplus.newapi.media"}):
             file.is_file.return_value=True
             with self.assertRaises(common.MediaError): common.managed_connection()
+
+class MediaSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.descriptor = {"managed":True,"platform":"newapi","origin":"https://tumeiapi.com", "model_defaults":{"newapi":{"image":"gpt-image-2.5","video":"minimax-h3-f"},"subapi":{"image":"gpt-image-2"}}}
+        patcher=patch.object(common,"managed_connection",return_value=self.descriptor)
+        patcher.start();self.addCleanup(patcher.stop)
+        blocker=patch.object(common.subprocess,"run",side_effect=AssertionError("unmocked credential access"))
+        blocker.start();self.addCleanup(blocker.stop)
+
+    def test_selected_defaults_and_explicit_model_override(self):
+        self.assertEqual(common.default_model("image"),"gpt-image-2.5")
+        self.assertEqual(common.default_model("video"),"minimax-h3-f")
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);prompt=root/"prompt.txt";prompt.write_text("Robot waves.");image=root/"robot.png";image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+            args=api.parser().parse_args(["prepare","--prompt-file",str(prompt),"--run",str(root/"run"),"--duration","5","--image",str(image)])
+            body=api.build_from_args(args)
+            self.assertEqual(json.loads(body)["model"],"minimax-h3-f")
+            api.prepare_run(root/"run",body)
+            self.descriptor["model_defaults"]["newapi"]["video"]="veo-test"
+            self.assertEqual(api.read_run(root/"run")[1]["model"],"minimax-h3-f")
+            args.model="minimax-h3"
+            self.assertEqual(json.loads(api.build_from_args(args))["model"],"minimax-h3")
+        self.descriptor["platform"]="subapi";self.descriptor["origin"]="https://fastaiapi.cloud"
+        self.assertEqual(common.default_model("image"),"gpt-image-2")
+        self.assertEqual(common.default_model("video"),"minimax-h3")
+
+    def test_compatible_newapi_image_and_video_keep_exact_model_and_safe_download_origin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);prompt=root/"prompt.txt";prompt.write_text("A cloud moves slowly.")
+            body=api.image_request("flux-test","test")
+            self.assertEqual(json.loads(body)["model"],"flux-test")
+            args=api.parser().parse_args(["prepare","--model","veo-test","--prompt-file",str(prompt),"--run",str(root/"run"),"--duration","5"])
+            body=api.build_from_args(args);value=json.loads(body)
+            self.assertEqual(value,{"model":"veo-test","prompt":"A cloud moves slowly.","seconds":5,"size":"1280x720"})
+            api.prepare_run(root/"run",body)
+            with patch.object(common,"load_key",return_value="fixture-key"),patch.object(common,"api_request") as remote,patch.object(common,"download_file",return_value={"path":str(root/"video.mp4"),"bytes":10}) as fetch:
+                remote.return_value={"id":"task-fixture","status":"queued"}
+                api.submit(root/"run");api.submit(root/"run")
+                self.assertEqual(remote.call_count,1)
+                remote.return_value={"id":"task-fixture","model":"veo-test","status":"completed"}
+                api.download(root/"run",root/"video.mp4")
+                fetch.assert_called_once_with("https://tumeiapi.com/v1/videos/task-fixture/content",root/"video.mp4","fixture-key",provider="main")
+            self.descriptor["platform"]="subapi"
+            with self.assertRaisesRegex(common.MediaError,"Unsupported model"):
+                api.canonical_model("veo-test")
+
+    def test_selected_image_default_is_used_when_cli_model_omitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);prompt=root/"prompt.txt";prompt.write_text("test")
+            args=api.parser().parse_args(["image","--prompt-file",str(prompt),"--output-dir",str(root/"output")])
+            with patch.object(common,"load_key",return_value="fixture-key"),patch.object(api,"submit",side_effect=lambda run,**kwargs:dict(state="downloaded")):
+                self.assertEqual(api.image_batch(args)["model"],"gpt-image-2.5")
+            args.model="gpt-image-2"
+            with patch.object(common,"load_key",return_value="fixture-key"),patch.object(api,"submit",return_value=dict(state="downloaded")):
+                self.assertEqual(api.image_batch(args)["model"],"gpt-image-2")
+
+    def test_namespaced_image_model_cannot_escape_output_directory(self):
+        import base64
+        with tempfile.TemporaryDirectory() as directory:
+            run=Path(directory)/"run"
+            model="provider/../image-test"
+            api.prepare_run(run,api.image_request(model,"test"))
+            with patch.object(common,"load_key",return_value="fixture-key"),patch.object(common,"api_request",return_value={"data":[{"b64_json":base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode()}]}):
+                result=api.submit(run)
+            output=Path(result["files"][0]["path"])
+            self.assertEqual(output.parent,run.resolve())
+            self.assertTrue(output.is_file())
+
+    def test_malformed_defaults_fail_with_repair_hint(self):
+        for value in ([],"invalid",{"newapi":[]},{"newapi":{"image":12}}):
+            self.descriptor["model_defaults"]=value
+            with self.assertRaisesRegex(common.MediaError,"重新选择"):
+                common.default_model("image")
+
+
+class SystemPermissionTests(unittest.TestCase):
+    def setUp(self):
+        # 所有系统命令必须模拟，安装后也不能读取真实用户凭据。
+        self.process = patch.object(common.subprocess, "run", side_effect=AssertionError("unmocked system credential access"))
+        self.process.start()
+        self.addCleanup(self.process.stop)
+        self.descriptor = {"managed": True, "platform": "newapi", "origin": "https://tumeiapi.com",
+                           "service": "com.fastaiapi.codexplusplus.newapi.media", "account": "fixture-user"}
+
+    def test_mac_missing_variable_does_not_reuse_inherited_stale_key(self):
+        import subprocess
+        with patch.object(common.sys, "platform", "darwin"), patch.dict(os.environ, {"FASTAIAPI_API_KEY":"stale-fixture"}), patch.object(common.subprocess, "run", return_value=subprocess.CompletedProcess([],0,b"",b"")):
+            self.assertIsNone(common.managed_environment("FASTAIAPI_API_KEY"))
+
+    def test_mac_permission_missing_command_and_timeout_are_sanitized(self):
+        import subprocess
+        for error in (PermissionError("fixture-secret"), FileNotFoundError("fixture-secret"), subprocess.TimeoutExpired(["secret-arg"], 3, output=b"fixture-secret")):
+            with self.subTest(error=type(error).__name__), patch.object(common.sys, "platform", "darwin"), patch.object(common.subprocess, "run", side_effect=error):
+                with self.assertRaises(common.MediaError) as caught:
+                    common.managed_environment("FASTAIAPI_API_KEY")
+                self.assertIn("一键修复", str(caught.exception))
+                self.assertNotIn("fixture-secret", str(caught.exception))
+
+    def test_windows_denied_registry_is_reported_instead_of_stale_key(self):
+        import types
+        registry = types.SimpleNamespace(HKEY_CURRENT_USER=1, OpenKey=unittest.mock.Mock(side_effect=PermissionError("fixture-secret")))
+        with patch.object(common.sys, "platform", "win32"), patch.dict("sys.modules", {"winreg":registry}), patch.dict(os.environ, {"FASTAIAPI_API_KEY":"stale-fixture"}):
+            with self.assertRaisesRegex(common.MediaError, "注册表权限"):
+                common.managed_environment("FASTAIAPI_API_KEY")
+        registry.OpenKey.side_effect = FileNotFoundError()
+        with patch.object(common.sys, "platform", "win32"), patch.dict("sys.modules", {"winreg":registry}):
+            self.assertIsNone(common.managed_environment("FASTAIAPI_API_KEY"))
+
+    def test_failed_export_uses_current_keychain_not_any_old_environment(self):
+        import subprocess
+        self.descriptor["environment_configured"] = False
+        raw = json.dumps({"origin":"https://tumeiapi.com", "api_key":"current-fixture"}).encode()
+        with patch.object(common.sys, "platform", "darwin"), patch.object(common, "managed_environment", side_effect=AssertionError("must not read stale environment")), patch.object(common.subprocess, "run", return_value=subprocess.CompletedProcess([],0,raw,b"")) as command:
+            self.assertEqual(common.managed_key(self.descriptor, "main"), "current-fixture")
+            self.assertEqual(command.call_args.kwargs["timeout"], 15)
+
+    def test_keychain_denial_corruption_and_wrong_route_stop_before_network(self):
+        import subprocess
+        self.descriptor["environment_configured"] = False
+        for result in (subprocess.CompletedProcess([],1,b"fixture-secret",b"fixture-secret"), subprocess.CompletedProcess([],0,b"not-json-fixture-secret",b""), subprocess.CompletedProcess([],0,b"[]",b""), subprocess.CompletedProcess([],0,json.dumps({"origin":"https://fastaiapi.cloud","api_key":"fixture-secret"}).encode(),b"")):
+            with patch.object(common.sys, "platform", "darwin"), patch.object(common.subprocess, "run", return_value=result), self.assertRaises(common.MediaError) as caught:
+                common.managed_key(self.descriptor, "h3")
+            self.assertNotIn("fixture-secret", str(caught.exception))
+
+    def test_keychain_timeout_is_safe_error(self):
+        import subprocess
+        self.descriptor["environment_configured"] = False
+        with patch.object(common.sys, "platform", "darwin"), patch.object(common.subprocess, "run", side_effect=subprocess.TimeoutExpired(["secret"],15)), self.assertRaisesRegex(common.MediaError, "钥匙串授权"):
+            common.managed_key(self.descriptor,"h3")
+
+    def test_config_status_checks_credential_access_without_printing_secrets(self):
+        import contextlib, io
+        with patch.object(common,"managed_connection",return_value=self.descriptor), patch.object(common,"active_config",return_value=("managed-keychain",None)), patch.object(common,"load_key",side_effect=common.MediaError("凭据库权限不足，请一键修复")), contextlib.redirect_stderr(io.StringIO()) as output:
+            self.assertEqual(api.main(["config-status"]),1)
+            self.assertIn("一键修复",output.getvalue())
+
+    def test_linux_managed_credentials_require_explicit_environment(self):
+        self.descriptor["environment_configured"] = False
+        with patch.object(common.sys, "platform", "linux"), self.assertRaisesRegex(common.MediaError,"FASTAIAPI"):
+            common.managed_key(self.descriptor,"main")
+
 
 if __name__ == "__main__":unittest.main()

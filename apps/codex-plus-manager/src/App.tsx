@@ -4118,6 +4118,7 @@ export function App() {
                   </UiBadge>
                 </span>
                 <Button
+                  className="fast-codex-launch"
                   disabled={launchPending || !overview?.runtime_health}
                   onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
                   title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}

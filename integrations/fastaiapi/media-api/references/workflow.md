@@ -2,6 +2,8 @@
 
 ## 文件和命令
 
+Codex++ 概览可选择默认图片／视频模型。CLI 未传 `--model` 时使用当前平台的保存选择；尚未选择时图片为 gpt-image-2、视频为 minimax-h3。显式 `--model` 优先，旧任务回执不随默认选择变化。
+
 `scripts/media_api.py` 为唯一 CLI 入口，其余脚本是包内适配器。
 只需要 Python 3.10+，所有命令支持 `--help`。
 

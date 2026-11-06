@@ -54,3 +54,11 @@
 .fast-service-selectors .fast-route-trigger{padding:8px 10px;gap:6px}
 .fast-gate:has(.fast-service-selectors.is-login){padding-top:65px}
 }
+
+/* 顶栏路线、运行状态与启动操作统一尺寸；状态保持只读语义。 */
+.topbar-actions{gap:8px}
+.topbar-actions .fast-route-trigger.is-route,.topbar-actions .codex-app-state>*,.topbar-actions .fast-codex-launch{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;min-height:36px;padding:0 12px;border:1px solid #8195ab30;border-radius:10px;background:#8195ab0a;box-shadow:none;font:inherit;font-size:12px;font-weight:550;line-height:1;letter-spacing:0;white-space:nowrap;color:inherit}
+.topbar-actions .fast-route-trigger-icon{width:auto;height:auto;background:transparent;border-radius:0;color:#61cdb9}.topbar-actions .fast-route-trigger-label{color:inherit}.topbar-actions .fast-route-trigger-icon>svg{width:15px;height:15px}
+.topbar-actions .codex-app-state{display:inline-flex;align-items:center}.topbar-actions .codex-app-state>*{color:#50cba6}.topbar-actions .codex-app-state>*:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.topbar-actions .fast-codex-launch{color:#61cdb9;border-color:#61cdb945;background:#61cdb90e;cursor:pointer}.topbar-actions .fast-codex-launch>svg{width:15px;height:15px}.topbar-actions .fast-codex-launch:hover:not(:disabled),.topbar-actions .fast-route-trigger.is-route:hover:not(:disabled){background:#61cdb91c;border-color:#61cdb965}.topbar-actions .fast-codex-launch:disabled{opacity:.5}
+.topbar-actions .codex-app-state>.bad{color:#f08d91}.topbar-actions .codex-app-state>.warn{color:#dbb879}

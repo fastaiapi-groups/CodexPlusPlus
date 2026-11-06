@@ -9,6 +9,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -31,16 +32,31 @@ SUCCESS = {"succeeded", "completed", "success"}
 PENDING = {"queued", "dispatching", "running", "retrying", "in_progress", "pending", "processing"}
 
 
+def model_kind(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", value):
+        return None
+    name = value.lower()
+    if any(word in name for word in ("video", "sora", "veo", "kling", "wan", "seedance", "minimax-h3", "ltx", "hunyuan", "sd2.5")):
+        return "video"
+    if any(word in name for word in ("image", "dall-e", "flux", "midjourney", "stable-diffusion", "sdxl", "imagen", "ideogram")):
+        return "image"
+    return None
+
+
 def canonical_model(value):
     if value == "grok":
         return "grok-imagine-video-1.5"
-    if value not in MODELS:
-        raise MediaError("Unsupported model; use one of the documented model IDs.")
-    return value
+    if value in MODELS:
+        return value
+    descriptor = common.managed_connection()
+    kind = model_kind(value)
+    if descriptor and (kind == "image" or kind == "video" and descriptor.get("platform", "newapi") == "newapi"):
+        return value
+    raise MediaError("Unsupported model; use one of the documented model IDs or a compatible New API media model.")
 
 
 def image_request(model, prompt, size="1024x1024", references=()):
-    if model not in IMAGE_MODELS or not prompt.strip() or size not in SIZES:
+    if model_kind(canonical_model(model)) != "image" or not prompt.strip() or size not in SIZES:
         raise MediaError("Invalid image model, prompt or size.")
     if len(references) > 4:
         raise MediaError("Image generation accepts at most four reference images.")
@@ -68,9 +84,9 @@ def prepare_run(directory, body):
     path.mkdir(parents=True, exist_ok=False)
     if os.name != "nt":
         path.chmod(0o700)
-    record = {"schema": 2, "origin": common.provider_origin(common.provider_for(model)), "model": model, "kind": "image" if model in IMAGE_MODELS else "video",
+    record = {"schema": 2, "origin": common.provider_origin(common.provider_for(model)), "model": model, "kind": model_kind(model),
               "state": "prepared", "request_sha256": hashlib.sha256(body).hexdigest()}
-    if model == "minimax-h3":
+    if model.startswith("minimax-h3"):
         record["idempotency_key"] = "media-api-" + str(uuid.uuid4())
     write_private(path / "request.json", body)
     write_private(path / "receipt.json", json_bytes(record))
@@ -80,8 +96,10 @@ def prepare_run(directory, body):
 def read_run(directory, verify_body=False):
     path = Path(directory).expanduser().resolve()
     record = read_json(path / "receipt.json")
-    if record.get("schema") != 2 or record.get("model") not in MODELS:
+    if record.get("schema") != 2 or not isinstance(record.get("model"), str):
         raise MediaError("Unrecognized run receipt.")
+    if model_kind(canonical_model(record["model"])) != record.get("kind"):
+        raise MediaError("Receipt model and media kind disagree.")
     if record.get("origin") != common.provider_origin(common.provider_for(record["model"])) and not common.same_managed_backend(record.get("origin")):
         raise MediaError("Run provider differs; refusing to send a job to another origin.")
     body = None
@@ -147,7 +165,8 @@ def collect_image(path, record, value):
             raw = temporary.read_bytes()
         else:
             raise MediaError("Image response missing base64 content or URL.")
-        output = path / f"{record['model']}-{index + 1:03d}{image_extension(raw)}"
+        filename_model = re.sub(r"[^A-Za-z0-9._-]", "_", record["model"])
+        output = path / f"{filename_model}-{index + 1:03d}{image_extension(raw)}"
         if output.exists():
             if output.read_bytes() != raw:
                 raise MediaError("Image output already exists with different content.")
@@ -172,7 +191,7 @@ def submit(directory, *, retry_ambiguous=False, key=None):
             raise MediaError("Run cannot be submitted from its current state.")
         key = key or common.load_key(common.provider_for(record["model"]))
         value = json.loads(body)
-        if record["model"] == "minimax-h3":
+        if record["model"].startswith("minimax-h3"):
             content = value.get("content", [])
             has_image = any(isinstance(item, dict) and (
                 item.get("type") == "image_b64" and isinstance(item.get("image_b64"), str) and item["image_b64"].strip()
@@ -189,7 +208,7 @@ def submit(directory, *, retry_ambiguous=False, key=None):
         if record["kind"] == "image":
             route = "/v1/images/edits" if value.get("images") else "/v1/images/generations"
         headers = {}
-        if record["model"] == "minimax-h3":
+        if record["model"].startswith("minimax-h3"):
             headers["Idempotency-Key"] = record["idempotency_key"]
         record["state"] = "submitting"
         save_record(path, record)  # Durable intent is recorded before the network call.
@@ -297,16 +316,17 @@ def download(directory, output):
         save_record(path, record)
         if record["state"] != "succeeded":
             raise MediaError("Video is not successful yet; inspect status or continue waiting.")
-        if record["model"] == "minimax-h3":
-            url = response.get("output_url")
-            descriptor = common.managed_connection()
-            if not url and descriptor and descriptor.get("platform", "newapi") == "newapi":
-                url = response.get("content_url") or response.get("video_url") or response.get("url")
+        descriptor = common.managed_connection()
+        provider = common.provider_for(record["model"])
+        if descriptor or record["model"].startswith("minimax-h3"):
+            url = response.get("output_url") or response.get("content_url") or response.get("video_url") or response.get("url")
+            if not url and descriptor:
+                url = route + "/content"
             if not isinstance(url, str) or not url:
-                raise MediaError("Successful H3 response has no output URL.")
-            url = urljoin(common.provider_origin("h3") + "/", url)
-            auth = key if descriptor and common.origin(url) == common.origin(common.provider_origin("h3")) else None
-            result = (common.download_file(url, output, auth, provider="h3") if auth
+                raise MediaError("Successful video response has no output URL.")
+            url = urljoin(common.provider_origin(provider) + "/", url)
+            auth = key if descriptor and common.origin(url) == common.origin(common.provider_origin(provider)) else None
+            result = (common.download_file(url, output, auth, provider=provider) if auth
                       else common.download_file(url, output))
         else:
             result = common.download_file(common.ORIGIN + route + "/content", output, key)
@@ -317,9 +337,9 @@ def download(directory, output):
 
 
 def build_from_args(args):
-    model = canonical_model(args.model)
-    prompt = h3.read_prompt(args.prompt_file) if model == "minimax-h3" else args.prompt_file.read_text(encoding="utf-8")
-    if model in IMAGE_MODELS:
+    model = canonical_model(args.model or common.default_model("video"))
+    prompt = h3.read_prompt(args.prompt_file) if model.startswith("minimax-h3") else args.prompt_file.read_text(encoding="utf-8")
+    if model_kind(model) == "image":
         if args.video or args.audio or args.duration is not None or args.mode is not None or args.metadata_file or args.ratio or args.resolution:
             raise MediaError("Video/audio/duration/mode/metadata arguments do not apply to images.")
         return image_request(model, prompt, args.size or "1024x1024", args.image)
@@ -327,16 +347,21 @@ def build_from_args(args):
         raise MediaError("Video uses ratio and resolution, not image size.")
     if args.duration is None:
         raise MediaError("Video duration is required.")
-    if model == "minimax-h3":
+    if model.startswith("minimax-h3"):
         if args.mode is not None:
             raise MediaError("H3 has no API mode field; direct the reference relationship in the prompt.")
         metadata = read_json(args.metadata_file) if args.metadata_file else None
         descriptor = common.managed_connection()
         native = bool(descriptor and descriptor.get("platform", "newapi") == "newapi")
         builder = h3.build_newapi_request if native else h3.build_request
-        return builder(prompt, duration=args.duration, ratio=args.ratio or "16:9",
-                                resolution=args.resolution or ("480p" if native else "720p"), images=args.image,
-                                videos=args.video, audios=args.audio, metadata=metadata)
+        body = builder(prompt, duration=args.duration, ratio=args.ratio or "16:9",
+                       resolution=args.resolution or ("480p" if native else "720p"), images=args.image,
+                       videos=args.video, audios=args.audio, metadata=metadata)
+        value = json.loads(body)
+        value["model"] = model
+        return json_bytes(value)
+    if model != "grok-imagine-video-1.5":
+        return newapi_video_request(model, prompt, args)
     if args.video or args.metadata_file or args.resolution not in {None, "720p"}:
         raise MediaError("Grok supports no video reference/metadata and only 720p in this contract.")
     if args.mode is None:
@@ -345,10 +370,31 @@ def build_from_args(args):
                               aspect_ratio=args.ratio or "16:9", images=args.image, audios=args.audio)[0]
 
 
+def newapi_video_request(model, prompt, args):
+    if not prompt.strip() or not 1 <= args.duration <= 60:
+        raise MediaError("Video prompt is required; duration must be 1–60 seconds, subject to the selected model's limits.")
+    if args.video or args.metadata_file or args.mode:
+        raise MediaError("The compatible New API adapter supports image/audio references, not reference video, metadata or mode overrides.")
+    dimensions = {"480p":(864,480), "720p":(1280,720), "768p":(1376,768), "1080p":(1920,1080)}
+    width, height = dimensions[args.resolution or "720p"]
+    if args.ratio == "9:16": width,height = height,width
+    value = {"model":model,"prompt":prompt.strip(),"seconds":args.duration,"size":f"{width}x{height}"}
+    for kind, items in (("image",args.image),("audio",args.audio)):
+        if len(items) > (9 if kind == "image" else 3):
+            raise MediaError("Too many media references for the compatible adapter.")
+        encoded = [h3.make_media(kind, item) for item in items]
+        if encoded:
+            value["reference_" + kind + "s"] = [item.get(kind + "_b64") or item[kind + "_url"]["url"] for item in encoded]
+    body = json_bytes(value)
+    if len(body) > h3.MAX_REQUEST_BYTES:
+        raise MediaError("Encoded request exceeds 10 MB; use public URLs for larger references.")
+    return body
+
+
 def image_batch(args):
     if args.count < 1 or args.concurrency < 1:
         raise MediaError("Count and concurrency must be positive.")
-    model = canonical_model(args.model)
+    model = canonical_model(args.model or common.default_model("image"))
     body = image_request(model, args.prompt_file.read_text(encoding="utf-8"), args.size, args.reference)
     key = common.load_key("main")
     root = args.output_dir.expanduser().resolve() / ("batch-" + uuid.uuid4().hex)
@@ -415,7 +461,7 @@ def parser():
     models.add_argument("--provider", choices=("main", "grok", "h3"), default="main")
     models.add_argument("--type", choices=("all", "image", "video"), default="all")
     prep = subs.add_parser("prepare", help="Prepare a new immutable request and receipt offline")
-    prep.add_argument("--model", default="minimax-h3", choices=MODELS + ("grok",))
+    prep.add_argument("--model", help="Default: selected video model in Codex++; otherwise minimax-h3")
     prep.add_argument("--prompt-file", type=Path, required=True)
     prep.add_argument("--run", type=Path, required=True)
     prep.add_argument("--size", choices=SIZES)
@@ -444,7 +490,7 @@ def parser():
     audio.add_argument("--output", type=Path, required=True)
     audio.add_argument("--voice", default="alloy")
     img = subs.add_parser("image", help="Synchronous image generation/editing, optional parallel batch")
-    img.add_argument("--model", choices=IMAGE_MODELS, default="gpt-image-2")
+    img.add_argument("--model", help="Default: selected image model in Codex++; otherwise gpt-image-2")
     img.add_argument("--prompt-file", type=Path, required=True)
     img.add_argument("--reference", action="append", default=[])
     img.add_argument("--size", choices=SIZES, default="1024x1024")
@@ -461,9 +507,16 @@ def main(argv=None):
             result = common.configure(key_file=args.key_file, provider=args.provider)
         elif args.command == "config-status":
             source, path = common.active_config(args.provider)
+            if source:
+                common.load_key(args.provider)  # 验证可读性，不输出实际凭据。
             result = {"ready": source is not None, "provider": args.provider,
                       "origin": common.provider_origin(args.provider), "active_source": source,
                       "active_config_path": str(path) if path else None}
+            descriptor = common.managed_connection()
+            if descriptor and descriptor.get("environment_configured") is False:
+                result["warning"] = "系统环境变量未配置成功，使用系统凭据库；请在 Codex++ 检查权限并一键修复。"
+            result["image_model"] = common.default_model("image")
+            result["video_model"] = common.default_model("video")
         elif args.command == "models":
             response = common.api_request("GET", "/v1/models", common.load_key(args.provider),
                                           retry=True, provider=args.provider)

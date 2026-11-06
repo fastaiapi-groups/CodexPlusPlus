@@ -43,6 +43,12 @@
 .fast-contact-method-logo-qq img{filter:invert(61%) sepia(71%) saturate(1557%) hue-rotate(177deg) brightness(103%) contrast(101%)}
 .fast-support-contacts{gap:18px}
 .fast-support-contacts>h3{margin:4px 0 0}
+.fast-manual-guides{display:grid;gap:18px;margin:26px 0}
+.fast-manual-guides>article{min-width:0;padding:22px;border:1px solid #37bba535;border-radius:16px;background:linear-gradient(135deg,#37bba50b,transparent 65%)}
+.fast-manual-guides header{display:flex;align-items:center;gap:12px}.fast-manual-guides header>span{display:grid;place-items:center;width:44px;height:44px;flex-shrink:0;border-radius:13px;background:#37bba51a;color:#37bba5}
+.fast-manual-guides header small{color:#37bba5}.fast-manual-guides h3{margin:3px 0;font-size:18px}.fast-manual-guides ol{padding-left:22px;margin:16px 0;font-size:13px;line-height:1.9}.fast-manual-guides li{padding-left:5px;margin:8px 0}
+.fast-manual-example{min-width:0;padding:15px;margin:12px 0;border:1px solid #8195ab25;border-radius:11px;background:#8195ab09}.fast-manual-example>div{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.fast-manual-example strong{font-size:12px}.fast-manual-example button{padding:6px 10px;font-size:11px;flex-shrink:0}.fast-manual-example p{margin:12px 0 0;white-space:pre-wrap;color:inherit;user-select:text}
+@media(max-width:480px){.fast-manual-guides>article{padding:16px}.fast-manual-example{padding:12px}}
 .fast-support-contacts article{display:flex;flex-direction:column;align-items:stretch;padding:22px;background:linear-gradient(145deg,#8195ab08,transparent);border-radius:16px}
 .fast-support-contacts h4{margin:0 0 8px;font-size:16px}
 .fast-support-contacts article>p{min-height:24px;margin:8px 0 0}

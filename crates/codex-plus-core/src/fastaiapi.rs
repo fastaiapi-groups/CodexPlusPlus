@@ -42,9 +42,7 @@ fn load_session_from(route: usize, mut load: impl FnMut(&str) -> Option<Vec<u8>>
         "com.fastaiapi.codexplusplus.newapi.0.session".into(),
     ]
     .into_iter()
-    .find_map(|name| {
-        load(&name).and_then(|v| serde_json::from_slice(&v).ok())
-    })
+    .find_map(|name| load(&name).and_then(|v| serde_json::from_slice(&v).ok()))
     .unwrap_or_default()
 }
 
@@ -368,6 +366,10 @@ async fn setup_default_media(s: &mut State) -> Result<Value, String> {
         {
             Ok(_) => {
                 let mut result = crate::fastaiapi_media_env::store(s.route, &key)?;
+                crate::fastaiapi_media_env::set_pricing_key_id(
+                    crate::fastaiapi_platform::Platform::NewApi,
+                    Some(id),
+                )?;
                 result["key_id"] = json!(id);
                 return Ok(result);
             }
@@ -401,6 +403,10 @@ async fn setup_default_media(s: &mut State) -> Result<Value, String> {
     )
     .await?;
     let mut result = crate::fastaiapi_media_env::store(s.route, &key)?;
+    crate::fastaiapi_media_env::set_pricing_key_id(
+        crate::fastaiapi_platform::Platform::NewApi,
+        Some(id),
+    )?;
     result["key_id"] = json!(id);
     Ok(result)
 }
@@ -426,7 +432,16 @@ pub(crate) async fn media_status_for(
         );
     }
     let saved = secret["api_key"].as_str().unwrap_or("");
-    if !crate::fastaiapi_media_env::matches(saved, origin) {
+    let fallback = crate::fastaiapi_media_env::credential_fallback(platform, origin);
+    let environment_matches = if fallback {
+        true
+    } else {
+        match crate::fastaiapi_media_env::check_matches(saved, origin) {
+            Ok(value) => value,
+            Err(error) => return Ok(json!({"state":"environment_error","message":error})),
+        }
+    };
+    if secret["origin"] != origin || saved.is_empty() || !environment_matches {
         return Ok(
             json!({"state":"environment_mismatch","message":"系统环境变量缺失或已变更，请点击一键修复。"}),
         );
@@ -449,8 +464,12 @@ pub(crate) async fn media_status_for(
                 .flatten()
                 .filter_map(|m| m["id"].as_str())
                 .collect();
+            let warning = crate::fastaiapi_media_env::environment_warning(platform, origin);
+            let message = warning.as_deref().unwrap_or("系统环境变量与 Key 已连接");
+            let defaults = crate::fastaiapi_media_env::model_defaults(platform);
             Ok(
-                json!({"state":"ready","message":"系统环境变量与 Key 已连接","models":ids,"default_video_model":"minimax-h3","default_video_available":ids.contains(&"minimax-h3")}),
+                json!({"state":if warning.is_some() || fallback {"environment_warning"} else {"ready"},"message":message,"models":ids,
+                "image_model":defaults["image_model"],"video_model":defaults["video_model"],"default_video_model":defaults["video_model"],"default_video_available":ids.contains(&defaults["video_model"].as_str().unwrap_or("minimax-h3"))}),
             )
         }
         Err(error) if error.contains("HTTP 401") || error.contains("HTTP 403") => Ok(
@@ -459,27 +478,37 @@ pub(crate) async fn media_status_for(
         Err(error) => Ok(json!({"state":"network_error","message":error})),
     }
 }
-async fn media_test(s: &mut State, kind: &str) -> Result<Value, String> {
+async fn media_test(s: &mut State, body: &Value) -> Result<Value, String> {
     media_test_for(
         crate::fastaiapi_platform::Platform::NewApi,
         ORIGINS[s.route],
-        kind,
+        body,
     )
     .await
 }
 pub(crate) async fn media_test_for(
     platform: crate::fastaiapi_platform::Platform,
     origin: &str,
-    kind: &str,
+    options: &Value,
 ) -> Result<Value, String> {
+    let kind = options["kind"].as_str().unwrap_or("text");
     if !matches!(kind, "text" | "image") {
         return Err("请选择文本或图片测试".into());
     }
     let secret = crate::fastaiapi_media_env::load_for(platform).ok_or("请先配置媒体 Key")?;
     let saved = secret["api_key"].as_str().ok_or("媒体 Key 缺失")?;
-    let key = crate::fastaiapi_media_env::user_value("FASTAIAPI_API_KEY")
-        .ok_or("环境变量缺失，请点击一键修复")?;
-    if saved != key || !crate::fastaiapi_media_env::matches(&key, origin) {
+    let fallback = crate::fastaiapi_media_env::credential_fallback(platform, origin);
+    let key = if fallback {
+        saved.to_owned()
+    } else {
+        crate::fastaiapi_media_env::user_value("FASTAIAPI_API_KEY")
+            .ok_or("环境变量缺失，请点击一键修复")?
+    };
+    if !crate::fastaiapi_media_env::is_active(platform)
+        || secret["origin"] != origin
+        || saved != key
+        || (!fallback && !crate::fastaiapi_media_env::matches(&key, origin))
+    {
         return Err("环境变量已变更，请先一键修复，再测试。".into());
     }
     let raw = data(
@@ -499,10 +528,17 @@ pub(crate) async fn media_test_for(
         .flatten()
         .filter_map(|m| m["id"].as_str())
         .collect();
-    let model = if kind == "image" {
+    let requested = options["model"].as_str().filter(|value| !value.is_empty());
+    let defaults = crate::fastaiapi_media_env::model_defaults(platform);
+    let model = if let Some(model) = requested {
+        if !ids.contains(&model) || model_kind(model) != kind {
+            return Err("请选择当前媒体 Key 可用的对应类型模型。".into());
+        }
+        Some(model)
+    } else if kind == "image" {
         ids.iter()
             .copied()
-            .find(|id| *id == "gpt-image-2")
+            .find(|id| Some(*id) == defaults["image_model"].as_str())
             .or_else(|| ids.iter().copied().find(|id| model_kind(id) == "image"))
     } else {
         ids.iter()
@@ -511,15 +547,26 @@ pub(crate) async fn media_test_for(
             .or_else(|| ids.iter().copied().find(|id| model_kind(id) == "text"))
     }
     .ok_or("当前 Key 没有相应测试模型权限")?;
+    let prompt = options["prompt"]
+        .as_str()
+        .unwrap_or(if kind == "image" {
+            "A small blue circle centered on a white background, simple flat icon."
+        } else {
+            "Reply with OK only."
+        })
+        .trim();
+    if prompt.is_empty() || prompt.chars().count() > 4000 {
+        return Err("测试内容须为 1–4000 个字符。".into());
+    }
     let (path, body) = if kind == "image" {
         (
             "/v1/images/generations",
-            json!({"model":model,"prompt":"A small blue circle centered on a white background, simple flat icon.","n":1,"size":"1024x1024","response_format":"b64_json"}),
+            json!({"model":model,"prompt":prompt,"n":1,"size":"1024x1024","response_format":"b64_json"}),
         )
     } else {
         (
             "/v1/chat/completions",
-            json!({"model":model,"messages":[{"role":"user","content":"Reply with OK only."}],"max_tokens":32,"stream":false}),
+            json!({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":32,"stream":false}),
         )
     };
     let value = send(
@@ -531,24 +578,74 @@ pub(crate) async fn media_test_for(
         Some(&key),
     )
     .await?;
+    test_result(kind, model, &value)
+}
+fn test_result(kind: &str, model: &str, value: &Value) -> Result<Value, String> {
+    let mut result = json!({"ok":true,"kind":kind,"model":model,"message":if kind=="text" {"文本生成测试成功"} else {"图片生成测试成功"}});
     if kind == "text" {
-        if value["choices"][0]["message"]["content"]
+        let content = value["choices"][0]["message"]["content"]
             .as_str()
-            .is_none_or(|text| text.trim().is_empty())
+            .filter(|text| !text.trim().is_empty())
+            .ok_or("文本测试未返回有效内容")?;
+        result["text"] = json!(content);
+    } else {
+        let item = value["data"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("图片测试未返回有效图片")?;
+        if let Some(raw) = item["b64_json"]
+            .as_str()
+            .filter(|value| value.len() <= 24_000_000)
         {
-            return Err("文本测试未返回有效内容".into());
-        }
-    } else if value["data"].as_array().is_none_or(|items| {
-        items.is_empty()
-            || !items.iter().any(|item| {
-                item["b64_json"].as_str().is_some_and(|v| !v.is_empty())
-                    || item["url"].as_str().is_some_and(|v| !v.is_empty())
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(raw)
+                .map_err(|_| "图片响应编码无效")?;
+            let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                "image/png"
+            } else if bytes.starts_with(b"\xff\xd8\xff") {
+                "image/jpeg"
+            } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+                "image/webp"
+            } else {
+                return Err("图片响应不是支持的图片格式".into());
+            };
+            result["image"] = json!(format!("data:{mime};base64,{raw}"));
+        } else if let Some(url) = item["url"]
+            .as_str()
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .filter(|url| {
+                matches!(url.scheme(), "https" | "http")
+                    && url.username().is_empty()
+                    && url.password().is_none()
             })
-    }) {
-        return Err("图片测试未返回有效图片".into());
+        {
+            result["image"] = json!(url.as_str());
+        } else {
+            return Err("图片测试未返回有效图片".into());
+        }
     }
-    Ok(
-        json!({"ok":true,"kind":kind,"model":model,"message":if kind=="text" {"文本生成测试成功"} else {"图片生成测试成功"}}),
+    Ok(result)
+}
+pub(crate) async fn select_media_model(
+    platform: crate::fastaiapi_platform::Platform,
+    origin: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let status = media_status_for(platform, origin).await?;
+    let models = status["models"].as_array().ok_or_else(|| {
+        status["message"]
+            .as_str()
+            .unwrap_or("请先修复媒体连接")
+            .to_owned()
+    })?;
+    let ids: Vec<&str> = models.iter().filter_map(Value::as_str).collect();
+    crate::fastaiapi_media_env::select_model(
+        platform,
+        origin,
+        body["kind"].as_str().unwrap_or(""),
+        body["model"].as_str().unwrap_or(""),
+        &ids,
     )
 }
 
@@ -635,7 +732,8 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         s.session = logged_out;
         s.session_loaded = true;
         let warning = crate::fastaiapi_secret_store::clear(&service(s.route, "media"))
-            .err().map(|_| "已退出登录。媒体连接凭据未能清理，请检查系统凭据库权限。");
+            .err()
+            .map(|_| "已退出登录。媒体连接凭据未能清理，请检查系统凭据库权限。");
         return Ok(json!({"warning":warning}));
     }
     let remember = body
@@ -748,7 +846,15 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
             .await?;
             crate::fastaiapi_media_env::store(s.route, &key)
         }
-        "media_test" => media_test(&mut s, body["kind"].as_str().unwrap_or("text")).await,
+        "media_test" => media_test(&mut s, &body).await,
+        "media_select" => {
+            select_media_model(
+                crate::fastaiapi_platform::Platform::NewApi,
+                ORIGINS[s.route],
+                &body,
+            )
+            .await
+        }
         "me" => {
             // 新版 JWT 到期时通过同源 refresh cookie 恢复；旧版仍走 session cookie。
             let raw = match request(&mut s, "GET", "/api/user/self", Value::Null).await {
@@ -796,12 +902,25 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 .find(|k| k["name"] == name && !before.iter().any(|b| b["id"] == k["id"]))
                 .ok_or("Key 已创建，请刷新列表后选择".into())
         }
-        "model_pricing" => {
-            let id = id
-                .parse::<i64>()
-                .ok()
+        "model_pricing" | "media_pricing" => {
+            let media_id = if action == "media_pricing" {
+                Some(crate::fastaiapi_media_env::pricing_key_id(
+                    crate::fastaiapi_platform::Platform::NewApi,
+                )?)
+            } else {
+                None
+            };
+            let id = media_id
+                .or_else(|| id.parse::<i64>().ok())
                 .filter(|i| *i > 0)
                 .ok_or("请选择有效的 API Key")?;
+            if media_id.is_some() {
+                let actual = key_secret(&mut s, id).await?;
+                let saved = crate::fastaiapi_media_env::load(s.route).ok_or("请先配置媒体 Key")?;
+                if saved["api_key"] != actual {
+                    return Err("媒体 Key 已变更，请一键修复后查看价格".into());
+                }
+            }
             let key = data(request(&mut s, "GET", &format!("/api/token/{id}"), Value::Null).await?);
             let pricing = request(&mut s, "GET", "/api/pricing", Value::Null).await?;
             let status = data(request(&mut s, "GET", "/api/status", Value::Null).await?);
@@ -921,7 +1040,9 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
                 "cache": input.zip(m["cache_ratio"].as_f64()).map(|(a,b)| a*b)})]
         } else {vec![]};
         let note = (expression_billed && tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。");
-        json!({"model": m["model_name"], "time_pricing": false, "pricing_note": note, "tiers": tiers})
+        let per_call = m["quota_type"] == 1 && m["billing_mode"].as_str().is_none_or(|value| matches!(value,""|"per_call"));
+        let unit_price = if per_call {rate.zip(m["model_price"].as_f64()).filter(|(_,price)|price.is_finite() && *price >= 0.0).map(|(rate,price)|price * rate * fx)} else {None};
+        json!({"model": m["model_name"], "time_pricing": false, "pricing_note": note, "tiers": tiers, "unit_price": unit_price, "billing_unit": if per_call {"call"} else {"token"}})
     }).collect();
     json!({"group": group, "rate_multiplier": rate, "currency": currency, "models": models})
 }
@@ -1037,16 +1158,70 @@ mod tests {
             "model_name":"dynamic", "enable_groups":["default"], "quota_type":0,
             "model_ratio":99, "billing_mode":"tiered_expr", "billing_expr":"unsupported_dynamic()"
         }]});
-        let result = super::model_pricing(&pricing,"default",&json!({"quota_display_type":"CNY","usd_exchange_rate":2}));
-        assert_eq!(result["models"][0]["tiers"][0]["input"],2.4);
-        assert_eq!(result["models"][0]["tiers"][1]["output"],18.0);
-        assert_eq!(result["models"][1]["tiers"],json!([]));
-        assert!(result["models"][1]["pricing_note"].as_str().unwrap().contains("动态计价"));
+        let result = super::model_pricing(
+            &pricing,
+            "default",
+            &json!({"quota_display_type":"CNY","usd_exchange_rate":2}),
+        );
+        assert_eq!(result["models"][0]["tiers"][0]["input"], 2.4);
+        assert_eq!(result["models"][0]["tiers"][1]["output"], 18.0);
+        assert_eq!(result["models"][1]["tiers"], json!([]));
+        assert!(
+            result["models"][1]["pricing_note"]
+                .as_str()
+                .unwrap()
+                .contains("动态计价")
+        );
     }
 
     #[test]
+    fn test_dialog_results_keep_actual_content_and_reject_unsafe_images() {
+        assert_eq!(
+            super::test_result(
+                "text",
+                "gpt-test",
+                &json!({"choices":[{"message":{"content":"OK"}}]})
+            )
+            .unwrap()["text"],
+            "OK"
+        );
+        assert!(super::test_result("text", "gpt-test", &json!({"choices":[]})).is_err());
+        for url in [
+            "javascript:alert(1)",
+            "file:///private/test",
+            "https://user:password@example.com/a.png",
+        ] {
+            assert!(
+                super::test_result("image", "gpt-image-2", &json!({"data":[{"url":url}]})).is_err()
+            );
+        }
+        use base64::Engine;
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture");
+        let result =
+            super::test_result("image", "gpt-image-2", &json!({"data":[{"b64_json":png}]}))
+                .unwrap();
+        assert!(
+            result["image"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert!(
+            super::test_result(
+                "image",
+                "gpt-image-2",
+                &json!({"data":[{"b64_json":"invalid"}]})
+            )
+            .is_err()
+        );
+    }
+    #[test]
     fn speech_and_transcription_models_are_not_codex_text_models() {
-        for model in ["manjuwa-dubbing-x", "funasr-transcribe-x", "gpt-4o-mini-tts"] {
+        for model in [
+            "manjuwa-dubbing-x",
+            "funasr-transcribe-x",
+            "gpt-4o-mini-tts",
+        ] {
             assert_eq!(super::model_kind(model), "other");
         }
         assert_eq!(super::model_kind("gpt-6.1-sol"), "text");
@@ -1063,7 +1238,8 @@ mod tests {
                     cookie: "fixture-old-cookie".into(),
                     bearer: "fixture-old-bearer".into(),
                     user_id: 42,
-                }).unwrap()
+                })
+                .unwrap()
             })
         });
         assert_eq!(restored.user_id, 0);
@@ -1122,6 +1298,8 @@ mod tests {
         assert_eq!(view["models"][0]["tiers"][0]["input"], 7.0);
         assert_eq!(view["models"][0]["tiers"][0]["output"], 28.0);
         assert_eq!(view["models"][1]["tiers"], json!([]));
+        assert!((view["models"][1]["unit_price"].as_f64().unwrap() - 0.28).abs() < 1e-9);
+        assert_eq!(view["models"][1]["billing_unit"], "call");
     }
     #[test]
     fn payment_and_response_validation() {

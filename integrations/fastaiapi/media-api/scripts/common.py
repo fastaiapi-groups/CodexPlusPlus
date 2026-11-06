@@ -47,9 +47,19 @@ def same_managed_backend(origin):
 def managed_environment(name):
     # 托管模式读取当前用户级环境，避免已运行应用继承的旧值在一键修复后继续遮蔽新 Key。
     if sys.platform == "darwin":
-        result = subprocess.run(["/bin/launchctl", "getenv", name], capture_output=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.decode("utf-8").strip()
+        try:
+            result = subprocess.run(["/bin/launchctl", "getenv", name], capture_output=True, timeout=3)
+            if result.returncode:
+                raise MediaError("无法读取系统环境变量，请检查权限并在 Codex++ 中一键修复。")
+            return result.stdout.decode("utf-8").strip() or None
+        except subprocess.TimeoutExpired:
+            raise MediaError("系统环境命令超过 3 秒未响应，请处理系统授权提示后在 Codex++ 中一键修复；配置图文指引见应用概览。") from None
+        except FileNotFoundError:
+            raise MediaError("系统环境命令不存在，请检查系统组件；配置图文指引见 Codex++ 概览，可在处理后点击一键修复。") from None
+        except PermissionError:
+            raise MediaError("系统拒绝执行环境命令，请按 Codex++ 概览的配置图文指引检查用户权限，再一键修复。") from None
+        except (OSError, UnicodeError):
+            raise MediaError("无法执行或读取系统环境命令，请按 Codex++ 配置图文指引检查，再一键修复。") from None
     elif sys.platform == "win32":
         import winreg
         try:
@@ -57,24 +67,33 @@ def managed_environment(name):
                 value, _ = winreg.QueryValueEx(registry, name)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
+        except FileNotFoundError:
+            return None
         except OSError:
-            pass
+            raise MediaError("无法读取 Windows 用户环境变量，请检查注册表权限并一键修复。") from None
+        return None
     return os.environ.get(name)
 
 
 def managed_key(descriptor, provider):
     origin = descriptor["origin"]
-    if (managed_environment("FASTAIAPI_BASE_URL") or origin).rstrip("/") != origin:
-        raise MediaError("系统环境变量与当前路线不匹配，请在 Codex++ 中一键修复并重启 Codex。")
-    name = PROVIDERS[provider][1]
-    value = managed_environment(name)
-    if value:
-        return normalize_key(value)
+    # 系统写入失败或中断时，只用当前连接的系统凭据，不能沿用进程继承的旧账号。
+    if descriptor.get("environment_configured") is not False:
+        if (managed_environment("FASTAIAPI_BASE_URL") or origin).rstrip("/") != origin:
+            raise MediaError("系统环境变量与当前路线不匹配，请在 Codex++ 中一键修复并重启 Codex。")
+        value = managed_environment(PROVIDERS[provider][1])
+        if value:
+            return normalize_key(value)
     service, account = descriptor.get("service", ""), descriptor.get("account", "")
     if service not in {"com.fastaiapi.codexplusplus.subapi.media", "com.fastaiapi.codexplusplus.newapi.media", "com.fastaiapi.codexplusplus.newapi.0.media", "com.fastaiapi.codexplusplus.newapi.1.media"}:
         raise MediaError("媒体凭据来源无效，请在 Codex++ 中一键修复。")
     if sys.platform == "darwin":
-        result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"], capture_output=True)
+        try:
+            result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"], capture_output=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            raise MediaError("系统凭据读取超过 15 秒未响应，请完成钥匙串授权，再按 Codex++ 配置图文指引一键修复。") from None
+        except OSError:
+            raise MediaError("无法执行系统凭据读取，请按 Codex++ 配置图文指引检查钥匙串授权，再一键修复。") from None
         if result.returncode:
             raise MediaError("无法读取系统凭据库，请允许钥匙串访问或在 Codex++ 手动配置。")
         raw = result.stdout
@@ -82,8 +101,11 @@ def managed_key(descriptor, provider):
         raw = windows_secret(service, account)
     else:
         raise MediaError("请先配置 FASTAIAPI_* 环境变量。")
-    secret = json.loads(raw)
-    if secret.get("origin") != origin:
+    try:
+        secret = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise MediaError("媒体凭据内容无效，请在 Codex++ 中一键修复。") from None
+    if not isinstance(secret, dict) or secret.get("origin") != origin:
         raise MediaError("媒体 Key 与路线不匹配，请一键修复。")
     return normalize_key(secret.get("api_key"))
 
@@ -94,22 +116,43 @@ def windows_secret(service, account):
                     ("Comment", wintypes.LPWSTR), ("LastWritten", wintypes.FILETIME), ("CredentialBlobSize", wintypes.DWORD),
                     ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)), ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD),
                     ("Attributes", ctypes.c_void_p), ("TargetAlias", wintypes.LPWSTR), ("UserName", wintypes.LPWSTR)]
-    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    try:
+        api = ctypes.WinDLL("advapi32", use_last_error=True)
+    except OSError:
+        raise MediaError("Windows 凭据管理器不可用，请检查系统权限并一键修复。") from None
     pointer = ctypes.POINTER(Credential)()
     api.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(Credential))]
     api.CredReadW.restype = wintypes.BOOL
     api.CredFree.argtypes = [ctypes.c_void_p]
     target = service + ":" + hashlib.sha256(account.encode()).hexdigest()
     if not api.CredReadW(target, 1, 0, ctypes.byref(pointer)):
-        raise MediaError("系统凭据库没有当前路线的创作 Key。")
+        raise MediaError("无法读取当前路线的创作 Key，请检查 Windows 凭据管理器权限并一键修复。")
+    if not pointer:
+        raise MediaError("系统凭据结果无效，请在 Codex++ 中一键修复。")
     try:
+        if not pointer.contents.CredentialBlob or not 0 < pointer.contents.CredentialBlobSize <= 5120:
+            raise MediaError("媒体凭据大小无效，请在 Codex++ 中一键修复。")
         return ctypes.string_at(pointer.contents.CredentialBlob, pointer.contents.CredentialBlobSize)
     finally:
         api.CredFree(pointer)
 
 
+def default_model(kind):
+    descriptor = managed_connection()
+    platforms = descriptor.get("model_defaults", {}) if descriptor else {}
+    if not isinstance(platforms, dict):
+        raise MediaError("媒体默认模型配置无效，请在 Codex++ 中重新选择。")
+    defaults = platforms.get(descriptor.get("platform", "newapi"), {}) if descriptor else {}
+    if not isinstance(defaults, dict):
+        raise MediaError("媒体默认模型配置无效，请在 Codex++ 中重新选择。")
+    value = defaults.get(kind)
+    if value is not None and (not isinstance(value, str) or not value or len(value) > 200):
+        raise MediaError("媒体默认模型配置无效，请在 Codex++ 中重新选择。")
+    return value or ("gpt-image-2" if kind == "image" else "minimax-h3")
+
+
 def provider_for(model):
-    return "h3" if model == "minimax-h3" else "grok" if model == "grok-imagine-video-1.5" else "main"
+    return "h3" if model.startswith("minimax-h3") else "grok" if model == "grok-imagine-video-1.5" else "main"
 
 
 def provider_origin(provider="main"):
@@ -186,8 +229,10 @@ def active_config(provider="main"):
     # Project copy first: it only exists because the global save was blocked (or refreshed with it),
     # so it is never older than the global file. Environment variable is a CI/server fallback.
     provider_origin(provider)
-    if managed_connection():
-        return ("managed-environment" if os.environ.get(PROVIDERS[provider][1]) else "managed-keychain"), None
+    descriptor = managed_connection()
+    if descriptor:
+        environment = descriptor.get("environment_configured") is not False and managed_environment(PROVIDERS[provider][1])
+        return ("managed-environment" if environment else "managed-keychain"), None
     project = project_config_path(provider=provider)
     if project:
         return "project", project
