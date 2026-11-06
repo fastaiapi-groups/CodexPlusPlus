@@ -1650,9 +1650,6 @@ pub fn live_config_matches_other_profile_in_home(
             "实时 config.toml 无法解析，已停止归属判定并保留原文件；请检查 TOML 语法后重试。"
         )
     })?;
-    if active_provider_id(&live_doc).is_none() {
-        return Ok(false);
-    }
     let Some(previous) = settings
         .relay_profiles
         .iter()
@@ -1660,6 +1657,26 @@ pub fn live_config_matches_other_profile_in_home(
     else {
         return Ok(false);
     };
+    if active_provider_id(&live_doc).is_none() {
+        // 官方客户端已切回某个已保存账号时，不把它的无 endpoint 配置回填进旧 API 供应商。
+        // 必须明确匹配账号身份；空认证、未知账号及混合 API 模式仍沿用原来的停止保护。
+        if previous.relay_mode == RelayMode::Official {
+            return Ok(false);
+        }
+        let auth = read_optional_text(&home.join("auth.json"))?;
+        let account = crate::official_login::chatgpt_account_id_from_auth_contents(&auth);
+        return Ok(auth_contents_looks_like_chatgpt_auth(&auth)
+            && codex_auth_api_key(&auth).is_none()
+            && !account.is_empty()
+            && settings.relay_profiles.iter().any(|profile| {
+                profile.id != previous_profile_id
+                    && profile.relay_mode == RelayMode::Official
+                    && !profile.official_mix_api_key
+                    && crate::official_login::chatgpt_account_id_from_auth_contents(
+                        &profile.auth_contents,
+                    ) == account
+            }));
+    }
     // 共享本工具的本地端口不是供应商身份，不可误认成另一个聚合profile。
     if recognized_managed_proxy_endpoint(previous, &live) {
         return Ok(false);

@@ -6,7 +6,7 @@ export function modelKind(id: string): "text" | "image" | "video" | "other" {
   const name = id.toLowerCase();
   if (/video|sora|veo|kling|wan|seedance|minimax-h3|ltx|hunyuan|sd2\.5/.test(name)) return "video";
   if (/image|dall-e|flux|midjourney|stable-diffusion|sdxl|imagen|ideogram/.test(name)) return "image";
-  if (/audio|tts|embedding|realtime|whisper|moderation|auto-review|reserve/.test(name)) return "other";
+  if (/audio|tts|embedding|realtime|whisper|dubbing|transcribe|moderation|auto-review|reserve/.test(name)) return "other";
   return "text";
 }
 type Status = {state: string; message: string; default_video_available?: boolean; models?: string[]};

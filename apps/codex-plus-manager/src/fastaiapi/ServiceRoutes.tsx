@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Globe, RefreshCw, Signal, X } from "lucide-react";
+import { Check, ChevronDown, Globe, Network, RefreshCw, Signal, X } from "lucide-react";
 import "./routes.css";
 type Route = {id: number; name: string; origin: string};
 export type Platform = "newapi" | "subapi";
@@ -41,8 +41,8 @@ export function RouteSelector({login = false}: {login?: boolean}) {
   const [open, setOpen] = useState(false), [platformOpen, setPlatformOpen] = useState(false);
   const name = routes.platforms.find(p => p.id === routes.platform)?.name;
   return <><div className={`fast-service-selectors${login ? " is-login" : ""}`}>
-    {authenticated ? <span className="fast-route-trigger fast-platform-fixed" aria-label={`当前平台：${name}`}><Globe size={16}/>{name}</span> : <button type="button" className="fast-route-trigger" aria-label={`选择平台：${name}`} disabled={locked} onClick={() => setPlatformOpen(true)}><Globe size={16}/>{name}<span>⌄</span></button>}
-    <button type="button" className="fast-route-trigger" disabled={locked} onClick={() => setOpen(true)}><Globe size={16}/>{routes.items.find(r => r.id === routes.selected)?.name}<span>⌄</span></button>
+    {!authenticated && <button type="button" className="fast-route-trigger" aria-label={`选择平台：${name}`} disabled={locked} onClick={() => setPlatformOpen(true)}><Globe size={16}/>{name}<ChevronDown size={13} className="fast-route-chevron"/></button>}
+    <button type="button" className="fast-route-trigger is-route" disabled={locked} onClick={() => setOpen(true)}><span className="fast-route-trigger-icon"><Network size={15}/></span><span className="fast-route-trigger-label">{routes.items.find(r => r.id === routes.selected)?.name}</span><ChevronDown size={13} className="fast-route-chevron"/></button>
     </div>{platformOpen && !authenticated && <PlatformDialog routes={routes} onSelect={selectPlatform} onClose={() => setPlatformOpen(false)}/>}{open && <RouteDialog routes={routes} onSelect={select} onClose={() => setOpen(false)}/>}</>;
 }
 function PlatformDialog({routes, onSelect, onClose}: {routes: Routes; onSelect: (id: Platform) => Promise<void>; onClose: () => void}) {

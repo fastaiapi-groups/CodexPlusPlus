@@ -5,7 +5,7 @@ import { Search, X, Check, RefreshCw } from "lucide-react";
 
 import "./recharge.css";
 import "./responsive.css";
-type ModelPrice = {model: string; time_pricing: boolean; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
+type ModelPrice = {model: string; time_pricing: boolean; pricing_note?: string; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
 type ModelPricing = {group: string; rate_multiplier: number; currency?: string; models: ModelPrice[]};
 const priceYuan = (price: number | null, currency = "USD") => price !== null && Number.isFinite(price)
   ? `${currency === "CNY" ? "¥" : "$"}${price.toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 6})}` : "—";
@@ -39,7 +39,7 @@ export function ModelDialog({keyId, models, value, busy, onApply, onReload, onCl
       const note = name.endsWith("-sol") ? "推理强" : name.endsWith("-luna") ? "性价比高" : "";
       const price = pricing?.models.find(price => price.model === m);
       return <label key={m} className={selected === m ? "selected" : ""}><input type="radio" name="default-model" checked={selected === m} disabled={busy || saving} onChange={() => setSelected(m)}/><span className="fast-model-card-content"><span className="fast-model-card-name">{m}</span><span className="fast-model-card-tags">{note && <em>{note}</em>}{m === value && <em className="is-current">当前默认</em>}</span>
-        {price?.tiers.length ? <span className="fast-model-price-table"><span className="fast-model-price-row is-heading"><span>上下文</span><span>输入</span><span>输出</span><span>缓存读取</span></span>{price.tiers.map((tier, i) => <span className="fast-model-price-row" key={i}><span>{tier.label}</span><b>{priceYuan(tier.input, pricing?.currency)}</b><b>{priceYuan(tier.output, pricing?.currency)}</b><b>{priceYuan(tier.cache, pricing?.currency)}</b></span>)}{price.time_pricing && <small>标准时段价格，其他时段按平台分时倍率计费</small>}</span> : <small className="fast-model-price-unavailable">{priceLoading ? "正在获取价格…" : "平台暂未公布价格"}</small>}
+        {price?.tiers.length ? <span className="fast-model-price-table"><span className="fast-model-price-row is-heading"><span>上下文</span><span>输入</span><span>输出</span><span>缓存读取</span></span>{price.tiers.map((tier, i) => <span className="fast-model-price-row" key={i}><span>{tier.label}</span><b>{priceYuan(tier.input, pricing?.currency)}</b><b>{priceYuan(tier.output, pricing?.currency)}</b><b>{priceYuan(tier.cache, pricing?.currency)}</b></span>)}{price.time_pricing && <small>标准时段价格，其他时段按平台分时倍率计费</small>}</span> : <small className="fast-model-price-unavailable">{priceLoading ? "正在获取价格…" : price?.pricing_note || "平台暂未公布价格"}</small>}
       </span>{selected === m && <Check className="fast-model-selected-check" size={17}/>}</label>;
     })}{!models.some(m => m.toLowerCase().includes(query.toLowerCase())) && <p>{busy ? "正在加载模型…" : "没有匹配的模型"}</p>}</div>
     {error && <p className="fast-payment-error" role="alert">{error}</p>}

@@ -8,6 +8,82 @@ use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, Settin
 
 const EXTERNAL_URL: &str = "https://external.example/v1";
 
+#[test]
+fn saved_official_account_is_not_backfilled_into_stale_api_profile() {
+    let (_temp, store, home, mut next) = fixture();
+    let live_auth = r#"{"auth_mode":"chatgpt","tokens":{"account_id":"saved-official-account","access_token":"fixture-access"}}"#;
+    std::fs::write(home.join("config.toml"), "model = \"gpt-test\"\n").unwrap();
+    std::fs::write(home.join("auth.json"), live_auth).unwrap();
+    next.relay_profiles.push(RelayProfile {
+        id: "official".into(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        auth_contents: live_auth.into(),
+        ..RelayProfile::default()
+    });
+    let original_api = profile(&next, "a").clone();
+    let result = switch_relay_profile_in_home_resolving_conflict(
+        &store,
+        &home,
+        next,
+        "a",
+        LiveConflictResolution::Stop,
+    )
+    .expect("已保存的官方账号应识别为另一供应商，而不是报缺少 endpoint");
+    let previous = profile(&result.0.settings, "a");
+    assert_eq!(
+        relay_profile_api_key(previous),
+        relay_profile_api_key(&original_api)
+    );
+    assert_eq!(
+        codex_plus_core::relay_config::relay_profile_base_url(previous),
+        "https://a.example/v1"
+    );
+    assert_eq!(previous.model, original_api.model);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &profile(&result.0.settings, "official").auth_contents
+        ).unwrap(),
+        serde_json::from_str::<serde_json::Value>(live_auth).unwrap()
+    );
+    assert!(
+        std::fs::read_to_string(home.join("config.toml"))
+            .unwrap().contains("https://b.example/v1")
+    );
+    assert!(result.0.backup_path.is_some(), "切换仍应保留实时文件备份");
+    assert_eq!(
+        std::fs::read_to_string(
+            std::path::Path::new(result.0.backup_path.as_ref().unwrap()).join("auth.json")
+        ).unwrap(),
+        live_auth
+    );
+}
+
+#[test]
+fn unknown_or_mixed_official_account_keeps_missing_endpoint_protection() {
+    for auth in [
+        r#"{"auth_mode":"chatgpt","tokens":{"account_id":"unknown-account","access_token":"fixture"}}"#,
+        r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":"fixture-api","tokens":{"account_id":"saved-account","access_token":"fixture"}}"#,
+    ] {
+        let (_temp, store, home, mut next) = fixture();
+        std::fs::write(home.join("config.toml"), "model = \"gpt-test\"\n").unwrap();
+        std::fs::write(home.join("auth.json"), auth).unwrap();
+        next.relay_profiles.push(RelayProfile {
+            id: "official".into(),
+            relay_mode: RelayMode::Official,
+            auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"account_id":"saved-account","access_token":"fixture"}}"#.into(),
+            ..RelayProfile::default()
+        });
+        assert!(
+            switch_relay_profile_in_home_resolving_conflict(
+                &store, &home, next, "a", LiveConflictResolution::Stop,
+            ).is_err()
+        );
+        assert_eq!(std::fs::read_to_string(home.join("auth.json")).unwrap(), auth);
+        assert_eq!(store.load().unwrap().active_relay_id, "a");
+    }
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),

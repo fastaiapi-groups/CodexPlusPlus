@@ -33,6 +33,9 @@ fn service(_route: usize, kind: &str) -> String {
     format!("com.fastaiapi.codexplusplus.newapi.{kind}")
 }
 fn load_session(route: usize) -> Session {
+    load_session_from(route, crate::fastaiapi_secret_store::load)
+}
+fn load_session_from(route: usize, mut load: impl FnMut(&str) -> Option<Vec<u8>>) -> Session {
     [
         service(route, "session"),
         "com.fastaiapi.codexplusplus.newapi.1.session".into(),
@@ -40,7 +43,7 @@ fn load_session(route: usize) -> Session {
     ]
     .into_iter()
     .find_map(|name| {
-        crate::fastaiapi_secret_store::load(&name).and_then(|v| serde_json::from_slice(&v).ok())
+        load(&name).and_then(|v| serde_json::from_slice(&v).ok())
     })
     .unwrap_or_default()
 }
@@ -620,18 +623,20 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
     if action == "logout" {
         // 同时撤销远端会话；网络不可达时仍清除本机凭据。
         let _ = request(&mut s, "GET", "/api/user/logout", Value::Null).await;
-        crate::fastaiapi_secret_store::clear(&service(s.route, "session"))?;
-        for old in [
-            "com.fastaiapi.codexplusplus.newapi.0.session",
-            "com.fastaiapi.codexplusplus.newapi.1.session",
-            "com.fastaiapi.codexplusplus.newapi.0.media",
-            "com.fastaiapi.codexplusplus.newapi.1.media",
-        ] {
-            crate::fastaiapi_secret_store::clear(old)?;
+        // 空会话作为迁移终止标记，防止删除当前条目后又恢复旧路线的历史登录。
+        // 历史条目可能属于旧签名应用；退出不依赖删除它们的额外权限。
+        let logged_out = Session::default();
+        if !crate::fastaiapi_secret_store::save(
+            &service(s.route, "session"),
+            &serde_json::to_vec(&logged_out).unwrap_or_default(),
+        ) {
+            return Err("无法保存退出状态，请允许访问系统凭据库后重试".into());
         }
-        crate::fastaiapi_secret_store::clear(&service(s.route, "media"))?;
-        s.session = Session::default();
-        return Ok(json!({}));
+        s.session = logged_out;
+        s.session_loaded = true;
+        let warning = crate::fastaiapi_secret_store::clear(&service(s.route, "media"))
+            .err().map(|_| "已退出登录。媒体连接凭据未能清理，请检查系统凭据库权限。");
+        return Ok(json!({"warning":warning}));
     }
     let remember = body
         .as_object_mut()
@@ -905,8 +910,18 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
     let models: Vec<Value> = raw["data"].as_array().into_iter().flatten().filter(|m| m["enable_groups"].as_array().is_some_and(|gs| gs.iter().any(|g| g == group || g == "all"))).map(|m| {
         let input = rate.zip(m["model_ratio"].as_f64()).map(|(r,v)| r*v*2.0*fx);
         let token_billed = m["quota_type"] == 0 && m["billing_mode"].as_str().is_none_or(|v| v == "" || v == "token");
-        json!({"model": m["model_name"], "time_pricing": false, "tiers": if token_billed {vec![json!({"label": "标准价", "input": input,
-            "output": input.zip(m["completion_ratio"].as_f64()).map(|(a,b)| a*b), "cache": input.zip(m["cache_ratio"].as_f64()).map(|(a,b)| a*b)})]} else {vec![]}})
+        let expression_billed = m["billing_mode"] == "tiered_expr";
+        let tiers = if expression_billed {
+            rate.zip(m["billing_expr"].as_str()).and_then(|(rate, expression)|
+                crate::fastaiapi_pricing::expression_tiers(expression, rate * fx)
+            ).unwrap_or_default()
+        } else if token_billed {
+            vec![json!({"label": "标准价", "input": input,
+                "output": input.zip(m["completion_ratio"].as_f64()).map(|(a,b)| a*b),
+                "cache": input.zip(m["cache_ratio"].as_f64()).map(|(a,b)| a*b)})]
+        } else {vec![]};
+        let note = (expression_billed && tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。");
+        json!({"model": m["model_name"], "time_pricing": false, "pricing_note": note, "tiers": tiers})
     }).collect();
     json!({"group": group, "rate_multiplier": rate, "currency": currency, "models": models})
 }
@@ -974,6 +989,8 @@ pub fn model_kind(id: &str) -> &'static str {
         "embedding",
         "realtime",
         "whisper",
+        "dubbing",
+        "transcribe",
         "moderation",
         "auto-review",
         "reserve",
@@ -1010,6 +1027,50 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tiered_expression_prices_override_stale_legacy_ratios() {
+        let pricing = json!({"group_ratio":{"default":0.5},"data":[{
+            "model_name":"gpt-tiered", "enable_groups":["default"], "quota_type":0,
+            "model_ratio":99, "completion_ratio":99, "billing_mode":"tiered_expr",
+            "billing_expr":"len <= 272000 ? tier(\"short\", p * 2.4 + cr * 0.12 + c * 12) : tier(\"long\", p * 4.8 + cr * 0.24 + c * 18)"
+        },{
+            "model_name":"dynamic", "enable_groups":["default"], "quota_type":0,
+            "model_ratio":99, "billing_mode":"tiered_expr", "billing_expr":"unsupported_dynamic()"
+        }]});
+        let result = super::model_pricing(&pricing,"default",&json!({"quota_display_type":"CNY","usd_exchange_rate":2}));
+        assert_eq!(result["models"][0]["tiers"][0]["input"],2.4);
+        assert_eq!(result["models"][0]["tiers"][1]["output"],18.0);
+        assert_eq!(result["models"][1]["tiers"],json!([]));
+        assert!(result["models"][1]["pricing_note"].as_str().unwrap().contains("动态计价"));
+    }
+
+    #[test]
+    fn speech_and_transcription_models_are_not_codex_text_models() {
+        for model in ["manjuwa-dubbing-x", "funasr-transcribe-x", "gpt-4o-mini-tts"] {
+            assert_eq!(super::model_kind(model), "other");
+        }
+        assert_eq!(super::model_kind("gpt-6.1-sol"), "text");
+    }
+    #[test]
+    fn logged_out_session_prevents_legacy_login_restoration() {
+        let mut requested = Vec::new();
+        let restored = super::load_session_from(1, |name| {
+            requested.push(name.to_owned());
+            Some(if name == "com.fastaiapi.codexplusplus.newapi.session" {
+                serde_json::to_vec(&super::Session::default()).unwrap()
+            } else {
+                serde_json::to_vec(&super::Session {
+                    cookie: "fixture-old-cookie".into(),
+                    bearer: "fixture-old-bearer".into(),
+                    user_id: 42,
+                }).unwrap()
+            })
+        });
+        assert_eq!(restored.user_id, 0);
+        assert!(restored.cookie.is_empty());
+        assert!(restored.bearer.is_empty());
+        assert_eq!(requested, ["com.fastaiapi.codexplusplus.newapi.session"]);
+    }
     use super::*;
     #[test]
     fn newapi_adapters_keep_groups_keys_and_currency() {

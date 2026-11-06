@@ -1,8 +1,9 @@
 import {useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
-import {ExternalLink, RefreshCw, X} from "lucide-react";
+import {Check, ExternalLink, RefreshCw, X} from "lucide-react";
 import {usePlatformInvoke} from "./ServiceRoutes";
 import "./recharge.css";
+import {PaymentChannelIcon} from "./PaymentChannelIcon";
 type Method = {currency?: string; display_name?: string; available: boolean; single_min: number; single_max: number; fee_rate: number};
 type Plan = {id: number; name: string; price: number; currency?: string; validity_days: number; group_name?: string};
 type Info = {methods: Record<string,Method>; plans: Plan[]; balance_disabled: boolean; global_min: number; global_max: number; help_text?: string};
@@ -55,7 +56,7 @@ export function SubApiRecharge({origin,onClose,onPaid}: {origin: string; onClose
     {info&&!checkout&&<>
       <fieldset className="fast-channel-picker" disabled={busy||attempted}><legend>充值内容</legend><div>{!info.balance_disabled&&<label className={!planId?"selected":""}><input type="radio" checked={!planId} onChange={()=>setPlanId(0)}/>账户余额</label>}{info.plans.map(p=><label key={p.id} className={planId===p.id?"selected":""}><input type="radio" checked={planId===p.id} onChange={()=>setPlanId(p.id)}/>{p.name} · {money(p.price,p.currency)} · {p.validity_days} 天</label>)}</div></fieldset>
       {!plan&&<label>充值金额<input type="number" min={selected?.single_min||info.global_min||0.01} max={selected?.single_max||undefined} step="0.01" value={amount} disabled={busy||attempted||info.balance_disabled} onChange={e=>setAmount(Number(e.target.value))}/></label>}
-      <fieldset className="fast-channel-picker" disabled={busy||attempted}><legend>支付方式</legend><div>{Object.entries(info.methods).filter(([,m])=>m.available).map(([id,m])=><label key={id} className={method===id?"selected":""}><input type="radio" checked={method===id} onChange={()=>setMethod(id)}/>{m.display_name||id} {m.currency}</label>)}</div></fieldset>
+      <fieldset className="fast-channel-picker" disabled={busy||attempted}><legend>支付方式</legend><div>{Object.entries(info.methods).filter(([,m])=>m.available).map(([id,m])=><label key={id} className={method===id?"selected":""}><input type="radio" checked={method===id} onChange={()=>setMethod(id)}/><PaymentChannelIcon channel={id}/><span>{m.display_name||id}<small>{m.currency}</small></span><i>{method===id&&<Check size={12}/>}</i></label>)}</div></fieldset>
       <p className="fast-model-hint">支付币种、手续费与到账额度以平台订单为准。</p>
       <button className="fast-pay-primary" disabled={busy||attempted||!method||(!plan&&(info.balance_disabled||!Number.isFinite(amount)||amount<=0||amount<(selected?.single_min||0)||(!!selected?.single_max&&amount>selected.single_max)))} onClick={()=>void pay()}>{busy?"正在处理…":attempted?"请查询原订单":"创建平台订单"}</button>
       {attempted&&!checkout&&<p>提交结果尚未确认，请刷新订单或前往平台钱包核对，避免重复付款。</p>}

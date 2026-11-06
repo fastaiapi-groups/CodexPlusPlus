@@ -1,6 +1,6 @@
 # Codex++ 的 FastAiApi / New API / SubAPI 接入
 
-登录和注册页先选择 New API 或 SubAPI；登录后展示对应平台的账号、余额、Key、分组、模型及充值。两个平台分别保存凭据和记住的登录信息；注册、登录成功或恢复有效会话后固定当前平台，右上角仅显示平台名称，仍可切换该平台路线。退出登录后才能重新选择平台。选择平台不会应用 Codex 配置或接管媒体环境。
+登录和注册页先选择 New API 或 SubAPI；登录后展示对应平台的账号、余额、Key、分组、模型及充值。两个平台分别保存凭据和记住的登录信息；注册、登录成功或恢复有效会话后固定当前平台，右上角隐藏平台入口，仍可切换该平台路线。退出登录后才能重新选择平台。选择平台不会应用 Codex 配置或接管媒体环境。
 
 New API 路线：
 
@@ -16,7 +16,9 @@ New API 路线：
 
 账户使用 `/api/user/login`、`/api/user/self`；兼容旧 session cookie 和新版 JWT + refresh cookie。访问令牌、Cookie、密码和 API Key 不输出到日志；仅在勾选“记住账号密码”且认证成功后保存密码。退出会话保留记住的登录信息，取消勾选立即清除。
 
-分组来自 `/api/user/self/groups`，保持 New API 的字符串分组名称；Key 通过 `/api/token/` 管理，仅原生层读取完整密钥。自动配置优先复用名为 `Codex++ FastAiApi` 的有效专用 Key，没有时优先选 `default` 或已开放的对话分组。余额使用站点 `quota_per_unit` 与货币设置换算；定价来自 `/api/pricing`，按当前 Key 分组倍率显示，未知价格不填为零。
+New API 退出时将当前会话替换为空会话记录，阻止旧路线的遗留登录被回退恢复；不依赖额外权限删除旧签名应用的历史条目。当前媒体凭据清理失败会明确提示，已完成的账号退出仍生效。登录成功会覆盖空记录保存新会话。
+
+分组来自 `/api/user/self/groups`，保持 New API 的字符串分组名称；Key 通过 `/api/token/` 管理，仅原生层读取完整密钥。自动配置优先复用名为 `Codex++ FastAiApi` 的有效专用 Key，没有时优先选 `default` 或已开放的对话分组。余额使用站点 `quota_per_unit` 与货币设置换算；定价来自 `/api/pricing`，按当前 Key 分组倍率显示；支持 tiered_expr 上下文阶梯价，表达式单价仅叠加分组和币种因子。无法准确展开的专用计价规则提示前往平台查看，未知价格不填为零。
 
 充值使用 `/api/user/topup/info`、`/api/user/amount`、`/api/user/topup/self`、`/api/user/topup`。按后台开关支持易支付收银台、多彩付款码与兑换码。多彩沿用原 `request_id` 和订单号；易支付提交结果未知时先查订单，不自动重建。其他支付渠道可从当前路线的平台钱包继续。
 
