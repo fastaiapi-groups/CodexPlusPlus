@@ -439,4 +439,8 @@ const MEDIA_FILES: &[(&str, &[u8])] = &[
         "scripts/test_media_api.py",
         include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/test_media_api.py"),
     ),
+    (
+        "scripts/test_managed_media.py",
+        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/test_managed_media.py"),
+    ),
 ];

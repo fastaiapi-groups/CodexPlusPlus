@@ -116,3 +116,31 @@ def build_request(prompt: str, *, duration: int, ratio: str, resolution: str,
     if len(body) > MAX_REQUEST_BYTES:
         raise ValueError("Encoded request exceeds 10 MB; use public URLs for larger references.")
     return body
+
+
+def build_newapi_request(prompt: str, *, duration: int, ratio: str, resolution="480p",
+                         images=(), videos=(), audios=(), metadata=None) -> bytes:
+    """New API 公共视频协议；不改变独立包的 content 协议。"""
+    dimensions = {"480p": (864, 480), "768p": (1376, 768), "1080p": (1920, 1088)}
+    if resolution not in dimensions:
+        raise ValueError("New API H3 supports 480p, 768p or 1080p; use an explicit supported resolution.")
+    if videos:
+        raise ValueError("New API H3 currently supports reference images and audio, not reference video.")
+    if metadata is not None:
+        raise ValueError("New API H3 does not accept arbitrary metadata in this adapter.")
+    legacy = json.loads(build_request(prompt, duration=duration, ratio=ratio, resolution="720p",
+                                      images=images, audios=audios))
+    width, height = dimensions[resolution]
+    if ratio == "9:16":
+        width, height = height, width
+    payload = {"model": "minimax-h3", "prompt": legacy["content"][0]["text"],
+               "seconds": duration, "size": f"{width}x{height}"}
+    for kind in ("image", "audio"):
+        items = [item.get(kind + "_b64") or item[kind + "_url"]["url"]
+                 for item in legacy["content"][1:] if item["type"].startswith(kind + "_")]
+        if items:
+            payload["reference_" + kind + "s"] = items
+    body = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(body) > MAX_REQUEST_BYTES:
+        raise ValueError("Encoded request exceeds 10 MB; use public URLs for larger references.")
+    return body

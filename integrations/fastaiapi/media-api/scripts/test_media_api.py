@@ -20,6 +20,10 @@ class MediaTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        # 安装后的技能旁有真实 connection.json；离线测试必须隔离用户凭据。
+        descriptor = patch.object(common, "MANAGED_DESCRIPTOR", self.root / "connection.json")
+        descriptor.start()
+        self.addCleanup(descriptor.stop)
         self.image = self.root / "reference.png"
         self.png = b"\x89PNG\r\n\x1a\nfixture"
         self.image.write_bytes(self.png)

@@ -24,3 +24,15 @@ Grok 分组 Key 可读取模型目录，但一次6秒 grok-imagine-video-1.5 提
 ## 2026-11-04 Windows 图片请求修复
 
 FastAiApi 前置 Cloudflare 会以 Error 1010 拦截 Python urllib 默认浏览器签名。客户端现对 API 请求和下载统一发送稳定的浏览器 User-Agent；同一 Key 的 `/v1/models` 请求已由 403 恢复为 200，并完成一次 `gpt-image-2` 图片生成和本地 PNG 校验。
+
+## 2026-11-07 Codex++ New API 托管实测
+
+使用当前 New API 路线2（tumeiapi.com）的托管 default Key 完成 gpt-6-sol 文本调用、gpt-image-2 图片生成和精确 minimax-h3 视频生成。
+图片保存并目视检查，实际1254×1254；以该图片作参考生成5秒864×480视频，H.264/24fps、AAC双声道，下载后完整解码无错误，逐秒画面确认机器人挥手动作。
+
+首次 H3 旧 content 协议提交返回400。根据本站 New API 源码的公共视频协议修正为 prompt、seconds、size、reference_images，之后单次提交成功；未修改旧回执或重发未知结果。
+成功响应为 completed，下载使用服务返回的同源 content_url 并携带模型 Key；外部下载地址不带鉴权。任务回执可跨进程由安装后的技能继续查询、下载。
+New API 默认480p，明确指定720p会在联网前拒绝，不自动升档；独立包原协议不变。
+
+默认独立语音 gpt-4o-mini-tts 的 /v1/audio/speech 仍返回503，未产生可验收的WAV，不将视频内的音轨算作独立语音接口通过。
+SubAPI 本轮没有真实账号生成测试，不能套用以上 New API 结果。安装后技能的54项离线测试通过，并用禁止系统凭据调用的方式验证自测隔离。

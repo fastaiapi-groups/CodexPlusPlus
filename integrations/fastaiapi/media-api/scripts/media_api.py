@@ -179,6 +179,10 @@ def submit(directory, *, retry_ambiguous=False, key=None):
                 or item.get("type") == "image_url" and isinstance(item.get("image_url"), dict)
                 and isinstance(item["image_url"].get("url"), str) and item["image_url"]["url"].strip()
             ) for item in content)
+            has_image = has_image or (isinstance(value.get("reference_images"), list)
+                                     and bool(value["reference_images"])
+                                     and all(isinstance(item, str) and item.strip()
+                                             for item in value["reference_images"]))
             if not has_image:
                 raise MediaError("MiniMax H3 requires a reference image. Prepare a new run with --image and an optimized H3 prompt.")
         route = "/v1/videos"
@@ -295,9 +299,15 @@ def download(directory, output):
             raise MediaError("Video is not successful yet; inspect status or continue waiting.")
         if record["model"] == "minimax-h3":
             url = response.get("output_url")
+            descriptor = common.managed_connection()
+            if not url and descriptor and descriptor.get("platform", "newapi") == "newapi":
+                url = response.get("content_url") or response.get("video_url") or response.get("url")
             if not isinstance(url, str) or not url:
-                raise MediaError("Successful H3 response has no output_url.")
-            result = common.download_file(url, output)
+                raise MediaError("Successful H3 response has no output URL.")
+            url = urljoin(common.provider_origin("h3") + "/", url)
+            auth = key if descriptor and common.origin(url) == common.origin(common.provider_origin("h3")) else None
+            result = (common.download_file(url, output, auth, provider="h3") if auth
+                      else common.download_file(url, output))
         else:
             result = common.download_file(common.ORIGIN + route + "/content", output, key)
         record["files"] = [result]
@@ -321,8 +331,11 @@ def build_from_args(args):
         if args.mode is not None:
             raise MediaError("H3 has no API mode field; direct the reference relationship in the prompt.")
         metadata = read_json(args.metadata_file) if args.metadata_file else None
-        return h3.build_request(prompt, duration=args.duration, ratio=args.ratio or "16:9",
-                                resolution=args.resolution or "720p", images=args.image,
+        descriptor = common.managed_connection()
+        native = bool(descriptor and descriptor.get("platform", "newapi") == "newapi")
+        builder = h3.build_newapi_request if native else h3.build_request
+        return builder(prompt, duration=args.duration, ratio=args.ratio or "16:9",
+                                resolution=args.resolution or ("480p" if native else "720p"), images=args.image,
                                 videos=args.video, audios=args.audio, metadata=metadata)
     if args.video or args.metadata_file or args.resolution not in {None, "720p"}:
         raise MediaError("Grok supports no video reference/metadata and only 720p in this contract.")
@@ -408,7 +421,7 @@ def parser():
     prep.add_argument("--size", choices=SIZES)
     prep.add_argument("--duration", type=int)
     prep.add_argument("--ratio", choices=("16:9", "9:16"))
-    prep.add_argument("--resolution", choices=("720p",), help="720p only; 2k is currently unsupported")
+    prep.add_argument("--resolution", choices=("480p", "720p", "768p", "1080p"), help="New API H3: 480p (default), 768p or 1080p; standalone H3: 720p")
     prep.add_argument("--mode", choices=("first-frame", "reference"))
     prep.add_argument("--metadata-file", type=Path)
     for kind in ("image", "video", "audio"):

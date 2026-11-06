@@ -10,6 +10,11 @@ import media_api as api
 
 class ManagedMediaTests(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        descriptor = patch.object(common, "MANAGED_DESCRIPTOR", Path(directory.name) / "connection.json")
+        descriptor.start()
+        self.addCleanup(descriptor.stop)
         patcher=patch.object(common,"managed_environment",side_effect=lambda name:os.environ.get(name))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -56,6 +61,66 @@ class ManagedMediaTests(unittest.TestCase):
         self.assertEqual(args.model,"minimax-h3")
         args=api.parser().parse_args(["prepare","--model","grok","--prompt-file","prompt.txt","--run","test"])
         self.assertEqual(args.model,"grok")
+
+    def test_newapi_h3_prepares_native_reference_protocol_with_default_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "reference.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+            prompt = root / "prompt.txt"
+            prompt.write_text("<Picture 1> robot waves once.")
+            args = api.parser().parse_args(["prepare", "--prompt-file", str(prompt), "--run", str(root / "run"),
+                                           "--duration", "5", "--image", str(image)])
+            with patch.object(common, "managed_connection", return_value={"platform":"newapi", "origin":"https://tumeiapi.com"}):
+                body = json.loads(api.build_from_args(args))
+            self.assertEqual(body["model"], "minimax-h3")
+            self.assertEqual(body["seconds"], 5)
+            self.assertEqual(body["size"], "864x480")
+            self.assertIn("<Picture 1>", body["prompt"])
+            self.assertTrue(body["reference_images"][0].startswith("data:image/png;base64,"))
+            self.assertNotIn("content", body)
+            args.resolution = "720p"
+            with patch.object(common, "managed_connection", return_value={"platform":"newapi"}), self.assertRaisesRegex(ValueError, "480p, 768p or 1080p"):
+                api.build_from_args(args)
+
+    def test_newapi_h3_submits_once_and_downloads_authenticated_content(self):
+        import h3
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            descriptor = {"platform":"newapi", "origin":"https://tumeiapi.com"}
+            body = h3.build_newapi_request("<Picture 1> robot waves.", duration=5, ratio="9:16",
+                                           images=["https://example.com/robot.png"], audios=["https://example.com/a.wav"])
+            self.assertEqual(json.loads(body)["size"], "480x864")
+            self.assertEqual(json.loads(body)["reference_audios"], ["https://example.com/a.wav"])
+            run = root / "run"
+            with patch.object(common, "managed_connection", return_value=descriptor), patch.object(common, "load_key", return_value="fixture-key"), patch.object(common, "api_request") as remote, patch.object(common, "download_file", return_value={"path":str(root / "video.mp4"),"bytes":10}) as fetch:
+                api.prepare_run(run, body)
+                remote.return_value = {"id":"task-1", "status":"queued"}
+                api.submit(run)
+                api.submit(run)
+                self.assertEqual(remote.call_count, 1)
+                remote.return_value = {"id":"task-1", "status":"completed", "content_url":"/v1/videos/task-1/content"}
+                api.download(run, root / "video.mp4")
+                fetch.assert_called_once_with("https://tumeiapi.com/v1/videos/task-1/content", root / "video.mp4", "fixture-key", provider="h3")
+
+    def test_newapi_h3_external_output_never_receives_key(self):
+        import h3
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(common, "managed_connection", return_value={"platform":"newapi", "origin":"https://tumeiapi.com"}), patch.object(common, "load_key", return_value="fixture-key"), patch.object(common, "api_request") as remote, patch.object(common, "download_file", return_value={"path":str(root / "video.mp4"),"bytes":10}) as fetch:
+                api.prepare_run(root / "run", h3.build_newapi_request("Robot waves.", duration=5, ratio="16:9", images=["https://example.com/robot.png"]))
+                remote.return_value = {"id":"task-1", "status":"queued"}
+                api.submit(root / "run")
+                remote.return_value = {"id":"task-1", "status":"completed", "output_url":"https://cdn.example/video.mp4"}
+                api.download(root / "run", root / "video.mp4")
+                fetch.assert_called_once_with("https://cdn.example/video.mp4", root / "video.mp4")
+
+    def test_newapi_h3_rejects_unsupported_references_without_network(self):
+        import h3
+        with self.assertRaisesRegex(ValueError, "reference video"):
+            h3.build_newapi_request("test", duration=5, ratio="16:9", images=["https://example.com/a.png"], videos=["https://example.com/a.mp4"])
+        with self.assertRaisesRegex(ValueError, "at least one reference image"):
+            h3.build_newapi_request("test", duration=5, ratio="16:9")
 
     def test_audio_success_has_durable_receipt_without_credentials(self):
         with tempfile.TemporaryDirectory() as directory:

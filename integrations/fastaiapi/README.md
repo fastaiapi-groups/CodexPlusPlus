@@ -42,6 +42,8 @@ New API 路线：
 
 视频默认 `minimax-h3`，只有用户明确指定时才换模型。H3 缺少参考图时先补齐素材，未开放该型号时明确提示，不自动改用 -f 或 -x。图片支持 base64 与 URL 响应，保存原响应后可恢复下载，避免付费提交后因下载失败而重发。音频补充 `/v1/audio/speech` 的 WAV 生成入口；实际可用性取决于后台模型和渠道。
 
+New API 托管 H3 使用当前公共视频协议 `prompt`、`seconds`、`size`、`reference_images`（可选 `reference_audios`）；默认480p，可显式选择768p或1080p。独立包和 SubAPI 保留原有 content/720p 协议，不能混用验证结果。New API 已于2026-11-07完成真实文本、图片及5秒H3视频生成、下载和解码检查。完整验收及待处理项见 `docs/verification/2026-11-07-app-media/report.md`。
+
 ## 网页开发
 
 先启动原生接口联调桥（仅回环，不自动登录、不打开 App），再启动前端：
