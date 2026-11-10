@@ -354,6 +354,39 @@ pub fn model_entry_window(
         .min()
 }
 
+/// 某家某个模型支持的思考档位（由低到高）：用户在模型资料里写的优先，其次内置模型资料。
+/// 没有资料时为空。与 Codex 模型目录、管理器的「思考等级」读同一份资料。
+pub fn model_reasoning_levels(relay: &RelayProfile, model: &str) -> Vec<String> {
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    let user = crate::relay_config::parse_model_metadata_map(&relay.model_metadata)
+        .ok()
+        .and_then(|map| map.get(&slug.to_ascii_lowercase()).cloned());
+    let Some(ui) = crate::model_suffix::model_ui_metadata_with_override(&slug, user.as_ref()) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = ui["supportedReasoningEfforts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|level| level["reasoningEffort"].as_str().map(str::to_string))
+        .collect();
+    crate::upstream_model_meta::normalize_levels(&names)
+}
+
+/// Agent 模型列表里一项的思考档位：它会发给的各家档位的并集（由低到高）。
+/// 发到哪家时再按那家的档位套（[`crate::gateway::anthropic_inbound::fit_reasoning_effort`]）。
+pub fn model_entry_reasoning_levels(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Vec<String> {
+    let all: Vec<String> = expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+        .into_iter()
+        .flat_map(|(relay, upstream)| model_reasoning_levels(&relay, &upstream))
+        .collect();
+    crate::upstream_model_meta::normalize_levels(&all)
+}
+
 /// 模型列表里一项实际会发给哪些（供应商, 上游模型）：模型组按成员展开（不推进轮换位置）。
 pub fn model_entry_members(
     gateway: &GatewaySettings,
@@ -403,6 +436,84 @@ pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, mode
         || qualified_provider(gateway, binding, model).is_some()
 }
 
+/// 暴露给 Agent 的模型：默认模型在前，然后是池里所有能用的模型和路由组，以及绑定里声明的模型。
+pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<String> {
+    let mut models = Vec::new();
+    let default = binding_default_model(gateway, binding);
+    if !default.is_empty() {
+        models.push(default);
+    }
+    for model in pool_models(gateway, binding)
+        .into_iter()
+        .chain(binding.declared_models())
+    {
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+/// 非 Claude 模型给 Claude Desktop 用的别名前缀。
+///
+/// Claude Desktop 的第三方网关模式在模型列表和发起会话时都会检查模型 id：必须含 claude / opus 等字样，
+/// 且不能含 gpt、grok、codex、gemini 等一长串黑名单字样，带 `claude-` 前缀也不行。
+/// 所以别名用「前缀 + 纯数字」，数字拼不出黑名单里的词；真实名字放在 `display_name` 里给选择器显示。
+pub const CLAUDE_ALIAS_PREFIX: &str = "claude-gw-";
+
+/// 有思考档位的非 Claude 模型给 Claude Desktop 用的别名前缀。
+///
+/// Desktop 的思考等级菜单只给它认识的模型出：网关模式下不读 `/v1/models` 里的档位，
+/// 档位表写死在 app.asar 里，其中 `/^(?:claude-)?(?:fable|mythos)(?:-|$)/` 匹配到的 id
+/// 给 low…max 五档（同 magpie 的 `mythos-magpie-<n>`）。`mythos` 也在它的 tier 白名单里，
+/// 列表过滤同样放行；句中不带 haiku / sonnet / opus，小模型选择不受影响。
+/// 数字部分与 [`CLAUDE_ALIAS_PREFIX`] 的一样，两种别名都能还原，旧会话不断。
+pub const CLAUDE_EFFORT_ALIAS_PREFIX: &str = "mythos-gw-";
+
+fn alias_number(model: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(model.as_bytes());
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!("{:010}", u64::from_be_bytes(head) % 10_000_000_000)
+}
+
+/// Claude Desktop 选择器里这个模型用的 id：名字里带 claude 的原样，其余换成稳定的数字别名
+/// （同一个模型名永远得到同一个别名，网关重启、池子变化都不影响已选的会话）。
+pub fn claude_alias(model: &str) -> String {
+    if model.to_ascii_lowercase().contains("claude") {
+        return model.to_string();
+    }
+    format!("{CLAUDE_ALIAS_PREFIX}{}", alias_number(model))
+}
+
+/// 同 [`claude_alias`]，但有思考档位的模型用 [`CLAUDE_EFFORT_ALIAS_PREFIX`]，让 Desktop 给它出思考等级菜单。
+pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
+    if model.to_ascii_lowercase().contains("claude") || !has_effort {
+        return claude_alias(model);
+    }
+    format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
+}
+
+/// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
+fn claude_alias_target(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    requested: &str,
+) -> Option<String> {
+    let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
+        .iter()
+        .find_map(|prefix| {
+            requested
+                .get(..prefix.len())
+                .filter(|head| head.eq_ignore_ascii_case(prefix))
+                .map(|_| &requested[prefix.len()..])
+        })?;
+    binding_exposed_models(gateway, binding)
+        .into_iter()
+        .find(|model| alias_number(model) == digits)
+}
+
 /// Codex 起名请求的提示词开头：桌面版首次起名、桌面版定期重新起名、终端版起名。
 /// 这几段由 Codex 固定拼好，作为临时线程里唯一的用户消息发出。
 const CODEX_TITLE_PROMPT_PREFIXES: &[&str] = &[
@@ -450,6 +561,10 @@ pub fn title_model_override(
     agent: &ToolId,
     request: &serde_json::Value,
 ) -> Option<String> {
+    // 拓展用 gateway.replaces 关掉了起名模型改发：起名请求照原来的模型路由。
+    if crate::extension_gateway::builtin_replaced("builtin:title-model") {
+        return None;
+    }
     let binding = gateway.active_binding(agent)?;
     let (title, _) = crate::model_suffix::parse_model_suffix(binding.title_model.trim());
     let title = title.trim();
@@ -464,17 +579,31 @@ pub fn effective_model(
     default_model: &str,
     requested: &str,
 ) -> String {
+    effective_model_detailed(gateway, binding, default_model, requested).0
+}
+
+/// 同 [`effective_model`]，另外返回是否按「未知模型 → 默认模型」策略改写过（#2874）。
+/// 这种改写会把请求整个换到默认模型所在的供应商，用户在 Codex 里看不出来，要记日志。
+fn effective_model_detailed(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    default_model: &str,
+    requested: &str,
+) -> (String, bool) {
     let requested = requested.trim();
     if requested.is_empty() {
-        return default_model.to_string();
+        return (default_model.to_string(), false);
     }
+    // Claude Desktop 选的非 Claude 模型带的是数字别名，先还原成真实名字再走下面的规则。
+    let aliased = claude_alias_target(gateway, binding, requested);
+    let requested = aliased.as_deref().unwrap_or(requested);
     // 审批模型（#2703）：codex-auto-review 改发到绑定指定的模型，优先于目录匹配与未知模型策略
     // （池里的 ChatGPT 账号可能把 codex-auto-review 列进模型表，那样会直接落到订阅额度上）。
     if requested == crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL {
         let (review, _) = crate::model_suffix::parse_model_suffix(binding.auto_review_model.trim());
         let review = review.trim();
         if !review.is_empty() {
-            return review.to_string();
+            return (review.to_string(), false);
         }
     }
     let (requested_slug, _) = crate::model_suffix::parse_model_suffix(requested);
@@ -484,12 +613,34 @@ pub fn effective_model(
         .any(|model| model.eq_ignore_ascii_case(&requested_slug))
         || model_is_routable(gateway, binding, &requested_slug)
     {
-        return requested_slug;
+        return (requested_slug, false);
     }
     match binding.unknown_model {
-        UnknownModelPolicy::MapToDefault if !default_model.is_empty() => default_model.to_string(),
-        _ => requested_slug,
+        UnknownModelPolicy::MapToDefault if !default_model.is_empty() => {
+            let mapped = !default_model.eq_ignore_ascii_case(&requested_slug);
+            (default_model.to_string(), mapped)
+        }
+        _ => (requested_slug, false),
     }
+}
+
+/// 同一个 Agent 的同一个模型名，改写日志 60 秒最多记一次：未知模型的每个请求都会走到这里。
+fn should_log_model_rewrite(agent: &str, requested: &str) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let key = format!("{agent}\u{0}{requested}");
+    let now = Instant::now();
+    let Ok(mut last) = LAST.get_or_init(|| Mutex::new(HashMap::new())).lock() else {
+        return false;
+    };
+    if last
+        .get(&key)
+        .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(60))
+    {
+        return false;
+    }
+    last.retain(|_, at| now.duration_since(*at) < Duration::from_secs(600));
+    last.insert(key, now);
+    true
 }
 
 /// `<供应商 id>/<模型>` → (供应商, 模型)。供应商必须是这个 Agent 能用的。
@@ -502,6 +653,49 @@ fn qualified_provider<'a>(
     model: &str,
 ) -> Option<(&'a RelayProfile, String)> {
     qualified_in(&binding_pool_relays(gateway, binding), model)
+}
+
+pub(super) fn has_explicit_model_identity(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> bool {
+    let (model, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    if group_by_model(gateway, &model).is_some() {
+        return true;
+    }
+    let relays = binding_pool_relays(gateway, binding);
+    if declared_by_any(&relays, &model) {
+        return false;
+    }
+    if model
+        .strip_prefix(GROUP_MODEL_PREFIX)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return true;
+    }
+    let Some((provider, name)) = model.split_once('/') else {
+        return false;
+    };
+    !name.trim().is_empty()
+        && gateway
+            .providers
+            .iter()
+            .any(|entry| entry.relay.id.eq_ignore_ascii_case(provider))
+}
+
+pub(super) fn model_identity_kind(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> &'static str {
+    if group_by_model(gateway, model).is_some() {
+        "group"
+    } else if qualified_provider(gateway, binding, model).is_some() {
+        "provider"
+    } else {
+        "bare"
+    }
 }
 
 /// [`qualified_provider`] 的规则，作用在给定的供应商列表上。
@@ -587,11 +781,32 @@ fn expand_model(
     if let Some((relay, upstream)) = qualified_provider(gateway, binding, model) {
         return vec![(relay.clone(), upstream)];
     }
-    binding_pool_relays(gateway, binding)
-        .into_iter()
+    let pool = binding_pool_relays(gateway, binding);
+    let serving: Vec<(RelayProfile, String)> = pool
+        .iter()
         .filter(|relay| serves(relay, model))
-        .map(|relay| (relay.clone(), model.to_string()))
-        .collect()
+        .map(|relay| ((*relay).clone(), model.to_string()))
+        .collect();
+    if !serving.is_empty() {
+        return serving;
+    }
+    // `<供应商 id>/<模型>` 指向的供应商已经不在池里（删了 / 关了 / 被挑选排除），又没人把整串当
+    // 模型名声明：前缀只是 Codex++ 的供应商 id，原样发给别家上游必然报「无权访问模型」（#2897）。
+    // 池里有别家提供去掉前缀的同名模型时，改由它们回答。只对 Agent 直接请求的模型（depth 0）这样做：
+    // 路由组成员钉在某家上，那家关了就该跳过，不能换成别家。
+    if depth == 0
+        && let Some((_, rest)) = model.split_once('/')
+        && !model.starts_with(GROUP_MODEL_PREFIX)
+        && !rest.trim().is_empty()
+    {
+        let rest = rest.trim();
+        return pool
+            .into_iter()
+            .filter(|relay| serves(relay, rest))
+            .map(|relay| (relay.clone(), rest.to_string()))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// 成员是不是通配符。
@@ -935,7 +1150,8 @@ fn resolve_plan_with(
         bail!("网关的供应商池是空的或都已关闭：请在网关的「供应商」里添加或打开供应商");
     }
     let default_model = binding_default_model(gateway, binding);
-    let model = effective_model(gateway, binding, &default_model, requested_model);
+    let (model, mapped_to_default) =
+        effective_model_detailed(gateway, binding, &default_model, requested_model);
     let conversation = conversation
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -977,17 +1193,65 @@ fn resolve_plan_with(
     if relays.is_empty() {
         bail!("网关的供应商池里没有供应商提供模型 {model}");
     }
+    let mut gate = crate::gateway::quota::DispatchGate::default();
+    let mut permitted = Vec::new();
+    let mut blocked = None;
+    for (relay, model) in relays {
+        match gate.check(gateway, &relay) {
+            Ok(()) => permitted.push((relay, model)),
+            Err(error) => {
+                let stop = matches!(
+                    &error.action,
+                    &crate::gateway::store::SubscriptionLimitAction::Stop
+                );
+                blocked = Some(error);
+                if stop {
+                    break;
+                }
+            }
+        }
+    }
+    if permitted.is_empty() {
+        if let Some(error) = blocked {
+            return Err(error.into());
+        }
+    }
+    let preferred = preferred.filter(|(relay_id, preferred_model)| {
+        permitted
+            .iter()
+            .any(|(relay, model)| &relay.id == relay_id && model == preferred_model)
+    });
+    if mapped_to_default && advance && should_log_model_rewrite(agent.as_str(), requested_model.trim()) {
+        // 请求的模型池里没人提供，按「未知模型」策略整个改发到默认模型的供应商（#2874）。
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "gateway.model_mapped_to_default",
+            serde_json::json!({
+                "agent": agent.as_str(),
+                "requestedModel": requested_model.trim(),
+                "model": model,
+                "provider": permitted.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
+                "providerId": permitted.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
+                "hint": "请求的模型不在网关供应商池里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在网关的 Agent 接入设置里改成原样转发",
+            }),
+        );
+    }
 
     let now = Instant::now();
     let mut candidates = Vec::new();
     let mut cooling: Option<Duration> = None;
     // 冷却 / 熔断中的候选：只在一个可用候选都没有时才用得上。
     let mut waiting: Vec<(GatewayCandidate, Duration, key_pool::WaitReason)> = Vec::new();
-    for (relay, upstream_model) in relays {
+    // 拓展用 gateway.replaces 关掉的内置环节：冷却 / 熔断中的 Key 照常当候选（排在可用的后面），
+    // 本地限速（RPM / 并发）不再生效。要避开哪些 Key 由拓展在 route 段自己筛。
+    let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
+    let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
+    let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
+    for (relay, upstream_model) in permitted {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
         // 限速满了的 Key 照样进候选：是否跳过、排队由候选循环在发请求时按实时名额决定。
         let limits = provider
+            .filter(|_| !rate_limit_off)
             .map(GatewayProvider::key_limits)
             .unwrap_or_default();
         let order = key_pool::order_keys_detailed(
@@ -1011,7 +1275,18 @@ fn resolve_plan_with(
             candidates.push(candidate(key));
         }
         for key in order.waiting {
-            waiting.push((candidate(key.candidate), key.remaining, key.reason));
+            let bypass = match key.reason {
+                // 自己在冷却的 Key 可能同时赶上供应商熔断：熔断没关掉时仍按熔断拦着。
+                key_pool::WaitReason::Cooling => {
+                    cooldown_off && (breaker_off || !key_pool::breaker_open(&key.candidate.key.relay_id, now))
+                }
+                key_pool::WaitReason::Breaker => breaker_off,
+            };
+            if bypass {
+                candidates.push(candidate(key.candidate));
+            } else {
+                waiting.push((candidate(key.candidate), key.remaining, key.reason));
+            }
         }
     }
     let mut waiting_candidates = Vec::new();
@@ -1075,6 +1350,8 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            upstream_meta: Default::default(),
+            subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
                 name: id.to_string(),
@@ -1157,6 +1434,57 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn unconfigured_exhausted_subscription_keeps_api_failover_candidates() {
+        use base64::Engine;
+        use crate::gateway::quota::{ProviderQuota, QuotaWindow, record_for_relay};
+        use crate::gateway::store::SubscriptionPolicy;
+
+        let model = "legacy-quota-failover-model";
+        let mut official = provider("legacy-quota-subscription", model);
+        official.relay.relay_mode = RelayMode::Official;
+        official.relay.base_url.clear();
+        official.relay.api_key.clear();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"iss": "https://auth.openai.com", "sub": "legacy-quota-failover"})
+                .to_string(),
+        );
+        official.relay.auth_contents = serde_json::json!({"tokens": {
+            "id_token": format!("header.{claims}.signature"),
+            "access_token": "legacy-quota-access",
+            "account_id": "legacy-quota-workspace"
+        }}).to_string();
+        record_for_relay(&official.relay, ProviderQuota {
+            windows: vec![QuotaWindow {
+                used_percent: 100.0,
+                resets_at_ms: Some(u64::MAX),
+                ..Default::default()
+            }],
+            updated_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            official_allowed: Some(false),
+            ..Default::default()
+        });
+        let mut gateway = gateway("group/legacy-quota-failover");
+        gateway.providers = vec![official, provider("legacy-quota-api", model)];
+        gateway.groups = vec![group(
+            "legacy-quota-failover",
+            GroupMode::InOrder,
+            vec![member(&format!("legacy-quota-subscription/{model}")), member(&format!("legacy-quota-api/{model}"))],
+        )];
+        assert_eq!(
+            routed(&gateway, "group/legacy-quota-failover"),
+            [
+                ("legacy-quota-subscription".into(), model.into()),
+                ("legacy-quota-api".into(), model.into())
+            ]
+        );
+        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        assert!(resolve_plan(
+            &gateway, &ToolId::Claude, "group/legacy-quota-failover", None,
+        ).is_err(), "only an explicitly configured stop policy may stop API failover");
+    }
+
     fn pair(relay: &str, model: &str) -> (String, String) {
         (relay.to_string(), model.to_string())
     }
@@ -1202,6 +1530,55 @@ mod tests {
         // 关掉的供应商不参与；不认识的模型改写成默认模型。
         assert_eq!(routed(&gateway, "off-model")[0].1, "deepseek-v4-pro");
         assert_eq!(routed(&gateway, "claude-opus-5-5")[0].1, "deepseek-v4-pro");
+    }
+
+    /// Claude Desktop 只认 Claude 名字：非 Claude 模型给数字别名，路由时还原成真实模型。
+    #[test]
+    fn claude_aliases_are_stable_digits_and_route_back() {
+        // 带 claude 的名字原样；其余是「前缀 + 10 位数字」，同名永远同一个别名。
+        assert_eq!(claude_alias("claude-opus-5-5"), "claude-opus-5-5");
+        let alias = claude_alias("kimi-k3");
+        let digits = alias.strip_prefix(CLAUDE_ALIAS_PREFIX).unwrap();
+        assert_eq!(digits.len(), 10);
+        assert!(digits.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(claude_alias("kimi-k3"), alias);
+        assert_ne!(claude_alias("deepseek-v4-pro"), alias);
+
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(
+            effective_model(&gateway, &binding, "deepseek-v4-pro", &alias.to_uppercase()),
+            "kimi-k3"
+        );
+        assert_eq!(routed(&gateway, &alias), vec![pair("kimi", "kimi-k3")]);
+        // 模型组也有别名；对不上任何模型的别名按未知模型处理。
+        assert_eq!(
+            routed(&gateway, &claude_alias("group/fast"))[0],
+            pair("ds", "deepseek-v4-flash")
+        );
+        assert_eq!(
+            routed(&gateway, "claude-gw-0000000000")[0].1,
+            "deepseek-v4-pro"
+        );
+    }
+
+    /// 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），旧的 claude-gw- 别名仍能还原。
+    #[test]
+    fn effort_aliases_use_mythos_prefix_and_route_back() {
+        assert_eq!(claude_desktop_alias("claude-test-model", true), "claude-test-model");
+        assert_eq!(claude_desktop_alias("kimi-k3", false), claude_alias("kimi-k3"));
+        let alias = claude_desktop_alias("kimi-k3", true);
+        let digits = alias.strip_prefix(CLAUDE_EFFORT_ALIAS_PREFIX).unwrap();
+        let old = claude_alias("kimi-k3");
+        assert_eq!(digits, old.strip_prefix(CLAUDE_ALIAS_PREFIX).unwrap());
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        for requested in [alias.to_uppercase(), old] {
+            assert_eq!(
+                effective_model(&gateway, &binding, "deepseek-v4-pro", &requested),
+                "kimi-k3"
+            );
+        }
     }
 
     /// #2703：绑定指定了审批模型时，codex-auto-review 改发到它；没指定时行为不变
@@ -1375,6 +1752,57 @@ mod tests {
             .filter(|id| id == "ds")
             .count();
         assert_eq!(ds_first, 6, "权重 3:1，8 次里 6 次先试 ds");
+    }
+
+    /// #2874：只有「池里没人提供 → 改写成默认模型」才算改写，要能被认出来记日志。
+    #[test]
+    fn mapping_unknown_model_to_default_is_reported() {
+        let gateway = gateway("kimi-k3");
+        let binding = gateway.active_binding(&ToolId::Claude).unwrap();
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", "gpt-unknown"),
+            ("kimi-k3".to_string(), true)
+        );
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", "kimi-k3"),
+            ("kimi-k3".to_string(), false),
+            "池里有的模型不算改写"
+        );
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", ""),
+            ("kimi-k3".to_string(), false),
+            "客户端没给模型名不算改写"
+        );
+        assert!(should_log_model_rewrite("claude", "gpt-unknown-throttle"));
+        assert!(
+            !should_log_model_rewrite("claude", "gpt-unknown-throttle"),
+            "同一个模型 60 秒内只记一次"
+        );
+    }
+
+    /// #2897：`<已删除的供应商>/<模型>` 不能带着前缀发给别家，池里有人提供同名模型时去掉前缀交给它。
+    #[test]
+    fn qualified_model_of_a_removed_provider_drops_the_prefix() {
+        let mut gateway = gateway("kimi-k3");
+        // 绑定里还声明着删掉的供应商的模型（删除前留下的）。
+        gateway.bindings.get_mut("claude").unwrap().extra_models =
+            vec!["gone/deepseek-v4-flash".to_string()];
+        assert_eq!(
+            routed(&gateway, "gone/deepseek-v4-flash"),
+            vec![pair("ds", "deepseek-v4-flash")]
+        );
+        // 关掉的供应商同理。
+        assert_eq!(
+            routed(&gateway, "off/kimi-k3"),
+            vec![pair("kimi", "kimi-k3")]
+        );
+        // 没人提供去掉前缀的模型时不乱发：落回原来的「未知模型」处理。
+        assert!(
+            routed(&gateway, "gone/nobody-serves-this")
+                .iter()
+                .all(|(_, model)| !model.starts_with("gone/")),
+            "前缀不能原样发给上游"
+        );
     }
 
     #[test]
@@ -1625,8 +2053,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         let mut gateway = gateway("group/usage-pin");
         gateway.providers.extend([
@@ -1778,8 +2208,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         record("q-low", quota(90.0));
         record("q-empty", quota(100.0));

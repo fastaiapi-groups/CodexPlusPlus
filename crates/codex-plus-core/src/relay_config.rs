@@ -12,6 +12,14 @@ use crate::settings::{
 };
 
 const RELAY_PROVIDER: &str = "custom";
+const MANAGED_SESSION_PROVIDER: &str = "codex_plus_managed";
+
+#[derive(Clone, Copy)]
+enum ManagedSessionProviderScan {
+    IndexOnly,
+    LegacyRollouts,
+}
+
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CC_SWITCH_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
@@ -400,10 +408,6 @@ pub fn ensure_active_protocol_proxy_config_in_home(
         changed = true;
     }
 
-    if !transport_uses_proxy && !openai_identity_uses_proxy && !changed {
-        return Ok(false);
-    }
-
     if transport_uses_proxy {
         let provider = doc
             .get_mut("model_providers")
@@ -438,6 +442,10 @@ pub fn ensure_active_protocol_proxy_config_in_home(
         changed |= before != after;
     }
 
+    if settings.active_relay_id != crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        changed |= sync_managed_session_provider(&mut doc, false);
+    }
+
     if !changed {
         return Ok(false);
     }
@@ -445,6 +453,232 @@ pub fn ensure_active_protocol_proxy_config_in_home(
         &config_path,
         ensure_trailing_newline(doc.to_string()).as_bytes(),
     )?;
+    Ok(true)
+}
+
+// 新版桌面端在主进程 RPC 内恢复会话，不一定经过渲染层的请求补丁。
+// 为旧会话保留可解析的 provider，传输始终跟随当前生效配置，不保留旧代理端口或 Key。
+fn sync_managed_session_provider(doc: &mut DocumentMut, needed: bool) -> bool {
+    if !needed
+        && doc
+            .get("model_providers")
+            .and_then(|providers| providers.get(MANAGED_SESSION_PROVIDER))
+            .is_none()
+    {
+        return false;
+    }
+    let active = match doc.get("model_provider") {
+        None => "openai",
+        Some(item) => match item.as_str().map(str::trim).filter(|id| !id.is_empty()) {
+            Some(id) => id,
+            None => return remove_managed_session_provider(doc),
+        },
+    }
+    .to_string();
+    if active == MANAGED_SESSION_PROVIDER {
+        return false;
+    }
+    if doc
+        .get("model_providers")
+        .is_some_and(|providers| !providers.is_table_like())
+    {
+        return false;
+    }
+    let mut provider = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(&active))
+        .filter(|provider| provider.is_table_like())
+        .cloned();
+    if active == "openai" {
+        // 内置 openai 不接受同名表覆盖；别名也不能继承该表里的残留凭据。
+        let mut builtin = Table::new();
+        builtin["name"] = toml_edit::value("OpenAI");
+        builtin["wire_api"] = toml_edit::value("responses");
+        builtin["requires_openai_auth"] = toml_edit::value(true);
+        provider = Some(Item::Table(builtin));
+    }
+    let Some(mut provider) = provider else {
+        return remove_managed_session_provider(doc);
+    };
+    if let Some(inline) = provider.as_inline_table().cloned() {
+        provider = Item::Table(inline.into_table());
+    }
+    // openai_base_url 是内置 OpenAI provider 的实际传输覆盖。
+    if active == "openai" {
+        if let Some(url) = doc.get(OPENAI_BASE_URL_KEY).and_then(Item::as_str) {
+            provider["base_url"] = toml_edit::value(url);
+        }
+    }
+    if doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(MANAGED_SESSION_PROVIDER))
+        .is_some_and(|existing| existing.to_string() == provider.to_string())
+    {
+        return false;
+    }
+    if doc.get("model_providers").is_none() {
+        doc["model_providers"] = toml_edit::table();
+    } else if let Some(inline) = doc["model_providers"].as_inline_table().cloned() {
+        doc["model_providers"] = Item::Table(inline.into_table());
+    }
+    doc["model_providers"][MANAGED_SESSION_PROVIDER] = provider;
+    true
+}
+
+fn remove_managed_session_provider(doc: &mut DocumentMut) -> bool {
+    doc.get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|providers| providers.remove(MANAGED_SESSION_PROVIDER))
+        .is_some()
+}
+
+fn managed_session_provider_needed(home: &Path, scan: ManagedSessionProviderScan) -> bool {
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    crate::codex_sqlite::codex_session_db_paths_from_home(&home)
+        .iter()
+        .any(|path| managed_session_provider_needed_in_db(path, &home, scan))
+}
+
+fn managed_session_provider_needed_in_db(
+    path: &Path,
+    home: &Path,
+    scan: ManagedSessionProviderScan,
+) -> bool {
+    let Ok(connection) =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return false;
+    };
+    if connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE model_provider = ?1)",
+            [MANAGED_SESSION_PROVIDER],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if matches!(scan, ManagedSessionProviderScan::IndexOnly) {
+        return false;
+    }
+
+    // 旧版修复流程可能已经把 state_5.sqlite 中的 provider 改成 custom，
+    // 但原始 rollout 的 session_meta 仍保留 codex_plus_managed。原生
+    // thread/resume 读取的是这份历史身份，不能只依赖当前索引中的 provider。
+    let mut statement = match connection.prepare(
+        "SELECT rollout_path FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    let paths = statement.query_map([], |row| row.get::<_, String>(0));
+    let Ok(paths) = paths else {
+        return false;
+    };
+    paths.flatten().any(|raw| {
+        managed_rollout_path(home, Path::new(&raw))
+            .is_some_and(|path| rollout_declares_managed_provider(&path))
+    })
+}
+
+fn managed_rollout_path(home: &Path, raw: &Path) -> Option<std::path::PathBuf> {
+    let home = home.canonicalize().ok()?;
+    let raw = raw.to_string_lossy();
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    let path = Path::new(raw);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    };
+    let path = path.canonicalize().ok()?;
+    if !path_is_within(&home, &path) {
+        return None;
+    }
+    Some(path)
+}
+
+fn path_is_within(root: &Path, candidate: &Path) -> bool {
+    if candidate.strip_prefix(root).is_ok() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        fn normalized(path: &Path) -> String {
+            let text = path.to_string_lossy().replace('/', "\\");
+            let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+            text.trim_end_matches('\\').to_ascii_lowercase()
+        }
+        let root = normalized(root);
+        let candidate = normalized(candidate);
+        candidate == root || candidate.starts_with(&(root + "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn rollout_declares_managed_provider(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    use std::io::BufRead;
+    std::io::BufReader::new(file)
+        .lines()
+        .take(8)
+        .flatten()
+        .find_map(|line| {
+            let value = serde_json::from_str::<Value>(&line).ok()?;
+            (value.get("type").and_then(Value::as_str) == Some("session_meta"))
+                .then(|| {
+                    value
+                        .get("payload")
+                        .and_then(|payload| payload.get("model_provider"))
+                        .and_then(Value::as_str)
+                        .map(|provider| provider == MANAGED_SESSION_PROVIDER)
+                })
+                .flatten()
+        })
+        .unwrap_or(false)
+}
+
+pub fn ensure_managed_session_provider_in_home(
+    home: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<bool> {
+    if !settings.relay_profiles_enabled
+        || settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+    {
+        return Ok(false);
+    }
+    repair_managed_session_provider_in_home(home, ManagedSessionProviderScan::IndexOnly)
+}
+
+fn repair_managed_session_provider_in_home(
+    home: &Path,
+    scan: ManagedSessionProviderScan,
+) -> anyhow::Result<bool> {
+    let path = home.join("config.toml");
+    let text = read_optional_text(&path)?;
+    let mut doc = parse_toml_document(&text)?;
+    let has_managed = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(MANAGED_SESSION_PROVIDER))
+        .is_some();
+    if !sync_managed_session_provider(
+        &mut doc,
+        !has_managed && managed_session_provider_needed(home, scan),
+    ) {
+        return Ok(false);
+    }
+    if read_optional_text(&path)? != text {
+        anyhow::bail!("Codex 配置已被其他窗口更新，请重试");
+    }
+    create_live_backup(home, Some(text.as_bytes()), None)?;
+    crate::settings::atomic_write(&path, ensure_trailing_newline(doc.to_string()).as_bytes())?;
     Ok(true)
 }
 
@@ -491,6 +725,9 @@ fn resolve_synced_chatgpt_tokens(profile: &RelayProfile) -> SyncedChatgptTokens 
     let Ok(settings) = crate::settings::SettingsStore::default().load() else {
         return None;
     };
+    if settings.native_auth_selection.is_some() {
+        return None;
+    }
     let aggregate = settings
         .aggregate_relay_profiles
         .iter()
@@ -899,9 +1136,21 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
     common_config_contents: &str,
     proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
+    let resolved_profile = crate::native_auth::resolve_profile_credentials(profile)?;
+    let profile = &resolved_profile;
     let previous_model = live_root_model(home);
     let result =
         apply_relay_profile_to_home_inner(home, profile, common_config_contents, proxy_port)?;
+    if profile.id != crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        if let Err(error) =
+            repair_managed_session_provider_in_home(home, ManagedSessionProviderScan::LegacyRollouts)
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "relay_config.managed_session_provider_repair_failed",
+                serde_json::json!({ "message": format!("{error:#}") }),
+            );
+        }
+    }
     // issue #2081：默认模型变了就记一笔，旧会话迁移留到下次启动前执行（opt-in）。
     let new_model = live_root_model(home);
     if let Err(error) = crate::codex_sqlite::record_pending_thread_model_migration(
@@ -1093,8 +1342,11 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
-    let backup_path =
-        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
+    let backup_path = write_codex_live_atomic(
+        home,
+        Some(&updated),
+        Some(auth_contents.as_bytes()),
+    )?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -1740,6 +1992,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -2182,6 +2435,10 @@ pub fn upsert_context_entry_in_common_config(
     }
     let table_name = context_table_name(kind)?;
     let body_doc = parse_toml_document(toml_body)?;
+    // #2887：残缺 mcp 条目（没有 command/url）写进去会让 Codex 拒载整份 config.toml。
+    if table_name == "mcp_servers" && !mcp_server_entry_has_transport(body_doc.as_table()) {
+        anyhow::bail!("MCP 条目缺少 command 或 url，已拒绝保存（这会让 Codex 拒载整份 config.toml）");
+    }
     let normalized = normalize_duplicate_toml_text(common_config);
     let mut doc = parse_toml_document(&normalized)?;
     if !doc.as_table().contains_key(table_name) {
@@ -2235,12 +2492,56 @@ pub fn sync_live_config_context_entries(
     if normalized_context.trim().is_empty() {
         return Ok(normalize_optional_toml(live_doc));
     }
-    let managed_doc = parse_toml_document(&normalized_context)?;
+    let mut managed_doc = parse_toml_document(&normalized_context)?;
+    // #2887：managed 侧 mcp 条目被前端压扁成残缺（没有 command/url）时，
+    // live 里同 id 的完整条目不能被它覆盖或删掉，否则整条 MCP 丢失甚至被
+    // repair_merged_mcp_servers 清掉。这样的 id 直接从 managed 侧拿掉，
+    // 后面的 remove/merge 自然不会碰 live 原条目。
+    let kept_live = drop_incomplete_managed_mcp_entries(live_doc.as_table(), managed_doc.as_table_mut());
+    if !kept_live.is_empty() {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "relay_config.mcp_context_entry_kept_live",
+            serde_json::json!({ "ids": kept_live }),
+        );
+    }
     remove_managed_context_entries(live_doc.as_table_mut(), managed_doc.as_table());
     let mut context_doc = managed_doc;
     remove_disabled_context_tables(context_doc.as_table_mut());
     merge_managed_context_tables(live_doc.as_table_mut(), context_doc.as_table());
     Ok(normalize_optional_toml(live_doc))
+}
+
+/// 从 managed 文档里摘掉残缺 mcp 条目：它没有 transport 而 live 里同 id
+/// 的条目有 transport 时，managed 版本整条丢弃（live 原样保留）。
+/// 返回被保留的 id 列表，供诊断日志记录。
+fn drop_incomplete_managed_mcp_entries(
+    live: &toml_edit::Table,
+    managed: &mut toml_edit::Table,
+) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let Some(live_servers) = live.get("mcp_servers").and_then(Item::as_table_like) else {
+        return kept;
+    };
+    let Some(managed_servers) = managed.get_mut("mcp_servers").and_then(Item::as_table_like_mut)
+    else {
+        return kept;
+    };
+    let incomplete: Vec<String> = managed_servers
+        .iter()
+        .filter(|(_, item)| !item.as_table_like().is_some_and(mcp_server_entry_has_transport))
+        .filter(|(id, _)| {
+            live_servers
+                .get(id)
+                .and_then(Item::as_table_like)
+                .is_some_and(mcp_server_entry_has_transport)
+        })
+        .map(|(id, _)| id.to_string())
+        .collect();
+    for id in incomplete {
+        managed_servers.remove(id.as_str());
+        kept.push(id);
+    }
+    kept
 }
 
 fn preserve_unmanaged_live_context_entries(
@@ -2398,9 +2699,32 @@ fn write_codex_live_atomic(
     config_text: Option<&str>,
     auth_bytes: Option<&[u8]>,
 ) -> anyhow::Result<Option<String>> {
+    write_codex_live_atomic_with(home, config_text, auth_bytes, crate::settings::atomic_write)
+}
+
+fn write_codex_live_atomic_with(
+    home: &Path,
+    config_text: Option<&str>,
+    auth_bytes: Option<&[u8]>,
+    mut write: impl FnMut(&Path, &[u8]) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<String>> {
+    let _guard = crate::official_login::native_auth_write_guard(home)?;
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let old_auth = read_optional_bytes(&auth_path)?;
+    let apply_native_selection = crate::native_auth::is_default_home(home)
+        && SettingsStore::default().load()?.native_auth_selection.is_some();
+    let auth_bytes = auth_bytes.or_else(|| {
+        apply_native_selection.then(|| old_auth.as_deref().unwrap_or(b"{}"))
+    });
+    let projected_auth = auth_bytes
+        .map(|bytes| {
+            let proposed = std::str::from_utf8(bytes).context("auth.json 不是有效 UTF-8")?;
+            crate::native_auth::project_native_auth(home, proposed).map(String::into_bytes)
+        })
+        .transpose()?;
+    let auth_bytes = projected_auth.as_deref();
     #[cfg(windows)]
     let normalized_config_text = config_text.map(normalize_config_text_for_write);
     #[cfg(windows)]
@@ -2409,7 +2733,13 @@ fn write_codex_live_atomic(
     let config_text = match config_text {
         Some(config_text) => {
             let config_text = preserve_live_app_settings(home, config_text)?;
-            Some(preserve_live_marketplace_configs(home, &config_text)?)
+            let config_text = preserve_live_marketplace_configs(home, &config_text)?;
+            let mut doc = parse_toml_document(&config_text)?;
+            let live = read_optional_text(&config_path)?;
+            let had_managed = parse_toml_document(&live)
+                .is_ok_and(|live| live.get("model_providers").and_then(|providers| providers.get(MANAGED_SESSION_PROVIDER)).is_some());
+            sync_managed_session_provider(&mut doc, had_managed);
+            Some(ensure_trailing_newline(doc.to_string()))
         }
         None => None,
     };
@@ -2423,23 +2753,37 @@ fn write_codex_live_atomic(
     }
 
     let old_config = read_optional_bytes(&config_path)?;
-    let old_auth = read_optional_bytes(&auth_path)?;
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
     let mut auth_written = false;
 
     if let Some(auth_bytes) = auth_bytes {
-        if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
+        if read_optional_bytes(&auth_path)? != old_auth {
+            anyhow::bail!("原生登录已被其他进程更新，已停止覆盖，请重试");
+        }
+        if let Err(error) = write(&auth_path, auth_bytes) {
             return Err(error.context("写入 auth.json 失败"));
         }
         auth_written = true;
     }
 
     if let Some(config_text) = config_text {
-        if let Err(error) = crate::settings::atomic_write(&config_path, config_text.as_bytes()) {
-            if auth_written {
-                let _ = restore_optional_file(&auth_path, old_auth.as_deref());
+        let result = (|| {
+            if read_optional_bytes(&config_path)? != old_config {
+                anyhow::bail!("config.toml 已被其他进程更新，已停止覆盖，请重试");
             }
-            let _ = restore_optional_file(&config_path, old_config.as_deref());
+            write(&config_path, config_text.as_bytes())
+        })();
+        if let Err(error) = result {
+            if auth_written
+                && read_optional_bytes(&auth_path)
+                    .is_ok_and(|current| current.as_deref() == auth_bytes)
+            {
+                if let Err(restore_error) = restore_optional_file(&auth_path, old_auth.as_deref()) {
+                    return Err(error.context(format!("写入 config.toml 失败；恢复 auth.json 也失败：{restore_error}")));
+                }
+            }
+            // atomic_write leaves the previous config intact on failure. Never overwrite
+            // another process's config or newer OAuth generation with a stale backup.
             return Err(error.context("写入 config.toml 失败"));
         }
     }
@@ -3083,6 +3427,138 @@ fn prefer_live_codex_managed_entries(target_doc: &mut DocumentMut, live_doc: &Do
     }
 }
 
+/// 参数里需要检查存在性的位置：Codex 运行时 / 安装目录与插件缓存目录（#2583）。
+///
+/// 其余参数（脚本名、相对路径、用户自己的目录）不判断，避免误删。
+fn is_codex_runtime_or_plugin_cache_path(value: &str) -> bool {
+    if is_codex_managed_install_path(value) {
+        return true;
+    }
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    // 插件缓存：~/.codex/plugins/cache/<marketplace>/<插件>/<版本>/...
+    normalized.contains("/plugins/cache/")
+        // macOS 桌面版把 cua_node 等运行时放在 app bundle 的 Resources 下，换包后路径会变。
+        || normalized.contains(".app/contents/resources/")
+}
+
+/// 把参数文本还原成本地路径文本：支持 `--flag=<值>` 与 `file://` URI（含 `file:///C:/...`）。
+/// 带百分号编码的 URI 不做解码，直接跳过，宁可不删也不误删。
+fn mcp_arg_local_path_text(arg: &str) -> Option<String> {
+    let value = arg.trim();
+    let value = match value.strip_prefix("--").and_then(|rest| rest.split_once('=')) {
+        Some((_, rest)) => rest,
+        None => value,
+    };
+    let Some(rest) = value.strip_prefix("file://") else {
+        return Some(value.to_string());
+    };
+    if rest.contains('%') {
+        return None;
+    }
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let bytes = rest.as_bytes();
+    // file:///C:/... → C:/...
+    if bytes.len() >= 4
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+        && (bytes[3] == b'/' || bytes[3] == b'\\')
+    {
+        return Some(rest[1..].to_string());
+    }
+    rest.starts_with('/').then(|| rest.to_string())
+}
+
+/// 判断一条 Codex 托管的 MCP 条目是否已经失效，返回原因（不含路径）。
+///
+/// - `command` 是绝对路径且文件不存在 → 失效；`npx` / `node` 这类非绝对路径不判断。
+/// - `args` 里位于 Codex 运行时目录 / 插件缓存目录下的绝对路径不存在 → 失效。
+///
+/// 绝对路径与存在性判断由调用方注入：宿主上用 `Path`，单元测试里可模拟 Windows。
+fn codex_managed_mcp_entry_stale_reason(
+    entry: &dyn toml_edit::TableLike,
+    path_is_absolute: &dyn Fn(&str) -> bool,
+    path_exists: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if let Some(command) = entry.get("command").and_then(Item::as_str) {
+        let command = command.trim();
+        if !command.is_empty() && path_is_absolute(command) && !path_exists(command) {
+            return Some("command_missing");
+        }
+    }
+    let args = entry.get("args").and_then(Item::as_array)?;
+    let missing_arg = args
+        .iter()
+        .filter_map(|value| value.as_str())
+        .filter_map(mcp_arg_local_path_text)
+        .any(|path| {
+            is_codex_runtime_or_plugin_cache_path(&path)
+                && path_is_absolute(&path)
+                && !path_exists(&path)
+        });
+    missing_arg.then_some("arg_path_missing")
+}
+
+/// 宿主路径是否存在：只有确认不存在才算不存在，权限等错误一律按存在处理（不删）。
+/// Windows 上盘符、反斜杠与大小写由系统 API 自己处理。
+fn host_path_exists(path: &str) -> bool {
+    !matches!(Path::new(path).try_exists(), Ok(false))
+}
+
+/// 去掉已失效的 node_repl / cua_repl（#2583）。
+///
+/// 新版 Codex 的 cua_repl 改由 unified-computer-use 插件的 `.mcp.json` 提供，不再写进
+/// config.toml；config.toml 里残留的旧条目不会再被 Codex 更新，而 config 里的同名条目
+/// 优先级高于插件定义（codex-rs `McpServerCatalog`：Config 档压过 Plugin 档），会一直
+/// 盖住插件、导致 MCP 启动失败。这里在写盘前把指向已删除程序的旧条目整条（含 env 等
+/// 子表）去掉。只处理这两个 Codex 自己写入的条目名，用户自己添加的 MCP 条目一律不动。
+fn remove_stale_codex_managed_mcp_servers(doc: &mut DocumentMut) {
+    // 宿主原生的绝对路径判断：Windows 认 `C:\` / `C:/` / UNC，其他平台认 `/` 开头。
+    // 另一平台风格的路径不当作绝对路径，不判断、不删除。
+    remove_stale_codex_managed_mcp_servers_with(
+        doc,
+        &|path| Path::new(path).is_absolute(),
+        &host_path_exists,
+    );
+}
+
+fn remove_stale_codex_managed_mcp_servers_with(
+    doc: &mut DocumentMut,
+    path_is_absolute: &dyn Fn(&str) -> bool,
+    path_exists: &dyn Fn(&str) -> bool,
+) {
+    let Some(servers) = doc.get_mut("mcp_servers").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let mut removed: Vec<serde_json::Value> = Vec::new();
+    for id in CODEX_MANAGED_MCP_SERVER_IDS {
+        let reason = servers
+            .get(id)
+            .and_then(Item::as_table_like)
+            .and_then(|entry| {
+                codex_managed_mcp_entry_stale_reason(entry, path_is_absolute, path_exists)
+            });
+        if let Some(reason) = reason {
+            servers.remove(id);
+            removed.push(serde_json::json!({ "id": id, "reason": reason }));
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    if servers.is_empty() {
+        doc.as_table_mut().remove("mcp_servers");
+    }
+    // 替用户删了配置，留一条诊断方便回溯；只记条目名与原因，不记路径。
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "relay_config.stale_codex_mcp_servers_removed",
+        serde_json::json!({
+            "removed": removed,
+            "detail": "codex-managed mcp server pointed to a deleted program; removed so the bundled plugin definition takes effect",
+        }),
+    );
+}
+
 /// mcp_servers 的形状权威在 live。模板里可能留着被压平的残形（启动键缺失、
 /// env 键混进父表），这里在写盘前用 live 补齐缺键，并把与 env 子表重复的父表键移除。
 fn repair_mcp_servers_from_live(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
@@ -3143,10 +3619,12 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     let live_text = read_optional_text(&home.join("config.toml"))?;
     if live_text.trim().is_empty() {
         repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+        remove_stale_codex_managed_mcp_servers(&mut target_doc);
         return Ok(normalize_optional_toml(target_doc));
     }
     let Ok(live_doc) = parse_toml_document(&live_text) else {
         repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+        remove_stale_codex_managed_mcp_servers(&mut target_doc);
         return Ok(normalize_optional_toml(target_doc));
     };
     if let Some(live_desktop) = live_doc.get("desktop").cloned() {
@@ -3172,6 +3650,10 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // 写盘前兜底：用 live 补过仍缺 command / url 的条目（模板减出来的残表，或 live 里本来就坏的），
     // Codex 会以 invalid transport 拒绝整份 config.toml、桌面版起不来，这里去掉并记诊断（#2765）。
     repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
+    // 取完 live 之后再兜底：node_repl / cua_repl 指向的程序已被 Codex 更新删掉时整条去掉，
+    // 让插件自己 .mcp.json 里的同名定义生效（config.toml 同名条目优先级高于插件，#2583）。
+    // 放在 live 合并之后，快照 / 模板里的同名旧条目也就不会再被写回。
+    remove_stale_codex_managed_mcp_servers(&mut target_doc);
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     // #2683：补回前先记下目标是否自己声明了 multi_agent_v2（v1 闸门写入或模板自带），
     // 补回之后据此决定要不要还原 v1 压下的闸门。
@@ -4515,6 +4997,10 @@ pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
 /// 改为直接列出 MCP 工具。Chat Completions 协议由代理把 tool_search 转成 function
 /// 工具，不受影响，因此只判定 Responses。
 pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
+    // 手动开关优先：非 Kimi 的中转也可能不认 tool_search（#2868）。
+    if profile.disable_tool_search {
+        return true;
+    }
     if profile.protocol != RelayProtocol::Responses {
         return false;
     }
@@ -5585,6 +6071,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -5782,6 +6269,48 @@ fn restore_profile_provider_name_for_backfill(
     Ok(doc.to_string())
 }
 
+/// Codex 只在 provider 满足「`requires_openai_auth = false` 且 `http_headers` 里有非空
+/// `x-openai-actor-authorization`」时，才给非 ChatGPT 登录的会话注册原生 `image_gen`
+/// （openai/codex `ModelProviderInfo::uses_openai_actor_authorization`，#1433）。
+/// 这个头只是占位：provider 此时走本地代理，代理不向上游透传它。
+pub const PURE_API_IMAGE_GENERATION_HEADER: &str = "x-openai-actor-authorization";
+pub const PURE_API_IMAGE_GENERATION_HEADER_VALUE: &str = "codex-plus-pure-api-image-generation";
+
+fn apply_pure_api_image_generation_header(provider: &mut Table, enabled: bool) {
+    if enabled {
+        provider["requires_openai_auth"] = toml_edit::value(false);
+        if !provider
+            .get("http_headers")
+            .is_some_and(Item::is_table_like)
+        {
+            provider.insert(
+                "http_headers",
+                toml_edit::value(toml_edit::InlineTable::new()),
+            );
+        }
+        provider["http_headers"][PURE_API_IMAGE_GENERATION_HEADER] =
+            toml_edit::value(PURE_API_IMAGE_GENERATION_HEADER_VALUE);
+        return;
+    }
+    // 关闭时只摘掉本工具写的占位头，用户自己配的同名头原样保留。
+    let Some(headers) = provider
+        .get_mut("http_headers")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return;
+    };
+    if headers
+        .get(PURE_API_IMAGE_GENERATION_HEADER)
+        .and_then(Item::as_str)
+        == Some(PURE_API_IMAGE_GENERATION_HEADER_VALUE)
+    {
+        headers.remove(PURE_API_IMAGE_GENERATION_HEADER);
+        if headers.is_empty() {
+            provider.remove("http_headers");
+        }
+    }
+}
+
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     complete_relay_profile_config_with_proxy_port(
         profile,
@@ -5924,6 +6453,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
@@ -5940,6 +6470,9 @@ fn complete_relay_profile_config_with_proxy_port(
         // auth.json 凭据。纯 API 也必须显式携带供应商 Key，不能改成依赖官方登录。
         provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
     }
+    apply_pure_api_image_generation_header(provider, profile.enables_pure_api_image_generation());
+
+    sync_managed_session_provider(&mut doc, profile.relay_mode == RelayMode::Aggregate);
 
     Ok(move_model_providers_before_profiles(
         &ensure_trailing_newline(doc.to_string()),
@@ -6423,7 +6956,7 @@ pub fn backup_live_files(home: &Path) -> anyhow::Result<Option<String>> {
     create_live_backup(home, config.as_deref(), auth.as_deref())
 }
 
-fn create_live_backup(
+pub fn create_live_backup(
     home: &Path,
     config: Option<&[u8]>,
     auth: Option<&[u8]>,
@@ -6563,6 +7096,401 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_config_write_recovers_only_the_auth_generation_written_by_this_transaction() {
+        for (previous, concurrent) in [
+            (Some(r#"{"tokens":{"access_token":"old"}}"#), None),
+            (None, None),
+            (Some(r#"{"tokens":{"access_token":"old"}}"#), Some(r#"{"tokens":{"access_token":"newer"}}"#)),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let auth_path = temp.path().join("auth.json");
+            let config_path = temp.path().join("config.toml");
+            let previous_config = "model = \"old\"\n";
+            std::fs::write(&config_path, previous_config).unwrap();
+            if let Some(previous) = previous {
+                std::fs::write(&auth_path, previous).unwrap();
+            }
+            let result = write_codex_live_atomic_with(
+                temp.path(), Some("model = \"new\"\n"), Some(br#"{"OPENAI_API_KEY":"test"}"#),
+                |path, bytes| {
+                    if path == config_path {
+                        if let Some(concurrent) = concurrent {
+                            std::fs::write(&auth_path, concurrent)?;
+                        }
+                        anyhow::bail!("synthetic config write failure");
+                    }
+                    crate::settings::atomic_write(path, bytes)
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("config.toml"));
+            assert_eq!(read_optional_bytes(&auth_path).unwrap(),
+                concurrent.or(previous).map(|contents| contents.as_bytes().to_vec()));
+            assert_eq!(std::fs::read_to_string(&config_path).unwrap(), previous_config);
+        }
+    }
+
+    #[test]
+    fn concurrent_config_change_is_not_overwritten_and_auth_is_recovered() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let auth_path = temp.path().join("auth.json");
+        std::fs::write(&config_path, "model = \"old\"\n").unwrap();
+        let result = write_codex_live_atomic_with(
+            temp.path(), Some("model = \"ours\"\n"), Some(b"{}"),
+            |path, bytes| {
+                crate::settings::atomic_write(path, bytes)?;
+                if path == auth_path {
+                    std::fs::write(&config_path, "model = \"external\"\n")?;
+                }
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("config.toml"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "model = \"external\"\n");
+        assert!(!auth_path.exists());
+    }
+
+    #[test]
+    fn managed_session_provider_follows_effective_transport_without_selecting_it() {
+        let mut doc = parse_toml_document(
+            r#"
+model_provider = "relay"
+[model_providers.relay]
+name = "Relay"
+base_url = "http://127.0.0.1:64000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "synthetic-new"
+http_headers = { "X-Test" = "test" }
+[model_providers.codex_plus_managed]
+name = "custom"
+base_url = "http://127.0.0.1:12345/v1"
+experimental_bearer_token = "synthetic-old"
+"#,
+        )
+        .unwrap();
+        assert!(sync_managed_session_provider(&mut doc, false));
+        assert_eq!(doc["model_provider"].as_str(), Some("relay"));
+        assert_eq!(
+            doc["model_providers"][MANAGED_SESSION_PROVIDER].to_string(),
+            doc["model_providers"]["relay"].to_string()
+        );
+        assert!(!sync_managed_session_provider(&mut doc, true));
+    }
+
+    #[test]
+    fn managed_session_provider_official_switch_drops_old_credentials() {
+        let mut doc = parse_toml_document(
+            r#"
+openai_base_url = "http://127.0.0.1:64001/v1"
+[model_providers.codex_plus_managed]
+name = "custom"
+experimental_bearer_token = "synthetic-old"
+env_key = "OLD_KEY"
+http_headers = { "Authorization" = "old" }
+[model_providers.openai]
+experimental_bearer_token = "unused-token"
+env_key = "UNUSED_KEY"
+http_headers = { "Authorization" = "unused" }
+"#,
+        )
+        .unwrap();
+        assert!(sync_managed_session_provider(&mut doc, false));
+        let provider = &doc["model_providers"][MANAGED_SESSION_PROVIDER];
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+        assert_eq!(
+            provider["base_url"].as_str(),
+            Some("http://127.0.0.1:64001/v1")
+        );
+        assert!(provider.get("experimental_bearer_token").is_none());
+        assert!(provider.get("env_key").is_none());
+        assert!(provider.get("http_headers").is_none());
+        assert!(doc.get("model_provider").is_none());
+    }
+
+    #[test]
+    fn managed_session_provider_does_not_guess_unknown_provider_or_touch_unrelated_homes() {
+        for text in [
+            "model_provider = 'unknown'",
+            "model_provider = 'openai'",
+            "model_providers = 1",
+        ] {
+            let mut doc = parse_toml_document(text).unwrap();
+            let original = doc.to_string();
+            assert!(!sync_managed_session_provider(&mut doc, false));
+            assert_eq!(doc.to_string(), original);
+        }
+        let mut doc = parse_toml_document("model_provider = 'unknown'").unwrap();
+        assert!(!sync_managed_session_provider(&mut doc, true));
+        for invalid in ["model_provider = ''", "model_provider = 7"] {
+            let mut doc = parse_toml_document(invalid).unwrap();
+            let original = doc.to_string();
+            assert!(!sync_managed_session_provider(&mut doc, true));
+            assert_eq!(doc.to_string(), original);
+        }
+    }
+
+    #[test]
+    fn managed_session_provider_removes_stale_alias_when_active_provider_is_unresolved() {
+        for active in ["'missing'", "''", "7", "'broken'"] {
+            for providers in [
+                "[model_providers]\nbroken = 7\n[model_providers.unrelated]\nname = 'Keep'\n[model_providers.codex_plus_managed]\nexperimental_bearer_token = 'synthetic-old'\n",
+                "model_providers = { broken = 7, unrelated = { name = 'Keep' }, codex_plus_managed = { experimental_bearer_token = 'synthetic-old' } }\n",
+            ] {
+                let mut doc = parse_toml_document(&format!("model_provider = {active}\n{providers}")).unwrap();
+                let original_active = doc["model_provider"].to_string();
+                assert!(sync_managed_session_provider(&mut doc, true));
+                assert!(doc["model_providers"].get(MANAGED_SESSION_PROVIDER).is_none());
+                assert_eq!(doc["model_providers"]["unrelated"]["name"].as_str(), Some("Keep"));
+                assert_eq!(doc["model_provider"].to_string(), original_active);
+                assert!(!doc.to_string().contains("synthetic-old"));
+                assert!(!sync_managed_session_provider(&mut doc, true));
+            }
+        }
+    }
+
+    #[test]
+    fn managed_session_provider_supports_inline_provider_tables() {
+        for text in [
+            "model_provider = 'relay'\nmodel_providers = { relay = { name = 'Relay', wire_api = 'responses' }, codex_plus_managed = { name = 'old' } }",
+            "model_provider = 'relay'\n[model_providers]\nrelay = { name = 'Relay', wire_api = 'responses' }\ncodex_plus_managed = { name = 'old' }",
+        ] {
+            let mut doc = parse_toml_document(text).unwrap();
+            assert!(sync_managed_session_provider(&mut doc, false));
+            let written = parse_toml_document(&doc.to_string()).unwrap();
+            assert_eq!(
+                written["model_providers"][MANAGED_SESSION_PROVIDER]["name"].as_str(),
+                Some("Relay")
+            );
+            assert!(!sync_managed_session_provider(&mut doc, false));
+        }
+    }
+
+    #[test]
+    fn managed_session_provider_repairs_native_resume_from_catalog_and_is_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        let db = rusqlite::Connection::open(home.path().join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE threads (id TEXT, model_provider TEXT); INSERT INTO threads VALUES ('legacy', 'codex_plus_managed');").unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            r#"
+model_provider = "relay"
+[model_providers.relay]
+name = "Relay"
+wire_api = "responses"
+base_url = "http://127.0.0.1:64002/v1"
+requires_openai_auth = false
+"#,
+        )
+        .unwrap();
+        let settings = BackendSettings::default();
+        assert!(ensure_managed_session_provider_in_home(home.path(), &settings).unwrap());
+        let text = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(text.contains("[model_providers.codex_plus_managed]"));
+        assert!(!ensure_managed_session_provider_in_home(home.path(), &settings).unwrap());
+        assert_eq!(
+            db.query_row("SELECT model_provider FROM threads", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            MANAGED_SESSION_PROVIDER
+        );
+        // 切换供应商时会重建 provider 表，兼容项必须由新配置重新生成。
+        apply_pure_api_config_to_home(home.path(), "https://next.invalid/v1", "synthetic-key")
+            .unwrap();
+        let switched =
+            parse_toml_document(&std::fs::read_to_string(home.path().join("config.toml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            switched["model_providers"][MANAGED_SESSION_PROVIDER]["base_url"].as_str(),
+            Some("https://next.invalid/v1")
+        );
+    }
+
+    #[test]
+    fn managed_session_provider_repair_keeps_legacy_rollout_identity_after_index_provider_migration() {
+        let home = tempfile::tempdir().unwrap();
+        let rollout = home.path().join("sessions").join("legacy.jsonl");
+        std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        std::fs::write(
+            &rollout,
+            r#"{"type":"session_meta","payload":{"model_provider":"codex_plus_managed"}}
+"#,
+        )
+        .unwrap();
+        let db_path = home.path().join("state_5.sqlite");
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (rollout_path TEXT, model_provider TEXT)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES (?1, 'custom')",
+            [format!(r"\\?\{}", rollout.display())],
+        )
+        .unwrap();
+        drop(db);
+
+        assert!(!managed_session_provider_needed_in_db(&db_path, home.path(), ManagedSessionProviderScan::IndexOnly));
+        assert!(managed_session_provider_needed_in_db(&db_path, home.path(), ManagedSessionProviderScan::LegacyRollouts));
+        std::fs::write(
+            home.path().join("config.toml"),
+            r#"model_provider = "custom"
+[model_providers.custom]
+name = "Relay"
+wire_api = "responses"
+base_url = "http://127.0.0.1:64003/v1"
+requires_openai_auth = false
+"#,
+        )
+        .unwrap();
+        let settings = BackendSettings::default();
+        assert!(!ensure_managed_session_provider_in_home(home.path(), &settings).unwrap());
+        assert!(!ensure_active_protocol_proxy_config_in_home(home.path(), &settings).unwrap());
+        apply_pure_api_config_to_home(home.path(), "https://next.invalid/v1", "synthetic-key")
+            .unwrap();
+        let before_switch = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(!before_switch.contains("[model_providers.codex_plus_managed]"));
+        let profile = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            base_url: "https://next.invalid/v1".to_string(),
+            api_key: "synthetic-key".to_string(),
+            ..RelayProfile::default()
+        };
+        apply_relay_profile_to_home_with_switch_rules(home.path(), &profile, "").unwrap();
+        assert!(
+            std::fs::read_to_string(home.path().join("config.toml"))
+                .unwrap()
+                .contains("[model_providers.codex_plus_managed]")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_session_provider_accepts_short_home_aliases() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        let home = tempfile::Builder::new()
+            .prefix("Codex legacy home ")
+            .tempdir()
+            .unwrap();
+        let canonical_home = home.path().canonicalize().unwrap();
+        let input: Vec<u16> = canonical_home
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let mut output = vec![0_u16; 32768];
+        let length = unsafe {
+            GetShortPathNameW(windows::core::PCWSTR(input.as_ptr()), Some(&mut output))
+        } as usize;
+        assert!(length > 0 && length < output.len());
+        let short_home = std::path::PathBuf::from(std::ffi::OsString::from_wide(&output[..length]));
+        if short_home == canonical_home {
+            eprintln!("当前文件系统未提供 8.3 别名，跳过该别名场景");
+            return;
+        }
+        let rollout = home.path().join("legacy.jsonl");
+        std::fs::write(&rollout, "{}").unwrap();
+        let expected = rollout.canonicalize().unwrap();
+        assert_eq!(
+            managed_rollout_path(&short_home, Path::new("legacy.jsonl")),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            managed_rollout_path(&short_home, &rollout),
+            Some(expected)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_session_provider_accepts_symlinked_home_and_rejects_external_rollouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let alias = temp.path().join("alias");
+        std::fs::create_dir(&home).unwrap();
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let rollout = home.join("legacy.jsonl");
+        std::fs::write(&rollout, "{}").unwrap();
+        let expected = rollout.canonicalize().unwrap();
+        assert_eq!(managed_rollout_path(&alias, &rollout), Some(expected.clone()));
+        assert_eq!(managed_rollout_path(&home, &alias.join("legacy.jsonl")), Some(expected.clone()));
+        assert_eq!(managed_rollout_path(&alias, Path::new("legacy.jsonl")), Some(expected));
+        let external = temp.path().join("external.jsonl");
+        std::fs::write(&external, "{}").unwrap();
+        std::os::unix::fs::symlink(&external, home.join("escape.jsonl")).unwrap();
+        assert!(managed_rollout_path(&alias, Path::new("escape.jsonl")).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn managed_session_provider_accepts_var_and_private_var_home_spellings() {
+        let home = tempfile::Builder::new().prefix("managed-resume-").tempdir_in("/var/tmp").unwrap();
+        let rollout = home.path().join("legacy.jsonl");
+        std::fs::write(&rollout, "{}").unwrap();
+        let canonical_home = home.path().canonicalize().unwrap();
+        let canonical_rollout = rollout.canonicalize().unwrap();
+        assert_eq!(managed_rollout_path(home.path(), &canonical_rollout), Some(canonical_rollout.clone()));
+        assert_eq!(managed_rollout_path(&canonical_home, &rollout), Some(canonical_rollout));
+    }
+
+    #[test]
+    fn managed_session_provider_repair_respects_disabled_profiles_and_gateway_mode() {
+        for (enabled, active_id) in [(false, "relay"), (true, crate::gateway::apply::CODEX_GATEWAY_RELAY_ID)] {
+            let home = tempfile::tempdir().unwrap();
+            let settings = BackendSettings {
+                relay_profiles_enabled: enabled,
+                active_relay_id: active_id.to_string(),
+                ..BackendSettings::default()
+            };
+            let config = "model_provider = 'relay'\n[model_providers.relay]\nname = 'Relay'\n[model_providers.codex_plus_managed]\nname = 'Leave alone'\n";
+            for text in [config, "invalid toml = ["] {
+                std::fs::write(home.path().join("config.toml"), text).unwrap();
+                assert!(!ensure_managed_session_provider_in_home(home.path(), &settings).unwrap());
+                assert_eq!(std::fs::read_to_string(home.path().join("config.toml")).unwrap(), text);
+                assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_session_provider_ignores_rollouts_outside_home_and_unrelated_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let neighbor = temp.path().join("home-other");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&neighbor).unwrap();
+        let outside = neighbor.join("legacy.jsonl");
+        std::fs::write(
+            &outside,
+            r#"{"type":"session_meta","payload":{"model_provider":"codex_plus_managed"}}"#,
+        )
+        .unwrap();
+        let local = home.join("local.jsonl");
+        std::fs::write(
+            &local,
+            r#"{"type":"session_meta","payload":{"model_provider":"custom"}}"#,
+        )
+        .unwrap();
+        let db_path = home.join("state_5.sqlite");
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        db.execute_batch("CREATE TABLE threads (model_provider TEXT, rollout_path TEXT);")
+            .unwrap();
+        for path in [&outside, &local, &home.join("missing.jsonl")] {
+            db.execute(
+                "INSERT INTO threads VALUES ('custom', ?1)",
+                [path.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+        assert!(!managed_session_provider_needed_in_db(&db_path, &home, ManagedSessionProviderScan::LegacyRollouts));
+        assert!(managed_rollout_path(&home, Path::new("local.jsonl")).is_some());
+        assert!(managed_rollout_path(&home, &outside).is_none());
+    }
 
     #[test]
     fn live_config_detects_managed_protocol_proxy_for_active_provider_only() {
@@ -7607,5 +8535,121 @@ mod window_value_parsing_tests {
         // 逗号位置不规范（例如 1,0,5,0）仍按纯数字处理：这个字段的目标是拿到
         // 用户想要的窗口值，不是校验排版。真正的非数字才拒绝。
         assert_eq!(parse_optional_positive_u64("1,0,5,0", "上下文大小").unwrap(), Some(1_050));
+    }
+}
+
+#[cfg(test)]
+mod stale_codex_managed_mcp_tests {
+    use super::{mcp_arg_local_path_text, remove_stale_codex_managed_mcp_servers_with};
+    use toml_edit::DocumentMut;
+
+    /// 模拟 Windows 的绝对路径判断：盘符 + 分隔符，或 UNC。
+    fn windows_is_absolute(path: &str) -> bool {
+        let bytes = path.as_bytes();
+        (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/'))
+            || path.starts_with(r"\\")
+    }
+
+    /// 模拟 Windows 文件系统：分隔符等价、大小写不敏感。
+    fn windows_fs(existing: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |path: &str| {
+            let key = path.replace('/', "\\").to_ascii_lowercase();
+            existing
+                .iter()
+                .any(|item| item.replace('/', "\\").to_ascii_lowercase() == key)
+        }
+    }
+
+    const NEW_NODE: &str =
+        r"C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe";
+    const NEW_CUA_REPL: &str = r"C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs";
+    const NEW_IMPORT: &str = r"C:\Users\Aqiw\.codex\plugins\cache\openai-bundled\unified-computer-use\26.1027.30824\require-browser-access.mjs";
+
+    fn run(text: &str, existing: &'static [&'static str]) -> String {
+        let mut doc: DocumentMut = text.parse().unwrap();
+        let exists = windows_fs(existing);
+        remove_stale_codex_managed_mcp_servers_with(&mut doc, &windows_is_absolute, &exists);
+        doc.to_string()
+    }
+
+    #[test]
+    fn windows_command_case_and_separator_insensitive() {
+        // 大小写、正反斜杠不同但指向同一个存在的文件：保留。
+        let text = r#"[mcp_servers.cua_repl]
+command = 'c:/users/aqiw/appdata/local/openai/codex/runtimes/cua_node/5C41F77A7900391C/bin/NODE.EXE'
+"#;
+        let out = run(text, &[NEW_NODE]);
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn windows_old_hash_command_removed_with_subtables() {
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node.exe'
+
+[mcp_servers.cua_repl.env]
+CODEX_HOME = 'C:\Users\Aqiw\.codex'
+
+[mcp_servers.my_tool]
+command = 'C:\tools\missing.exe'
+"#;
+        let out = run(text, &[NEW_NODE]);
+        assert!(!out.contains("cua_repl"), "{out}");
+        assert!(!out.contains("78fb63cda1a9e2b2"), "{out}");
+        // 用户自己的条目即便指向不存在的程序也不动。
+        assert!(out.contains("[mcp_servers.my_tool]"), "{out}");
+    }
+
+    #[test]
+    fn windows_stale_versioned_plugin_cache_arg_removed() {
+        // command 还在，但 args 里 file:///C:/ 形式的插件缓存旧版本路径已经不存在。
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe'
+args = ["--import", "file:///C:/Users/Aqiw/.codex/plugins/cache/openai-bundled/unified-computer-use/26.1013.1/require-browser-access.mjs", 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs']
+"#;
+        let out = run(text, &[NEW_NODE, NEW_CUA_REPL]);
+        assert!(!out.contains("cua_repl"), "{out}");
+    }
+
+    #[test]
+    fn windows_current_plugin_entry_kept() {
+        let text = r#"[mcp_servers.cua_repl]
+command = 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node.exe'
+args = ["--import", "file:///C:/Users/Aqiw/.codex/plugins/cache/openai-bundled/unified-computer-use/26.1027.30824/require-browser-access.mjs", 'C:\Users\Aqiw\AppData\Local\OpenAI\Codex\runtimes\cua_node\5c41f77a7900391c\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs']
+"#;
+        let out = run(text, &[NEW_NODE, NEW_CUA_REPL, NEW_IMPORT]);
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn non_absolute_command_and_foreign_style_path_are_not_judged() {
+        // `node` 这类非绝对路径、以及 Windows 上的 Unix 风格路径都不判断、不删除。
+        let text = r#"[mcp_servers.node_repl]
+command = "node"
+args = ["./server.mjs"]
+
+[mcp_servers.cua_repl]
+command = "/opt/codex/cua"
+"#;
+        let out = run(text, &[]);
+        assert!(out.contains("[mcp_servers.node_repl]"), "{out}");
+        assert!(out.contains("[mcp_servers.cua_repl]"), "{out}");
+    }
+
+    #[test]
+    fn arg_path_text_handles_file_uri_and_flag_value() {
+        assert_eq!(
+            mcp_arg_local_path_text("file:///C:/a/b.mjs").as_deref(),
+            Some("C:/a/b.mjs")
+        );
+        assert_eq!(
+            mcp_arg_local_path_text("--import=file:///Users/u/x.mjs").as_deref(),
+            Some("/Users/u/x.mjs")
+        );
+        assert_eq!(mcp_arg_local_path_text("file:///C:/a%20b/x.mjs"), None);
+        assert_eq!(mcp_arg_local_path_text("--import").as_deref(), Some("--import"));
     }
 }

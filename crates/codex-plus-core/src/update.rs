@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{Read, Write};
 mod trust;
 
 #[cfg(any(target_os = "macos", test))]
@@ -49,6 +49,7 @@ pub struct UpdateCheck {
     pub asset_name: Option<String>,
     pub asset_url: Option<String>,
     pub update_available: bool,
+    pub integrity: Option<UpdateIntegrity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -241,12 +242,13 @@ pub async fn fetch_latest_release(latest_json_url: &str) -> anyhow::Result<Relea
 pub async fn check_for_update(current_version: &str) -> anyhow::Result<UpdateCheck> {
     let Some(release) = fetch_website_release(DEFAULT_LATEST_JSON_URL).await? else {
         return Ok(UpdateCheck { current_version: current_version.into(), latest_version: None,
-            release_summary: "FastAiApi 暂无已发布版本".into(), asset_name: None, asset_url: None, update_available: false });
+            release_summary: "FastAiApi 暂无已发布版本".into(), asset_name: None, asset_url: None, update_available: false, integrity: None });
     };
     let update_available = is_newer_version(&release.version, current_version)? && release.asset_url.is_some();
     Ok(UpdateCheck {
         current_version: current_version.to_string(), latest_version: Some(release.version),
         release_summary: release.body, asset_name: release.asset_name, asset_url: release.asset_url, update_available,
+        integrity: release.integrity,
     })
 }
 
@@ -270,8 +272,11 @@ where
     anyhow::ensure!(verified.version == release.version, "发布版本已变化，请重新检查更新");
     anyhow::ensure!(is_newer_version(&verified.version, crate::version::VERSION)?, "更新版本必须高于当前版本");
     let release = &verified;
-    let (installer_path, downloaded_bytes, total_bytes) =
-        download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
+    // 后台已经下好（「有可用更新时自动下载」）就直接用，不再下载一遍。
+    let (installer_path, downloaded_bytes, total_bytes) = match downloaded_installer(release, download_dir) {
+        Some((path, bytes)) => (path, bytes, Some(bytes)),
+        None => download_release_asset_with_progress(release, download_dir, &mut on_progress).await?,
+    };
 
     let launch_started = Instant::now();
     on_progress(UpdateProgress {
@@ -320,6 +325,58 @@ where
     })
 }
 
+/// 只下载、不安装：「有可用更新时自动下载」在后台调用，用户点「安装」时 [perform_update_with_progress]
+/// 直接用下好的安装包。已经下好的不再下载。返回安装包路径。
+pub async fn download_update_with_progress<F>(
+    release: &Release,
+    download_dir: &Path,
+    mut on_progress: F,
+) -> anyhow::Result<PathBuf>
+where
+    F: FnMut(UpdateProgress) + Send,
+{
+    // 前端仅提供待更新版本，来源、摘要和安装包以重新验签的官网清单为准。
+    let verified = fetch_latest_release(DEFAULT_LATEST_JSON_URL).await?;
+    anyhow::ensure!(verified.version == release.version, "发布版本已变化，请重新检查更新");
+    anyhow::ensure!(is_newer_version(&verified.version, crate::version::VERSION)?, "更新版本必须高于当前版本");
+    let release = &verified;
+    if let Some((path, _)) = downloaded_installer(release, download_dir) {
+        return Ok(path);
+    }
+    let (path, _, _) = download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
+    Ok(path)
+}
+
+/// 下载完成的标记文件：安装包旁边的 `<安装包>.complete`，内容是安装包字节数。
+/// 标记只表示写入完成；是否可复用仍以签名清单中的大小及 SHA-256 为准。
+fn completion_marker(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    name.push(".complete");
+    path.with_file_name(name)
+}
+
+/// 这个版本的安装包是否已经完整下载：返回路径和字节数。
+pub fn downloaded_installer(release: &Release, download_dir: &Path) -> Option<(PathBuf, u64)> {
+    let integrity = release.integrity.as_ref()?;
+    let name = release.asset_name.as_ref()?;
+    let path = download_dir.join(safe_asset_name(name).ok()?);
+    let expected: u64 = std::fs::read_to_string(completion_marker(&path)).ok()?.trim().parse().ok()?;
+    let actual = std::fs::metadata(&path).ok()?.len();
+    if expected == 0 || expected != actual || actual != integrity.size_bytes {
+        return None;
+    }
+    // 不把同尺寸篡改或旧版本缓存当作已验证安装包；按块读取，避免大安装包占满内存。
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).ok()?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    (format!("{:x}", hash.finalize()) == integrity.sha256).then_some((path, actual))
+}
+
 async fn download_release_asset_with_progress<F>(
     release: &Release, download_dir: &Path, on_progress: &mut F,
 ) -> anyhow::Result<(PathBuf, u64, Option<u64>)> where F: FnMut(UpdateProgress) {
@@ -359,6 +416,7 @@ async fn download_release_asset_with_progress<F>(
     on_progress(UpdateProgress {stage:UpdateStage::Writing,downloaded_bytes,total_bytes,percent:None,elapsed_ms:0});
     let installer_path = download_dir.join(name);
     std::fs::rename(&temporary,&installer_path)?;
+    std::fs::write(completion_marker(&installer_path), downloaded_bytes.to_string())?;
     Ok((installer_path,downloaded_bytes,total_bytes))
 }
 
@@ -389,7 +447,15 @@ pub fn download_asset_to(
     let safe = safe_asset_name(name)?;
     std::fs::create_dir_all(download_dir)?;
     let path = download_dir.join(safe);
-    std::fs::write(&path, bytes)?;
+    // 先写临时文件再改名，最后写完成标记：中途退出不会留下一个看着完整的半截安装包。
+    let marker = completion_marker(&path);
+    let _ = std::fs::remove_file(&marker);
+    let mut partial_name = path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    partial_name.push(".part");
+    let partial = path.with_file_name(partial_name);
+    std::fs::write(&partial, bytes)?;
+    std::fs::rename(&partial, &path)?;
+    std::fs::write(&marker, bytes.len().to_string())?;
     // 历史安装包会一直留在 updates/ 里占磁盘（#2544）：每次下载成功后只保留
     // 最近 `UPDATE_KEEP_INSTALLERS` 个安装包（含本次），其余删除。清理失败
     // 不影响本次更新。
@@ -420,6 +486,7 @@ fn prune_old_installers(download_dir: &Path, current: &Path) {
         .into_iter()
         .skip(UPDATE_KEEP_INSTALLERS.saturating_sub(1))
     {
+        let _ = std::fs::remove_file(completion_marker(&stale));
         let _ = std::fs::remove_file(stale);
     }
 }
@@ -469,6 +536,15 @@ fn platform_asset_rank(name: &str) -> u8 {
     if cfg!(windows) && is_windows_installer_asset(name) {
         return 0;
     }
+    if cfg!(target_os = "linux") {
+        if !is_linux_installer_asset(name) {
+            return 2;
+        }
+        if is_linux_native_arch_asset(name) {
+            return 0;
+        }
+        return 1;
+    }
     2
 }
 
@@ -498,6 +574,25 @@ fn is_macos_native_arch_asset(name: &str) -> bool {
     }
     // No arch token at all — assume it matches the current arch.
     true
+}
+
+fn is_linux_installer_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("codex")
+        && lower.contains("plus")
+        && (lower.ends_with(".deb")
+            || lower.ends_with(".appimage")
+            || lower.ends_with(".tar.gz"))
+}
+
+fn is_linux_native_arch_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let native_tokens: &[&str] = match std::env::consts::ARCH {
+        "x86_64" => &["amd64", "x86_64", "x64"],
+        "aarch64" => &["arm64", "aarch64"],
+        _ => return true,
+    };
+    native_tokens.iter().any(|token| lower.contains(token))
 }
 
 fn is_windows_installer_asset(name: &str) -> bool {
@@ -536,7 +631,16 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
             .map_err(|error| anyhow::anyhow!("打开 DMG 失败：{error}"))
     }
 
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("打开安装包失败：{error}"))
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
     {
         let _ = path;
         anyhow::bail!("当前平台不支持启动安装包")

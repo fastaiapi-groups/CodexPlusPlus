@@ -35,6 +35,7 @@ fn fixture(port: u16) -> Fixture {
         settings: codex_plus_core::settings::SettingsStore::new(state.join("settings.json")),
         backup_root: state.join("backups"),
         port,
+        agent_env: codex_plus_core::gateway::agents::AgentEnv::at(temp.path().join("home")),
     };
     std::fs::create_dir_all(&ctx.claude.claude_home).unwrap();
     std::fs::create_dir_all(&ctx.grok_home).unwrap();
@@ -55,6 +56,80 @@ fn deepseek_input() -> ProviderInput {
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+    }
+}
+
+/// #2871：网关路径下，池里有一家不认 tool_search 的上游（Kimi 官方 Responses）时，
+/// 它服务的模型（单家那份和多家自动组）元数据都写 supports_search_tool=false。
+#[test]
+fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
+    let Fixture { ctx, .. } = fixture(29523);
+    let kimi = ProviderInput {
+        name: "Kimi".into(),
+        base_url: "https://api.moonshot.cn/v1".into(),
+        protocol: RelayProtocol::Responses,
+        keys: vec!["sk-kimi".into()],
+        model: "kimi-k3".into(),
+        model_list: "kimi-k3\ndeepseek-v4-pro".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+    };
+    create_provider(&ctx.gateway, &kimi, "preset:kimi", None).unwrap();
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+        "直连",
+        "https://api.direct.test/v1",
+        "sk-direct",
+        RelayProtocol::Responses,
+        "gpt-direct",
+        "gpt-direct",
+        &[],
+    )
+    .unwrap();
+    direct.id = "direct".into();
+    direct.relay_mode = RelayMode::PureApi;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    seeded.relay_profiles = vec![direct];
+    seeded.active_relay_id = "direct".into();
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings,
+        &ctx.codex_home,
+        seeded,
+        "direct",
+    )
+    .unwrap();
+    enable_binding(&ctx, &ToolId::Codex, binding()).unwrap();
+    refresh_enabled(&ctx).unwrap();
+
+    let settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    let object = metadata.as_object().unwrap();
+    assert!(!object.is_empty());
+    // deepseek-v4-pro 由 DeepSeek 和 Kimi 两家服务，是自动组入口；kimi-k3 只有 Kimi 一家。
+    assert!(object.contains_key("deepseek-v4-pro"), "{object:?}");
+    assert!(object.contains_key("kimi-k3"), "{object:?}");
+    // Kimi 不认 tool_search：它名下每个模型的元数据都带 supports_search_tool=false。
+    for (key, entry) in object {
+        assert_eq!(
+            entry["supports_search_tool"],
+            json!(false),
+            "{key} 应由 Kimi 上游关掉 tool_search"
+        );
     }
 }
 
@@ -423,6 +498,9 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            subscription_policy: None,
+            strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "",
         None,
@@ -510,7 +588,34 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
     assert_eq!(model("claude-opus-5-5")["display_name"], "Claude-Opus-5-5");
     let group = model("group/daily");
     assert_eq!(group["display_name"], "Daily");
+    assert_eq!(group["description"], "Daily · 模型组");
     assert_eq!(group["codex_plus_group"], "模型组");
+
+    let (_, renamed_id) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: "daily".into(),
+            name: "6.1 Sol".into(),
+            mode: GroupMode::InOrder,
+            members: vec![GroupMember {
+                model: "claude-opus-5-5".into(),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(renamed_id, "daily");
+    refresh_enabled(ctx).unwrap();
+    let renamed_catalog = codex_catalog(ctx);
+    let renamed_group = renamed_catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "group/daily")
+        .unwrap_or_else(|| panic!("目录里没有重命名后的 group/daily：{renamed_catalog}"));
+    assert_eq!(renamed_group["display_name"], "6.1 Sol");
+    assert_eq!(renamed_group["description"], "6.1 Sol · 模型组");
 
     // 注入层读的模型元数据（托管供应商的 model_metadata）同样给出推理档位与分组。
     let settings = ctx.settings.load().unwrap();
@@ -592,6 +697,9 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                subscription_policy: None,
+                strip_responses_image_detail: None,
+                disable_tool_search: None,
             },
             "",
             None,
@@ -871,6 +979,7 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
 /// 借出期间以 Codex 那份 token 为准；断开时把最新一代收回网关，Codex 回到没登录的样子。
 #[test]
 fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
+    use base64::Engine;
     let fixture = fixture(57398);
     let ctx = &fixture.ctx;
     std::fs::create_dir_all(&ctx.codex_home).unwrap();
@@ -905,6 +1014,15 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     };
     assert!(read_auth().get("tokens").is_none(), "Codex 本来没登录");
 
+    let id_token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({
+                "sub": "pool-user",
+                "https://api.openai.com/auth": { "chatgpt_account_id": "acc-pool" }
+            }).to_string()
+        )
+    );
     // 网关里登录的 ChatGPT 账号。
     let chatgpt = RelayProfile {
         name: "ChatGPT Pro".into(),
@@ -913,7 +1031,7 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
         auth_contents: json!({
             "auth_mode": "chatgpt",
             "codex_plus_gateway": true,
-            "tokens": { "id_token": "idt", "access_token": "at-1", "refresh_token": "rt-1", "account_id": "acc-pool" }
+            "tokens": { "id_token": id_token, "access_token": "at-1", "refresh_token": "rt-1", "account_id": "acc-pool" }
         })
         .to_string(),
         model_list: "gpt-6.1-sol".into(),
@@ -928,7 +1046,7 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     assert_eq!(auth["auth_mode"], "chatgpt");
     assert_eq!(auth["tokens"]["account_id"], "acc-pool");
     assert_eq!(auth["tokens"]["refresh_token"], "rt-1");
-    assert_eq!(auth["tokens"]["id_token"], "idt");
+    assert_eq!(auth["tokens"]["id_token"], id_token);
     assert_eq!(
         ctx.settings.load().unwrap().active_relay_session_provider(),
         codex_plus_core::settings::RelaySessionProvider::Openai,
@@ -1224,6 +1342,20 @@ fn providers_live_only_in_the_gateway_store() {
         GroupSticky::Session,
         "会话固定方式随组保存"
     );
+    // Agent 绑定里也引用着它（#2897）：删掉后不能留着 `deepseek-2/…`。
+    store
+        .update(|gateway| {
+            let binding = gateway.bindings.entry("codex".to_string()).or_default();
+            binding.model = "deepseek-2/deepseek-v4-pro[1M]".into();
+            binding.extra_models = vec![
+                "deepseek-2/deepseek-v4-pro".into(),
+                "deepseek/deepseek-v4-flash".into(),
+            ];
+            binding.auto_review_model = "deepseek-2/deepseek-v4-pro".into();
+            binding.title_model = "deepseek/deepseek-v4-flash".into();
+            Ok(())
+        })
+        .unwrap();
     let gateway = delete_provider(store, "deepseek-2").unwrap();
     assert!(gateway.provider("deepseek-2").is_none());
     assert_eq!(
@@ -1231,6 +1363,11 @@ fn providers_live_only_in_the_gateway_store() {
         1,
         "删掉供应商时路由组里指向它的成员一起去掉"
     );
+    let binding = &gateway.bindings["codex"];
+    assert_eq!(binding.model, "", "默认模型指向它时清空，回落到池里的默认");
+    assert_eq!(binding.extra_models, vec!["deepseek/deepseek-v4-flash".to_string()]);
+    assert_eq!(binding.auto_review_model, "");
+    assert_eq!(binding.title_model, "deepseek/deepseek-v4-flash", "指向别家的不动");
     assert!(delete_provider(store, "deepseek-2").is_err());
 }
 
@@ -1718,7 +1855,8 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     assert!(relay(&store).strip_image_generation_tool);
     assert!(relay(&store).strips_image_generation_tool());
 
-    let keep = ProviderInput { strip_image_generation_tool: None, ..input.clone() };
+    let keep = ProviderInput { strip_image_generation_tool: None,
+            subscription_policy: None, ..input.clone() };
     update_provider(&store, &id, &keep).unwrap();
     assert!(relay(&store).strip_image_generation_tool);
 
@@ -1748,6 +1886,9 @@ fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            subscription_policy: None,
+            strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "",
         None,

@@ -451,6 +451,7 @@ mod tests {
                 reasoning_tokens: 1,
             }),
             cache_hit_ratio: None,
+            final_response_evidence: None,
             agent: agent.map(str::to_string),
         }
     }
@@ -503,6 +504,8 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            subscription_policy: None,
+            upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: "ds".to_string(),
                 ..RelayProfile::default()

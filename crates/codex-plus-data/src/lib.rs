@@ -5,6 +5,10 @@ pub mod session_index_repair;
 mod session_index_scan;
 pub mod storage;
 mod sync_journal;
+pub mod usage_archive;
+pub mod usage_history;
+pub mod whale_history;
+pub mod whale_usage;
 pub use session_index_repair::{
     SessionIndexRepairReport, load_session_index_repair_report, repair_session_index,
 };

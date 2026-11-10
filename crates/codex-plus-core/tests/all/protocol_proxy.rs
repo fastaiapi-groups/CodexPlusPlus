@@ -4642,14 +4642,12 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
         tokio::time::sleep(Duration::from_secs(2)).await;
     });
 
+    // 先建好客户端再计时：macOS 上建客户端要经 trustd 读系统根证书，全量并发时可能就要一秒多，不属于被测的超时。
+    let request = upstream_http_client()
+        .unwrap()
+        .get(format!("http://{addr}/v1/models"));
     let started = Instant::now();
-    let result = send_upstream_request_with_header_timeout(
-        upstream_http_client()
-            .unwrap()
-            .get(format!("http://{addr}/v1/models")),
-        Duration::from_millis(100),
-    )
-    .await;
+    let result = send_upstream_request_with_header_timeout(request, Duration::from_millis(100)).await;
 
     assert!(result.is_err());
     // 断言意图：客户端在 header 超时（100ms）后放弃等待，而不是傻等上游那 2 秒。
@@ -4731,9 +4729,12 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         relay.no_auth = true;
         relay.api_key.clear();
     }
+    settings.relay_profiles[0].auto_review_model = "first-upstream-model".to_string();
+    settings.relay_profiles[1].auto_review_model = "final-upstream-model".to_string();
+    settings.protocol_proxy_map_unlisted_models = false;
 
     let mut result = open_responses_proxy_request_with_settings(
-        r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
+        r#"{"model":"codex-auto-review","input":"hi","stream":false}"#,
         settings,
     )
     .await
@@ -4747,8 +4748,15 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         String::from_utf8_lossy(&body)
     );
     assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
+    let trace = result.request_trace.as_ref().expect("final response trace");
+    assert_eq!(trace.relay_id, "proxy-failover-b");
+    assert_eq!(trace.upstream_model, "final-upstream-model");
+    assert!(trace.upstream_model_bound);
+    assert_eq!(trace.attempts, 2);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
+    assert!(first_request.contains("first-upstream-model"));
+    assert!(second_request.contains("final-upstream-model"));
     assert!(
         !first_request
             .to_ascii_lowercase()
@@ -5002,6 +5010,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
     let _lock = settings_path_test_lock();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
 
     let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -5100,6 +5109,9 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         ..BackendSettings::default()
     };
 
+    let store = codex_plus_core::settings::SettingsStore::default();
+    store.save(&settings).unwrap();
+
     let result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
         settings,
@@ -5132,6 +5144,18 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         token_request.contains("refresh_token=official-refresh"),
         "{token_request}"
     );
+
+    let persisted = store
+        .load()
+        .unwrap()
+        .relay_profiles
+        .into_iter()
+        .find(|profile| profile.id == "proxy-official-401")
+        .unwrap();
+    let auth: serde_json::Value = serde_json::from_str(&persisted.auth_contents).unwrap();
+    assert_eq!(auth["tokens"]["access_token"], "refreshed-access");
+    assert_eq!(auth["tokens"]["refresh_token"], "refreshed-refresh");
+    assert_eq!(auth["tokens"]["account_id"], "acct-official");
 }
 
 #[tokio::test]
@@ -8822,4 +8846,26 @@ data: [DONE]
         .unwrap();
         assert!(response["output"][0].get("phase").is_none());
     });
+}
+
+/// #2891：上游签发的不透明压缩 id（不带已知前缀、几百字符）必须原样回传，
+/// 加前缀会超过 Responses 的 64 字符上限而整单 400；改写后超长的 id 也不动。
+#[test]
+fn responses_item_id_normalization_keeps_opaque_compaction_and_long_ids() {
+    use codex_plus_core::protocol_proxy::normalize_responses_item_ids_for_test;
+
+    let opaque = "x".repeat(389);
+    let long_message = "m".repeat(62);
+    let mut body = json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            { "type": "compaction", "id": opaque, "encrypted_content": "summary" },
+            { "type": "message", "id": long_message, "role": "user", "content": "hi" },
+            { "type": "compaction", "id": "cp_resp_compact_1", "encrypted_content": "summary" }
+        ]
+    });
+    normalize_responses_item_ids_for_test(&mut body);
+    assert_eq!(body["input"][0]["id"].as_str().unwrap().len(), 389, "不透明压缩 id 原样保留");
+    assert_eq!(body["input"][1]["id"], json!(long_message), "改写后超过 64 字符时不改写");
+    assert_eq!(body["input"][2]["id"], "cmp_resp_compact_1", "旧 cp_ 前缀仍然修复");
 }

@@ -38,6 +38,7 @@ struct CodexConfig {
     root: HashMap<String, String>,
     profiles: HashMap<String, HashMap<String, String>>,
     model_providers: HashMap<String, HashMap<String, String>>,
+    effective_model: String,
 }
 
 pub async fn read_codex_model_catalog() -> Value {
@@ -76,6 +77,7 @@ pub async fn read_codex_model_catalog() -> Value {
                 "message": error.to_string(),
                 "service_tier": config_service_tier_value(&home),
                 "model": "",
+                "effective_config_model": "",
                 "model_provider": "",
                 "provider_name": "",
                 "default_model": "",
@@ -92,6 +94,7 @@ pub async fn read_codex_model_catalog() -> Value {
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
+    let (live_config, _, _) = load_codex_config(&home.join("config.toml"));
     let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
     let configured_model = crate::relay_config::relay_profile_model(profile);
     let default_model = if models.iter().any(|item| item == &configured_model) {
@@ -111,6 +114,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         "path": home.join("config.toml").to_string_lossy(),
         "service_tier": config_service_tier_value(home),
         "model": model,
+        "effective_config_model": live_config.effective_model,
         "model_provider": profile.id.trim(),
         "codex_model_provider": codex_model_provider,
         "provider_name": provider_name,
@@ -130,6 +134,40 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+/// 只报告实际配置中显式声明的模型，并考虑当前启用的 profile。
+pub(crate) fn effective_config_model(contents: &str) -> String {
+    let Ok(config) = contents.parse::<toml::Value>() else {
+        return String::new();
+    };
+    let Some(root) = config.as_table() else {
+        return String::new();
+    };
+    let profile = match root.get("profile") {
+        Some(profile) => {
+            let Some(profile) = profile.as_str() else {
+                return String::new();
+            };
+            let Some(profile) = root
+                .get("profiles")
+                .and_then(toml::Value::as_table)
+                .and_then(|profiles| profiles.get(profile))
+                .and_then(toml::Value::as_table)
+            else {
+                return String::new();
+            };
+            Some(profile)
+        }
+        None => None,
+    };
+    profile
+        .and_then(|profile| profile.get("model"))
+        .or_else(|| root.get("model"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn codex_model_provider_for_relay_profile(home: &Path, profile: &RelayProfile) -> String {
@@ -335,6 +373,7 @@ pub async fn read_codex_model_catalog_from_home(
             "message": error,
             "service_tier": service_tier_value(&effective),
             "model": model,
+            "effective_config_model": config.effective_model,
             "model_provider": model_provider,
             "provider_name": provider_name,
             "default_model": "",
@@ -401,6 +440,7 @@ pub async fn read_codex_model_catalog_from_home(
         "path": config_path.to_string_lossy(),
         "service_tier": service_tier_value(&effective),
         "model": model,
+        "effective_config_model": config.effective_model,
         "model_provider": model_provider,
         "provider_name": provider_name,
         "default_model": default_model,
@@ -459,7 +499,10 @@ fn load_codex_config(path: &Path) -> (CodexConfig, HashMap<String, String>, Opti
 }
 
 fn parse_codex_config(contents: &str) -> CodexConfig {
-    let mut config = CodexConfig::default();
+    let mut config = CodexConfig {
+        effective_model: effective_config_model(contents),
+        ..CodexConfig::default()
+    };
     let mut section = ConfigSection::Root;
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -681,6 +724,18 @@ async fn fetch_models_from_source_with_timeout(
     source: &ModelSource,
     timeout: std::time::Duration,
 ) -> (Vec<String>, Value) {
+    let (models, status, _) = fetch_models_payload_from_source(client, source, timeout).await;
+    (models, status)
+}
+
+/// 拉一次模型列表，除了模型名和状态，还带回解析好的响应体（拿到模型时才有），
+/// 供「从上游同步上下文窗口 / 思考等级」读模型元数据（#2807）。请求、超时、错误判定与
+/// [`fetch_models_from_source_with_timeout`] 完全相同，不另发请求。
+async fn fetch_models_payload_from_source(
+    client: &reqwest::Client,
+    source: &ModelSource,
+    timeout: std::time::Duration,
+) -> (Vec<String>, Value, Option<Value>) {
     let mut endpoint = models_endpoint(&source.base_url);
     if source.anthropic && !endpoint.is_empty() {
         // Anthropic 的 /v1/models 默认一页 20 条，一次取满（上限 1000）。
@@ -699,7 +754,7 @@ async fn fetch_models_from_source_with_timeout(
         safe_source["status"] = json!("failed");
         safe_source["message"] = json!("Missing base URL");
         safe_source["models"] = json!(0);
-        return (Vec::new(), safe_source);
+        return (Vec::new(), safe_source, None);
     }
 
     let mut request = client
@@ -730,15 +785,29 @@ async fn fetch_models_from_source_with_timeout(
     })
     .await
     {
-        Err(_elapsed) => failed_source(
-            safe_source,
-            format!(
-                "上游 {} 秒内未返回模型列表（已超时中断）",
-                timeout.as_secs()
-            ),
-        ),
-        Ok(Err(error)) => failed_source(safe_source, error.to_string()),
-        Ok(Ok((status_code, body))) => interpret_models_response(status_code, &body, safe_source),
+        Err(_elapsed) => {
+            let (models, status) = failed_source(
+                safe_source,
+                format!(
+                    "上游 {} 秒内未返回模型列表（已超时中断）",
+                    timeout.as_secs()
+                ),
+            );
+            (models, status, None)
+        }
+        Ok(Err(error)) => {
+            let (models, status) = failed_source(safe_source, error.to_string());
+            (models, status, None)
+        }
+        Ok(Ok((status_code, body))) => {
+            let (models, status) = interpret_models_response(status_code, &body, safe_source);
+            let payload = if models.is_empty() {
+                None
+            } else {
+                serde_json::from_str::<Value>(body.trim()).ok()
+            };
+            (models, status, payload)
+        }
     }
 }
 
@@ -887,6 +956,45 @@ pub async fn fetch_relay_profile_model_ids(
     if crate::official_login::member_uses_official_login_transport(profile) {
         return fetch_official_login_model_ids(profile).await;
     }
+    let source = relay_profile_model_source(profile)?;
+    let endpoint = models_endpoint(&source.base_url);
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
+    let (models, status) = fetch_models_from_source(&client, &source).await;
+    if models.is_empty() {
+        let message = status
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游没有返回可用模型");
+        anyhow::bail!("{message}");
+    }
+    Ok((models, endpoint))
+}
+
+/// 拉供应商的 `/models`，返回整个响应体（模型名之外还有上游给的上下文窗口、思考等级等元数据，#2807）。
+/// 请求方式（代理、超时、请求头、Anthropic 分页）与 [`fetch_relay_profile_model_ids`] 相同；
+/// 官方登录供应商走的是官方目录，不在这里处理。没拿到模型时报错。
+pub async fn fetch_relay_profile_models_payload(profile: &RelayProfile) -> anyhow::Result<Value> {
+    if crate::official_login::member_uses_official_login_transport(profile) {
+        anyhow::bail!("官方登录供应商的模型目录由官方提供，不需要从上游同步");
+    }
+    let source = relay_profile_model_source(profile)?;
+    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, profile)?;
+    let (models, status, payload) =
+        fetch_models_payload_from_source(&client, &source, MODELS_FETCH_TIMEOUT).await;
+    match payload {
+        Some(payload) if !models.is_empty() => Ok(payload),
+        _ => {
+            let message = status
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("上游没有返回可用模型");
+            anyhow::bail!("{message}");
+        }
+    }
+}
+
+/// 供应商拉模型列表用的来源（地址、Key、自定义请求头、协议）。官方登录供应商缺凭据、地址为空时报错。
+fn relay_profile_model_source(profile: &RelayProfile) -> anyhow::Result<ModelSource> {
     if crate::official_login::is_official_login_profile(profile)
         && profile.base_url.trim().is_empty()
     {
@@ -915,17 +1023,7 @@ pub async fn fetch_relay_profile_model_ids(
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
-    let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
-    let (models, status) = fetch_models_from_source(&client, &source).await;
-    if models.is_empty() {
-        let message = status
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("上游没有返回可用模型");
-        anyhow::bail!("{message}");
-    }
-    Ok((models, endpoint))
+    Ok(source)
 }
 
 /// 官方模型目录的客户端版本参数；与 Codex CLI 的取值保持一致。
@@ -938,16 +1036,23 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
+    let version = crate::gateway::chatgpt_backend::codex_version(
+        &crate::codex_home::default_codex_home_dir(),
+    );
     let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
     let mut request = client
         .get(&endpoint)
-        .query(&[("client_version", OFFICIAL_MODELS_CLIENT_VERSION)])
+        .query(&[("client_version", version.as_str())])
         .header(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", credential.access_token.trim()),
         )
         .header("originator", "codex_cli_rs")
-        .header("version", OFFICIAL_MODELS_CLIENT_VERSION)
+        .header("version", &version)
+        .header(
+            reqwest::header::USER_AGENT,
+            crate::gateway::chatgpt_backend::codex_user_agent(&version),
+        )
         .timeout(MODELS_FETCH_TIMEOUT);
     if !credential.account_id.trim().is_empty() {
         request = request.header("chatgpt-account-id", credential.account_id.trim());
@@ -1287,6 +1392,55 @@ mod model_fetch_tests {
         let catalog = relay_profile_model_catalog_value(home.path(), &profile);
 
         assert_eq!(catalog["default_model"], "qwen3-coder");
+    }
+
+    #[test]
+    fn effective_config_model_requires_valid_explicit_config_and_profile() {
+        for (config, expected) in [
+            ("", ""),
+            ("default_model = 'fallback'\n", ""),
+            ("model = ' root '\n", "root"),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'profile'\n",
+                "profile",
+            ),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nother = true\n",
+                "root",
+            ),
+            ("model = 'root'\nprofile = 'missing'\n", ""),
+            ("model = 'root'\nprofile = 5\n", ""),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 5\n",
+                "",
+            ),
+            ("model = 'root'\nmodel = 'duplicate'\n", ""),
+            ("model = [invalid\n", ""),
+        ] {
+            assert_eq!(effective_config_model(config), expected, "{config}");
+        }
+    }
+
+    #[test]
+    fn relay_profile_catalog_default_identity_comes_from_live_config() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            model: "candidate".into(),
+            model_list: "candidate\nother".into(),
+            config_contents: "model = 'snapshot'\n".into(),
+            ..RelayProfile::default()
+        };
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["default_model"], "candidate");
+        assert_eq!(catalog["effective_config_model"], "");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'live'\n",
+        )
+        .unwrap();
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["effective_config_model"], "live");
+        assert!(!catalog["models"].as_array().unwrap().contains(&json!("live")));
     }
 
     #[test]

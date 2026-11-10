@@ -218,3 +218,49 @@ fn download_asset_to_writes_bytes() {
     assert_eq!(path, dir.path().join("pkg.zip"));
     assert_eq!(std::fs::read(path).unwrap(), b"abcdef");
 }
+
+#[test]
+fn downloaded_installer_requires_signed_digest_and_complete_marker() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let release = Release {
+        version: "v1.0.9".to_string(),
+        url: "https://example.test".to_string(),
+        body: "fixes".to_string(),
+        asset_name: Some("pkg.dmg".to_string()),
+        asset_url: Some("https://example.test/pkg.dmg".to_string()),
+        integrity: Some(codex_plus_core::update::UpdateIntegrity {
+            sha256: format!("{:x}", Sha256::digest(b"abcdef")),
+            size_bytes: 6,
+            sequence: 1,
+        }),
+    };
+    // 还没下：不算下好。
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+
+    let path = download_asset_to(&release, b"abcdef", dir.path()).unwrap();
+    assert_eq!(
+        codex_plus_core::update::downloaded_installer(&release, dir.path()),
+        Some((path.clone(), 6))
+    );
+    // 没留下半截的临时文件。
+    assert!(!dir.path().join("pkg.dmg.part").exists());
+
+    // 仅有大小标记、没有签名清单摘要的缓存不可复用。
+    let mut unsigned = release.clone();
+    unsigned.integrity = None;
+    assert!(codex_plus_core::update::downloaded_installer(&unsigned, dir.path()).is_none());
+
+    // 同尺寸篡改仍必须被 SHA-256 检出。
+    std::fs::write(&path, b"fedcba").unwrap();
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+
+    // 安装包被改过（大小对不上）就不算下好，点「安装」时会重新下载。
+    std::fs::write(&path, b"abc").unwrap();
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+
+    // 标记丢了也不算。
+    std::fs::write(&path, b"abcdef").unwrap();
+    std::fs::remove_file(dir.path().join("pkg.dmg.complete")).unwrap();
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+}

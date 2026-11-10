@@ -114,6 +114,31 @@ async fn open_candidates(
     };
     let conversation_seed = conversation_seed(&request);
     let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
+    // 拓展网关中间件的 route 段：按拓展给的顺序重排 / 筛选候选（供应商 + Key）；gateway.replaces 关掉
+    // builtin:gateway-failover 时只试第一个，失败直接回错误，不再换下一个。
+    if pending.len() > 1 {
+        let ids: Vec<String> = pending.iter().enumerate().map(|(index, candidate)| format!("{}#{index}", candidate.relay.id)).collect();
+        let described: Vec<Value> = pending
+            .iter()
+            .zip(&ids)
+            .map(|(candidate, id)| serde_json::json!({
+                "id": id,
+                "provider": candidate.relay.id,
+                "name": candidate.relay.name,
+                "model": candidate.upstream_model,
+            }))
+            .collect();
+        let context = serde_json::json!({ "model": plan.source_model, "agent": format!("{:?}", plan.agent) });
+        if let Some(order) = crate::extension_gateway::route_order(&described, context).await {
+            pending = order
+                .iter()
+                .filter_map(|id| ids.iter().position(|item| item == id).map(|index| pending[index]))
+                .collect();
+        }
+    }
+    if crate::extension_gateway::builtin_replaced("builtin:gateway-failover") {
+        pending.truncate(1);
+    }
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
             anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
@@ -137,6 +162,7 @@ async fn open_candidates(
     // 主动限速：第一次因为候选都满了而排队的时刻，和累计排了多久。
     let mut queue_started: Option<Instant> = None;
     let mut queued = Duration::ZERO;
+    let mut dispatch_gate = crate::gateway::quota::DispatchGate::default();
     loop {
         // 先登记「有名额释放」的通知再检查名额，检查和等待之间的释放不会漏掉。
         let released = key_pool::limit_released();
@@ -146,6 +172,27 @@ async fn open_candidates(
         // 这一轮因限速满了跳过的候选（按原顺序）：不算失败、不冷却，都试完了再排队等它们。
         let mut deferred: Vec<&GatewayCandidate> = Vec::new();
         for (index, candidate) in pending.into_iter().enumerate() {
+            let gateway = if crate::official_login::member_uses_official_login_transport(
+                &candidate.relay,
+            ) {
+                crate::gateway::store::GatewayStore::default()
+                    .load()
+                    .map_err(|error| anyhow::anyhow!("读取网关额度策略失败：{error}"))?
+            } else {
+                crate::gateway::store::GatewaySettings::default()
+            };
+            if let Err(blocked) = dispatch_gate.check(&gateway, &candidate.relay) {
+                match &blocked.action {
+                    &crate::gateway::store::SubscriptionLimitAction::ApiFallback
+                    | &crate::gateway::store::SubscriptionLimitAction::NextPermitted => {
+                        last_error = Some(blocked.into());
+                        continue;
+                    }
+                    &crate::gateway::store::SubscriptionLimitAction::Stop => {
+                        return Err(blocked.into());
+                    }
+                }
+            }
             let Some(slot) =
                 key_pool::try_acquire(&candidate.key, candidate.limits, Instant::now())
             else {
@@ -196,10 +243,13 @@ async fn open_candidates(
             let candidate = &prepared;
             let busy = recorder.begin(candidate);
             let started = Instant::now();
+            // Anthropic → Anthropic 原生直通不经过拓展的 upstream 段：拓展关掉了 builtin:auth-headers 时
+            // 改走协议代理链路，鉴权头才由拓展给。
             let native = request
                 .anthropic
                 .as_ref()
-                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages);
+                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages)
+                .filter(|_| !crate::extension_gateway::builtin_replaced("builtin:auth-headers"));
             let attempt = match native {
                 Some(passthrough) => {
                     trace.wire_api = "AnthropicMessages".to_string();
@@ -229,7 +279,7 @@ async fn open_candidates(
                     if deferred.is_empty() {
                         crate::gateway::route::remember_answer(plan, candidate);
                     }
-                    observe_quota(&candidate.relay.id, &upstream);
+                    observe_quota(&candidate.relay, &upstream);
                     if let GatewayUpstream::Pipeline(response) = &upstream
                         && let Some(inner) = &response.request_trace
                     {
@@ -263,7 +313,7 @@ async fn open_candidates(
                         Some(class.label()),
                         upstream.status_code(),
                     );
-                    let failover = key_pool::record_failure(&candidate.key, &class, Instant::now());
+                    let failover = record_key_failure(&candidate.key, &class);
                     // 失败也算「试过了」：速度优先的组不再把它当没测过的排第一。
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
@@ -283,11 +333,7 @@ async fn open_candidates(
                 Err(AttemptError::Fatal(error)) => return Err(error),
                 Err(AttemptError::Transport(error)) => {
                     recorder.step(candidate, "transport", Some("server_error"), None);
-                    key_pool::record_failure(
-                        &candidate.key,
-                        &FailureClass::ServerError,
-                        Instant::now(),
-                    );
+                    record_key_failure(&candidate.key, &FailureClass::ServerError);
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
                         &candidate.upstream_model,
@@ -337,6 +383,25 @@ async fn open_candidates(
         pending = deferred;
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+}
+
+/// 把一次失败记进 Key 池，返回要不要换下一个候选。
+///
+/// 拓展用 `gateway.replaces` 关掉 `builtin:key-cooldown` 时 429 / 额度耗尽不再让 Key 冷却，
+/// 关掉 `builtin:key-breaker` 时 5xx / 连接失败不再计入供应商熔断；换不换下一个候选照旧按分类定，
+/// 要不要避开这个 Key / 供应商由拓展在 route 段自己决定。
+fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
+    let replaced = match class {
+        FailureClass::RateLimited { .. } | FailureClass::QuotaExhausted { .. } => {
+            crate::extension_gateway::builtin_replaced("builtin:key-cooldown")
+        }
+        FailureClass::ServerError => crate::extension_gateway::builtin_replaced("builtin:key-breaker"),
+        _ => false,
+    };
+    if replaced {
+        return class.should_failover();
+    }
+    key_pool::record_failure(key, class, Instant::now())
 }
 
 /// 所有 Key 都在冷却时，最早恢复的那个最多等这么久（#2802）。
@@ -525,11 +590,32 @@ async fn attempt_pipeline(
     if candidate.relay.protocol == RelayProtocol::Responses {
         anthropic_inbound::strip_unreplayable_reasoning(&mut body);
     }
+    // Claude Desktop / Claude Code 只会发 low…max：套到这家这个模型实有的档位。
+    if request.anthropic.is_some()
+        && let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str)
+    {
+        let levels = crate::gateway::route::model_reasoning_levels(
+            &candidate.relay,
+            &candidate.upstream_model,
+        );
+        body["reasoning"]["effort"] =
+            Value::String(anthropic_inbound::fit_reasoning_effort(effort, &levels));
+    }
     // ChatGPT 订阅后端只服务 Codex 自己的客户端：请求体、请求头都整理成 Codex CLI 发的样子。
     let chatgpt = crate::official_login::member_uses_official_login_transport(&candidate.relay);
+    // 拓展用 gateway.replaces 关掉 builtin:official-shaping：请求体、UA 与版本头不再整理成 Codex CLI 的样子，
+    // 由拓展在 upstream 段自己整理（上下文里 official 为 true）；会话头与官方凭据仍由 Codex++ 处理。
+    let shaping = !crate::extension_gateway::builtin_replaced("builtin:official-shaping");
     let mut relay = candidate.relay.clone();
     let mut cache_key = String::new();
-    if chatgpt {
+    if chatgpt && !shaping {
+        body["model"] = Value::String(candidate.upstream_model.clone());
+        cache_key = body
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+    } else if chatgpt {
         let home = crate::codex_home::default_codex_home_dir();
         let prompt = crate::gateway::chatgpt_backend::codex_prompt_from_cache(
             &home,
@@ -568,7 +654,9 @@ async fn attempt_pipeline(
             == Some("chatgpt-api");
     if chatgpt_api {
         body["model"] = Value::String(candidate.upstream_model.clone());
-        crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        if shaping {
+            crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        }
         cache_key = body
             .get("prompt_cache_key")
             .and_then(Value::as_str)
@@ -645,6 +733,12 @@ pub(crate) async fn attempt_once(
     candidate: &GatewayCandidate,
     request: &GatewayRequest<'_>,
 ) -> anyhow::Result<(UpstreamProxyResponse, Option<FailureClass>)> {
+    if crate::official_login::member_uses_official_login_transport(&candidate.relay) {
+        let gateway = crate::gateway::store::GatewayStore::default()
+            .load()
+            .context("读取网关额度策略失败")?;
+        crate::gateway::quota::dispatch_decision(&gateway, &candidate.relay)?;
+    }
     let upstream = match attempt_pipeline(settings, candidate, request).await {
         Ok(Attempt::Success(upstream)) => (upstream, None),
         Ok(Attempt::Failed { upstream, class }) => (upstream, Some(class)),
@@ -657,7 +751,7 @@ pub(crate) async fn attempt_once(
 }
 
 /// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。
-fn observe_quota(relay_id: &str, upstream: &GatewayUpstream) {
+fn observe_quota(relay: &crate::settings::RelayProfile, upstream: &GatewayUpstream) {
     let headers = match upstream {
         GatewayUpstream::Pipeline(response) => {
             response.response.as_ref().map(reqwest::Response::headers)
@@ -674,7 +768,7 @@ fn observe_quota(relay_id: &str, upstream: &GatewayUpstream) {
     if let Some(quota) =
         headers.and_then(|headers| crate::gateway::quota::from_codex_headers(headers, now))
     {
-        crate::gateway::quota::record(relay_id, quota);
+        crate::gateway::quota::record_for_relay(relay, quota);
     }
 }
 

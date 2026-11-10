@@ -25,6 +25,12 @@ pub fn set_navigation_handler(handler: impl Fn(Value) -> Result<()> + Send + Syn
         .unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(handler));
 }
 
+/// 与查询使用同一主目录，关闭设置后立即释放用量索引。
+pub fn clear_usage_history() {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    codex_plus_data::usage_history::clear_history(&home);
+}
+
 fn show_gui(payload: Value) -> Result<()> {
     let handler = NAVIGATION_HANDLER
         .get_or_init(|| Mutex::new(None))
@@ -48,7 +54,11 @@ impl StartupReply {
         if result.is_ok() {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.ready = true;
-            record_session_probe(&state.options, state.status_started_at_ms);
+            record_session_probe(
+                &state.options,
+                state.status_started_at_ms,
+                state.launch_extra_args.clone(),
+            );
         }
         self.reply.send(result)
     }
@@ -60,6 +70,7 @@ struct SessionState {
     options: LaunchOptions,
     requested_at_ms: u64,
     status_started_at_ms: u64,
+    launch_extra_args: Option<Vec<String>>,
 }
 
 /// 本进程 launcher 会话的只读快照，供自动接管的判据使用。
@@ -76,6 +87,10 @@ pub struct SessionSnapshot {
     /// `latest-status.json` 里的状态（`running` / `running_degraded` / …）。
     pub status: Option<String>,
     pub debug_port: Option<u16>,
+    /// 已就绪会话实际使用的应用目录，不从旧状态文件推测。
+    pub app_dir: Option<PathBuf>,
+    /// 本会话启动时实际使用的附加参数；接管已有实例时可能未知。
+    pub launch_extra_args: Option<Vec<String>>,
     /// 该会话的状态代际，用来判断是不是同一次启动。
     pub started_at_ms: Option<u64>,
 }
@@ -90,18 +105,24 @@ struct SessionProbe {
     helper_port: u16,
     app_dir: Option<std::path::PathBuf>,
     started_at_ms: u64,
+    launch_extra_args: Option<Vec<String>>,
 }
 
 fn session_probe_slot() -> &'static Mutex<Option<SessionProbe>> {
     SESSION_PROBE.get_or_init(|| Mutex::new(None))
 }
 
-fn record_session_probe(options: &LaunchOptions, started_at_ms: u64) {
+fn record_session_probe(
+    options: &LaunchOptions,
+    started_at_ms: u64,
+    launch_extra_args: Option<Vec<String>>,
+) {
     let probe = SessionProbe {
         debug_port: options.debug_port,
         helper_port: options.helper_port,
         app_dir: options.app_dir.clone(),
         started_at_ms,
+        launch_extra_args,
     };
     *session_probe_slot()
         .lock()
@@ -179,6 +200,7 @@ impl EmbeddedSession {
             options: options.clone(),
             requested_at_ms,
             status_started_at_ms: requested_at_ms,
+            launch_extra_args: None,
         }));
         let ready = StartupReply {
             reply: ready,
@@ -411,6 +433,10 @@ pub fn session_snapshot() -> SessionSnapshot {
             .as_ref()
             .map(|probe| probe.debug_port)
             .or_else(|| latest.as_ref().and_then(|latest| latest.debug_port)),
+        app_dir: probe.as_ref().and_then(|probe| probe.app_dir.clone()),
+        launch_extra_args: probe
+            .as_ref()
+            .and_then(|probe| probe.launch_extra_args.clone()),
         started_at_ms: probe
             .as_ref()
             .map(|probe| probe.started_at_ms)
@@ -455,11 +481,11 @@ async fn runtime_commands(
                         if let Some(current) = &session {
                             let current_options = {
                                 let state = current.state.lock().unwrap_or_else(|error| error.into_inner());
-                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms))
+                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms, state.launch_extra_args.clone()))
                             };
                             let result = match current_options {
-                                Some((current_options, started_at_ms)) => {
-                                    record_session_probe(&current_options, started_at_ms);
+                                Some((current_options, started_at_ms, launch_extra_args)) => {
+                                    record_session_probe(&current_options, started_at_ms, launch_extra_args);
                                     if attach_only { Ok(()) } else { activate(current_options, started_at_ms).await }
                                 }
                                 None => Err(StartupBusy.into()),
@@ -827,10 +853,12 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<
         Option<codex_plus_data::SessionIndexRepairReport>,
     > {
+        // 索引修复只补 thread_items 投影，不改 provider；由独立的
+        // sessionIndexRepairEnabled 门控，与 provider sync 的批量改写分开（#2846）。
         if check_setting
             && !codex_plus_core::settings::SettingsStore::default()
                 .load()?
-                .provider_sync_enabled
+                .session_index_repair_enabled
         {
             return Ok(None);
         }
@@ -867,39 +895,40 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     }
 }
 
-/// 「激活已有实例」路径上的供应商同步。
+/// 「激活已有实例」路径上的供应商同步与会话索引修复。
 ///
-/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
-/// 前后各取一次 app state 快照；此路径没有启动后 monitor，因此在这里修复索引。
-/// 同步失败只记日志——用户这次点击
-/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+/// 两件事由独立开关控制（#2846）：
+/// - providerSyncEnabled：启动/激活时做供应商同步（批量改写会话 model_provider），
+///   前后各取一次 app state 快照；
+/// - sessionIndexRepairEnabled：激活路径没有启动后 monitor，在这里补跑索引修复。
+/// 同步失败只记日志——用户这次点击的诉求是把已有窗口拉到前台，不能因同步失败而中止。
 async fn run_activation_provider_sync(
     hooks: &LauncherHooks,
     settings: &codex_plus_core::settings::BackendSettings,
 ) {
-    if !settings.provider_sync_enabled {
-        return;
-    }
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
-        &home,
-        "launcher.activate_existing.before",
-    );
-    if let Err(error) = hooks.run_provider_sync().await {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.activate_existing_provider_sync.failed",
-            json!({ "message": error.to_string() }),
+    if settings.provider_sync_enabled {
+        let home = codex_plus_core::relay_config::default_codex_home_dir();
+        codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+            &home,
+            "launcher.activate_existing.before",
+        );
+        if let Err(error) = hooks.run_provider_sync().await {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.activate_existing_provider_sync.failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+        codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+            &home,
+            "launcher.activate_existing.after_provider_sync",
         );
     }
+    // 索引修复走自己的开关；不开 provider sync 的用户也会想修历史会话。
     repair_session_index_automatically(
         hooks.index_repair_checks_setting(),
         session_snapshot().debug_port,
     )
     .await;
-    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
-        &home,
-        "launcher.activate_existing.after_provider_sync",
-    );
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -989,6 +1018,15 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     // 于是「切换登录方式后 model_provider 没跟着切换」「历史会话没被自动修复」，
     // 只有管理工具的「重启」才生效（issue #2080）。失败不阻断激活，只记日志。
     run_activation_provider_sync(&hooks, &settings).await;
+    if let Err(error) = codex_plus_core::relay_config::ensure_managed_session_provider_in_home(
+        &codex_plus_core::relay_config::default_codex_home_dir(),
+        &settings,
+    ) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.managed_session_provider_repair_failed",
+            json!({ "message": error.to_string(), "phase": "activate_existing" }),
+        );
+    }
     let launch_result = hooks
         .launch_codex(
             &app_dir,
@@ -1117,8 +1155,11 @@ impl LaunchHooks for LauncherHooks {
         }
     }
 
-    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
-        self.core.cleanup_unsupported_config()
+    fn cleanup_unsupported_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.cleanup_unsupported_config(settings)
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
@@ -1357,6 +1398,12 @@ impl LaunchHooks for LauncherHooks {
                 ),
             });
         }
+        if let Some(state) = &self.session_state {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .launch_extra_args = Some(extra_args.to_vec());
+        }
         self.core
             .launch_codex(app_dir, debug_port, settings, extra_args, instance)
             .await
@@ -1527,6 +1574,47 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("thread usage live task failed: {error}"))
     }
 
+    async fn usage_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("structured usage history task failed: {error}"))
+    }
+
+    async fn usage_archive(&self, request: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let settings = codex_plus_core::paths::default_settings_path();
+        Ok(tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_archive::query_archive(&home, &settings, &request)
+        })
+        .await
+        .unwrap_or_else(|_| json!({"status":"failed","code":"archive-task-failed"})))
+    }
+
+    async fn clear_usage_history(&self) {
+        let _ = tokio::task::spawn_blocking(clear_usage_history).await;
+    }
+
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let adapter = self.storage_adapter();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_usage::session_summary(&adapter, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
+    }
+
+    async fn whale_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale history task failed: {error}"))
+    }
+
     async fn find_archived_thread_by_title(
         &self,
         title: String,
@@ -1674,12 +1762,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        self.user_scripts.set_script_enabled(&key, enabled)?;
+        let result = self.user_scripts.set_script_enabled(&key, enabled);
+        // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        self.user_scripts.delete_user_script(&key)?;
+        let result = self.user_scripts.delete_user_script(&key);
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
@@ -1711,6 +1804,22 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn cdp_evaluate(&self, payload: Value) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
+    }
+
+    async fn request_app_server_client_capture(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        let started = codex_plus_core::bridge::request_app_server_client_capture(&websocket_url);
+        Ok(serde_json::json!({ "status": "ok", "started": started }))
+    }
+
+    async fn set_thread_goal_in_owner(&self, payload: Value) -> anyhow::Result<Value> {
+        let debug_port = *self.debug_port.lock().unwrap();
+        codex_plus_core::native_thread_goal::set_in_owner(debug_port, payload).await
     }
 
     async fn script_market_list(&self) -> anyhow::Result<Value> {
@@ -1882,28 +1991,8 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = default_user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn default_user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join("AppData").join("Roaming").join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
+    // 目录算法统一在 core，管理器、本地代理、钩子分发共用同一份。
+    codex_plus_core::user_scripts::default_user_script_manager()
 }
 
 #[cfg(test)]
@@ -2369,6 +2458,44 @@ mod tests {
     #[test]
     fn embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let child_root = std::env::var_os("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT");
+        if child_root.is_none() {
+            let fixture = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "tests::embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting",
+                    "--nocapture",
+                ])
+                .env("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT", fixture.path());
+            for (variable, directory) in [
+                ("CODEX_PLUS_STATE_DIR", "state"),
+                ("CODEX_HOME", "home"),
+                ("CODEX_SQLITE_HOME", "sqlite"),
+                ("APPDATA", "appdata"),
+                ("XDG_CONFIG_HOME", "xdg"),
+            ] {
+                let directory = fixture.path().join(directory);
+                std::fs::create_dir(&directory).unwrap();
+                command.env(variable, directory);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(codex_plus_core::windows_create_no_window());
+            }
+            // 其他 runtime 用例也会清空进程级快照；在单独测试进程内验证该快照。
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read(fixture.path().join("completed")).unwrap(), b"ok");
+            return;
+        }
         let launched = Arc::new(AtomicUsize::new(0));
         let cleaned = Arc::new(AtomicUsize::new(0));
         let activations = Arc::new(AtomicUsize::new(0));
@@ -2396,6 +2523,8 @@ mod tests {
                         std::future::pending::<()>().await;
                     });
                     tokio::task::yield_now().await;
+                    ready.state.lock().unwrap().launch_extra_args =
+                        Some(vec!["--user-data-dir=C:\\test\\started-instance".to_string()]);
                     ready.send(Ok(())).unwrap();
                     let _ = stop.await;
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -2418,6 +2547,10 @@ mod tests {
             test_start_command(LaunchOptions::default(), reply)
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot().lock().unwrap().as_ref().unwrap().launch_extra_args,
+            Some(vec!["--user-data-dir=C:\\test\\started-instance".to_string()])
+        );
         send_test_command(&worker, |reply| {
             test_start_command(
                 LaunchOptions {
@@ -2428,6 +2561,10 @@ mod tests {
             )
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot().lock().unwrap().as_ref().unwrap().launch_extra_args,
+            Some(vec!["--user-data-dir=C:\\test\\started-instance".to_string()])
+        );
         assert_eq!(launched.load(Ordering::SeqCst), 1);
         assert_eq!(activations.load(Ordering::SeqCst), 1);
         send_test_command(&worker, RuntimeCommand::Stop).unwrap();
@@ -2442,6 +2579,7 @@ mod tests {
         worker.thread.join().unwrap();
         assert_eq!(cleaned.load(Ordering::SeqCst), 2);
         assert_eq!(connections_dropped.load(Ordering::SeqCst), 2);
+        std::fs::write(PathBuf::from(child_root.unwrap()).join("completed"), b"ok").unwrap();
     }
 
     #[test]
@@ -2603,6 +2741,31 @@ mod tests {
         *NAVIGATION_HANDLER.get().unwrap().lock().unwrap() = None;
     }
 
+    #[tokio::test]
+    async fn thread_goal_uses_the_launchers_current_instance_port() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let length = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with("GET /json "));
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+            ).await.unwrap();
+        });
+        let runtime = LauncherRuntimeService::new(1, default_user_script_manager());
+        runtime.set_debug_port(port);
+        let result = runtime.set_thread_goal_in_owner(json!({
+            "hostId": "local", "threadId": "synthetic-thread", "requestId": "test-request",
+            "params": { "objective": "synthetic objective" }
+        })).await;
+        let served = tokio::time::timeout(std::time::Duration::from_secs(3), server).await;
+        assert!(served.unwrap().is_ok());
+        assert_eq!(result.unwrap_err().to_string(), "会话所在窗口暂不可用，请稍后重试设置目标");
+    }
+
     #[test]
     fn existing_launcher_path_drains_pending_remote_control_recovery_before_activation() {
         let source = include_str!("main.rs");
@@ -2708,11 +2871,24 @@ mod tests {
             .expect("next function after the helper");
         let body = &source[start..end];
 
-        // 只在设置启用时同步，与完整启动流程一致。
-        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // provider sync 只在设置启用时做，与完整启动流程一致（#2846 拆开后仍由 providerSyncEnabled 门控）。
+        assert!(body.contains("if settings.provider_sync_enabled"));
         // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
         assert!(!body.contains("hooks.run_provider_sync().await?"));
         assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
+        // 索引修复由独立开关控制，即使 provider sync 关着也要照常跑：
+        // 断言 repair_session_index_automatically 本体的开关读的是 sessionIndexRepairEnabled。
+        let repair_body_start = source
+            .find("async fn repair_session_index_automatically")
+            .expect("repair helper");
+        let repair_body_end = source[repair_body_start..]
+            .find("\n}\n\n/// 「激活已有实例」")
+            .map(|offset| repair_body_start + offset + 3)
+            .expect("end of repair helper");
+        let repair_body = &source[repair_body_start..repair_body_end];
+        assert!(repair_body.contains("session_index_repair_enabled"));
+        // 且 repair 不再被 providerSyncEnabled 顺带门控。
+        assert!(!repair_body.contains("provider_sync_enabled"));
         let compact = body.split_whitespace().collect::<String>();
         assert!(compact.contains(
             "repair_session_index_automatically(hooks.index_repair_checks_setting(),session_snapshot().debug_port,).await"
@@ -2835,12 +3011,4 @@ mod tests {
 
         assert_ne!(result["message"], "Unknown bridge path");
     }
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
 }

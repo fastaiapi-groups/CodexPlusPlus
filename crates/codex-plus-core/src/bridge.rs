@@ -272,16 +272,31 @@ pub async fn evaluate_script_with_await_promise(
     script: &str,
     await_promise: bool,
 ) -> anyhow::Result<Value> {
+    evaluate_script_with_await_promise_timeout(websocket_url, script, await_promise, CDP_COMMAND_TIMEOUT).await
+}
+
+pub(crate) async fn evaluate_script_with_await_promise_timeout(
+    websocket_url: &str,
+    script: &str,
+    await_promise: bool,
+    timeout: Duration,
+) -> anyhow::Result<Value> {
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
     let response = session
-        .send_command(
+        .send_command_with_timeout(
             1,
             "Runtime.evaluate",
             runtime_evaluate_params_with_await_promise(script, await_promise),
+            timeout,
         )
         .await?;
     ensure_runtime_evaluate_succeeded(response)
+}
+
+/// 同上，但自定截止时间：页面里要等用户操作（拓展弹框提问）时，默认的 5 秒不够。
+pub async fn evaluate_script_with_timeout(websocket_url: &str, script: &str, timeout: Duration) -> anyhow::Result<Value> {
+    evaluate_script_with_await_promise_timeout(websocket_url, script, true, timeout).await
 }
 
 pub fn capture_screenshot_params() -> Value {
@@ -439,6 +454,8 @@ fn native_quota_bootstrap_script() -> String {
   let sequence = 0;
   let timer = null;
   let disposed = false;
+  // 已有策略时绝不清空：拿不到设置就沿用上一份，避免冷启动 / 重启窗口里被写回官方额度锁。
+  let received = false;
   const request = () => state.request();
   const visible = () => {
     if (document.visibilityState === "visible") state.request();
@@ -449,20 +466,22 @@ fn native_quota_bootstrap_script() -> String {
       const seq = ++sequence;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        if (seq === sequence) window.__codexPlusApiQuotaGate.installNative(null);
+        if (seq === sequence && !received) window.__codexPlusApiQuotaGate.installNative(null);
       }, 5000);
       try {
         window.codexPlusNativeQuotaSettings(JSON.stringify({ sequence: seq }));
       } catch {
         clearTimeout(timer);
-        window.__codexPlusApiQuotaGate.installNative(null);
+        if (!received) window.__codexPlusApiQuotaGate.installNative(null);
       }
     },
     accept(seq, settings) {
       if (disposed || seq !== sequence) return;
       clearTimeout(timer);
+      received = true;
       window.__codexPlusApiQuotaGate.installNative(settings);
     },
+    // 只由管理器显式停止时调用；连接闪断不再触发这里，页面策略不会被打回官方额度锁。
     dispose() {
       disposed = true;
       sequence += 1;
@@ -582,9 +601,10 @@ async fn install_isolated_api_quota_gate_target_url(
             serve_native_quota_settings(&mut session).await
         } => result,
     };
-    // 取消只终止工作 future，随后有界清理同一条 CDP 连接，不再探测或绑定新实例。
+    // 会话结束（取消 / 页面重建 / 重连）只回收本会话登记的脚本与 binding，不再向页面下发
+    // dispose()：一次闪断就把已解锁的发送键打回官方额度锁，正是「装好能用、用一会儿又锁住」的来源。
+    // 页面里的策略会随新会话的注入重新握手覆盖，最坏情况也只是沿用上一份（见 bootstrap 的 received）。
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        // 取消可能发生在注册已送达、但返回标识尚未收到时；先回收这份回复。
         if let Some(id) = pending_registration {
             if let Ok(Ok(reply)) = tokio::time::timeout(
                 Duration::from_millis(500),
@@ -600,15 +620,6 @@ async fn install_isolated_api_quota_gate_target_url(
             }
         }
         session.remove_registered_scripts(&registered_scripts).await;
-        if !registered_scripts.is_empty() {
-            let _ = session
-                .send_command_without_wait(
-                    next_message_id(),
-                    "Runtime.evaluate",
-                    runtime_evaluate_params("window.__codexPlusNativeQuotaBootstrap?.dispose()"),
-                )
-                .await;
-        }
         if binding_added {
             let _ = session
                 .send_command_without_wait(
@@ -768,9 +779,45 @@ where
 }
 
 fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGeneration) {
+    spawn_app_server_client_capture_with(websocket_url, generation, false);
+}
+
+/// 同一桥接代际里已按需开过捕获的代际号，避免拓展反复请求时叠出多个调试会话。
+static ON_DEMAND_CAPTURE_GENERATIONS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// 拓展挂了 `codex/request` 中间件、而客户端类还没捕获时，由渲染层经内部路由请求补开捕获。
+///
+/// 平时捕获只在「模型白名单解锁 / 会话删除」开启时于桥接连接那一刻启动；这里复用该页面
+/// 当前的桥接代际，页面重载后循环随代际退出。每个代际最多开一次。返回是否真的新开了。
+pub fn request_app_server_client_capture(websocket_url: &str) -> bool {
+    let Some(id) = CURRENT_BRIDGE_GENERATIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(websocket_url)
+        .copied()
+    else {
+        return false;
+    };
+    if !ON_DEMAND_CAPTURE_GENERATIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(id)
+    {
+        return false;
+    }
+    let generation = BridgeGeneration {
+        target: websocket_url.to_string(),
+        id,
+    };
+    spawn_app_server_client_capture_with(websocket_url, generation, true);
+    true
+}
+
+fn spawn_app_server_client_capture_with(websocket_url: &str, generation: BridgeGeneration, force: bool) {
     let websocket_url = websocket_url.to_string();
     tokio::spawn(async move {
-        if let Err(error) = run_app_server_client_capture(&websocket_url, generation).await {
+        if let Err(error) = run_app_server_client_capture(&websocket_url, generation, force).await {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.app_server_client_capture_failed",
                 json!({ "message": format!("{error:#}") }),
@@ -782,11 +829,11 @@ fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGenera
 async fn run_app_server_client_capture(
     websocket_url: &str,
     generation: BridgeGeneration,
+    force: bool,
 ) -> anyhow::Result<()> {
-    let settings = crate::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
-    if !settings.codex_app_model_whitelist_unlock && !settings.codex_app_session_delete {
+    // 模型白名单解锁被拓展顶替时按「关」处理（会话删除仍可能需要捕获）。
+    let settings = crate::builtin_takeover::load_effective_settings().unwrap_or_default();
+    if !force && !settings.codex_app_model_whitelist_unlock && !settings.codex_app_session_delete {
         return Ok(());
     }
     let socket = connect_cdp_websocket(websocket_url).await?;
@@ -1049,8 +1096,7 @@ pub async fn install_bridge(
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_modules_requested = crate::settings::SettingsStore::default()
-        .load()
+    let native_modules_requested = crate::builtin_takeover::load_effective_settings()
         .is_ok_and(|settings| crate::native_predictions::native_modules_requested(&settings));
 
     let install_result: anyhow::Result<()> = async {
@@ -1937,6 +1983,8 @@ mod native_quota_lifecycle_tests {
     #[tokio::test]
     async fn native_quota_cancellation_removes_registered_script_and_binding() {
         let commands = cancelled_session("Runtime.evaluate").await;
+        // 取消（页面重建 / 重连）只回收本会话登记的脚本与 binding，
+        // 不再向页面下发 dispose()：一次闪断不能把已解锁的发送键打回官方额度锁。
         assert_eq!(
             commands,
             [
@@ -1945,10 +1993,25 @@ mod native_quota_lifecycle_tests {
                 "Page.addScriptToEvaluateOnNewDocument",
                 "Runtime.evaluate",
                 "Page.removeScriptToEvaluateOnNewDocument",
-                "Runtime.evaluate",
                 "Runtime.removeBinding",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_never_disposes_the_page_policy() {
+        for cancel_at in ["Runtime.enable", "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate", "serving"] {
+            let commands = cancelled_session(cancel_at).await;
+            let evaluates = commands
+                .iter()
+                .filter(|method| method.as_str() == "Runtime.evaluate")
+                .count();
+            // 初始化那一次 Runtime.evaluate 是安装；之后不允许再出现任何页面脚本调用。
+            assert!(
+                evaluates <= 1,
+                "cancel at {cancel_at} must not evaluate page cleanup, got {commands:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  ownPickerSection,
+  visibleOwnModels,
+  defaultProviderAgents,
+  glanceAgents,
+  skippedAgents,
   isDirectProxy,
   proxyAddressError,
   agentModels,
@@ -38,6 +43,7 @@ import {
   splitModels,
   validateDraft,
   validateProviderDraft,
+  type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
 
@@ -279,10 +285,17 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     modelPrices: null,
     proxy: "",
     stripImageGenerationTool: false,
+    stripResponsesImageDetail: false,
+    disableToolSearch: false,
   });
   // #228：「移除托管生图工具」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripImageGenerationTool: true }).stripImageGenerationTool, true);
   assert.equal(providerInput({ ...editing, stripImageGenerationTool: true }).stripImageGenerationTool, true);
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
+  assert.equal(providerInput({ ...editing, stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
+  // #2868：「不发送 tool_search」从池条目读回、原样提交。
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], disableToolSearch: true }).disableToolSearch, true);
+  assert.equal(providerInput({ ...editing, disableToolSearch: true }).disableToolSearch, true);
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
   assert.equal(validateProviderDraft({ ...editing, proxy: "socks5://127.0.0.1:1080" }, true), null);
   assert.deepEqual(providerInput({ ...editing, priceInput: "2", priceCached: "0.5", priceOutput: "abc" }).price, { currency: "CNY", input: 2, cachedInput: 0.5, output: 0 });
@@ -377,9 +390,10 @@ test("全应用不用系统原生的确认 / 提示 / 输入框，统一用 app-
   assert.match(app, /<AppDialogHost \/>/);
 });
 
-test("供应商的价格与代理在供应商池详情里编辑，添加 / 编辑弹窗只管连接、Key 与模型", () => {
+test("普通供应商的价格与代理在详情里编辑，官方账号可在编辑弹窗设置代理", () => {
   const form = readFileSync(new URL("./ProviderFormDialog.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(form, /t\("价格"\)|t\("代理"\)|priceInput: event|proxy: event/);
+  assert.doesNotMatch(form, /t\("价格"\)|t\("代理"\)|priceInput: event/);
+  assert.match(form, /subscriptionEditing[\s\S]*t\("HTTP 代理"\)/);
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.match(providers, /"save_gateway_provider_extras"/);
   assert.match(providers, /<ProviderExtrasDialog/);
@@ -391,12 +405,13 @@ test("供应商的价格与代理在供应商池详情里编辑，添加 / 编�
 test("赞助商单独一组放在「添加供应商」最前面，不再混在中转里", () => {
   const presets = gatewayPresets(new Date(2026, 9, 26));
   const sponsors = presets.filter((preset) => preset.section === "sponsor").map((preset) => preset.key);
-  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun"]);
+  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun", "cccccc-api"]);
   // 到期日当天仍显示，第二天起从目录里去掉。
   const keys = (date: Date) => gatewayPresets(date).map((preset) => preset.key);
   assert.ok(keys(new Date(2026, 10, 7)).includes("runapi"));
   assert.ok(!keys(new Date(2026, 10, 8)).includes("runapi"));
-  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max"]);
+  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max", "cccccc-api"]);
+  assert.deepEqual(activeSponsorIds(new Date(2026, 11, 2)), ["jojocode-max"]);
   for (const gone of ["pateway", "therouter", "shengsuanyun", "ccsub"]) assert.ok(!keys(new Date(2026, 9, 26)).includes(gone), gone);
   assert.equal(presets[0].section, "sponsor");
   const relays = presets.filter((preset) => preset.section === "relay").map((preset) => preset.key);
@@ -484,4 +499,55 @@ test("供应商代理：留空和直连都合法，直连不分大小写（#2760
   assert.equal(isDirectProxy("Direct"), true);
   assert.equal(isDirectProxy(""), false);
   assert.equal(isDirectProxy("http://direct.example:8080"), false);
+});
+
+test("添加供应商：只给内置和已接入的 Agent 勾选，装了没接入的既不列出也不跳过", () => {
+  const view = (agent: string, enabled: boolean) => ({ agent, name: agent, enabled, baseUrl: "", defaultModel: "", models: [] });
+  const payload = {
+    agents: [view("codex", true), view("claude", false), view("grok", false), view("opencode", true), view("hermes", false)],
+    gateway: { bindings: {} },
+  } as unknown as GatewayPayload;
+  assert.deepEqual(glanceAgents(payload.agents).map((agent) => agent.agent), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(defaultProviderAgents(payload), ["codex", "claude", "grok", "opencode"]);
+  assert.deepEqual(skippedAgents(payload, ["codex"]), ["claude", "grok", "opencode"]);
+});
+
+test("Agent 自带的模型：单独一组、标出直连对象，按名字或厂商筛", () => {
+  const own = { vendor: "OpenAI", current: "gpt-6-sol", models: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }, { id: "gpt-6-luna", label: "gpt-6-luna" }] };
+  const section = ownPickerSection(own, "", (name) => name);
+  assert.equal(section?.key, "own");
+  assert.equal(section?.title, "OpenAI");
+  assert.deepEqual(section?.items.map((item) => [item.model, item.label, item.sub, item.direct]), [
+    ["gpt-6-sol", "GPT-6-Sol", "gpt-6-sol", "OpenAI"],
+    ["gpt-6-luna", "gpt-6-luna", "", "OpenAI"],
+  ]);
+  assert.deepEqual(ownPickerSection(own, "luna", (name) => name)?.items.map((item) => item.model), ["gpt-6-luna"]);
+  assert.equal(ownPickerSection(own, "openai", (name) => name)?.items.length, 2, "搜厂商名列出整组");
+  assert.equal(ownPickerSection(own, "deepseek", (name) => name), null);
+  assert.equal(ownPickerSection(null, "", (name) => name), null);
+});
+
+test("模型下拉：接入着选自带模型先预览还原，主窗口和托盘确认后才带token切换", () => {
+  const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
+  assert.match(agents, /"use_gateway_own_model"/);
+  assert.match(agents, /if \(connected \|\| agent\.requiresDisconnectPreview\) \{\s*setDisconnectTarget\(item\)/);
+  assert.match(agents, /<AgentDisconnectDialog/);
+  assert.match(agents, /model: disconnectTarget\.model, previewToken/);
+  const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
+  assert.match(tray, /onPickOwn=\{/);
+  assert.match(tray, /"use_gateway_own_model"/);
+  assert.match(tray, /if \(agent\.enabled \|\| agent\.requiresDisconnectPreview\) setDisconnectTarget\(item\)/);
+  assert.match(tray, /model: disconnectTarget\.model, previewToken/);
+});
+
+test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没用着就整组不列", () => {
+  const own = { vendor: "OpenAI", current: "", models: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }, { id: "gpt-6-luna", label: "gpt-6-luna" }] };
+  const agent = { agent: "codex", name: "Codex", enabled: true, baseUrl: "", defaultModel: "", models: [], ownModels: own } as GatewayAgentView;
+  const payload = (hide: string[]) => ({ gateway: { bindings: {}, hideOwnModels: hide } }) as unknown as GatewayPayload;
+  assert.equal(visibleOwnModels(agent, payload([]))?.models.length, 2);
+  assert.equal(visibleOwnModels(agent, payload(["claude"]))?.models.length, 2, "只看自己的开关");
+  assert.equal(visibleOwnModels(agent, payload(["codex"])), null);
+  const onLuna = { ...agent, ownModels: { ...own, current: "GPT-6-LUNA" } };
+  assert.deepEqual(visibleOwnModels(onLuna, payload(["codex"]))?.models.map((model) => model.id), ["gpt-6-luna"]);
+  assert.equal(visibleOwnModels({ ...agent, ownModels: null }, payload([])), null);
 });

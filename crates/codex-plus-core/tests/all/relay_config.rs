@@ -1645,6 +1645,67 @@ fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot(
     assert!(updated.contains("requires_openai_auth = false"));
     assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
     assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+    let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["model_provider"].as_str(), Some("custom"));
+    assert_eq!(
+        doc["model_providers"]["codex_plus_managed"].to_string(),
+        doc["model_providers"]["custom"].to_string(),
+        "聚合会话的内部 provider 必须能由原生恢复入口直接解析"
+    );
+}
+
+#[test]
+fn managed_session_provider_official_native_resume_config_preserves_login_and_transport() {
+    for official_http in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let rollout = home.join("legacy.jsonl");
+        let metadata = r#"{"type":"session_meta","payload":{"model_provider":"codex_plus_managed"}}"#;
+        std::fs::write(&rollout, metadata).unwrap();
+        let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE threads (model_provider TEXT); INSERT INTO threads VALUES ('codex_plus_managed');").unwrap();
+        let login = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-official-login"}}"#;
+        std::fs::write(home.join("auth.json"), login).unwrap();
+        std::fs::write(home.join("config.toml"), r#"
+model_provider = "custom"
+[model_providers.custom]
+name = "Relay"
+wire_api = "responses"
+base_url = "https://old.invalid/v1"
+experimental_bearer_token = "synthetic-old-key"
+[model_providers.codex_plus_managed]
+experimental_bearer_token = "synthetic-old-key"
+"#).unwrap();
+        let settings = BackendSettings::default();
+        let snapshot = if official_http {
+            "model_provider = 'openai-http'\n[model_providers.openai-http]\nname = 'OpenAI (HTTP)'\nwire_api = 'responses'\nrequires_openai_auth = true\nsupports_websockets = false\n"
+        } else {
+            ""
+        };
+        if official_http {
+            apply_relay_config_file_to_home(home, snapshot).unwrap();
+        }
+        clear_relay_config_to_home_with_auth(home, Some(login)).unwrap();
+        for _ in 0..2 {
+            codex_plus_core::relay_config::ensure_managed_session_provider_in_home(home, &settings).unwrap();
+            let text = std::fs::read_to_string(home.join("config.toml")).unwrap();
+            let doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+            assert_eq!(doc.get("model_provider").and_then(toml_edit::Item::as_str), official_http.then_some("openai-http"));
+            let provider = &doc["model_providers"]["codex_plus_managed"];
+            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+            assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+            assert_eq!(provider.get("supports_websockets").and_then(toml_edit::Item::as_bool), official_http.then_some(false));
+            for credential in ["base_url", "experimental_bearer_token", "env_key", "http_headers"] {
+                assert!(provider.get(credential).is_none());
+            }
+            assert!(!text.contains("synthetic-old-key"));
+            assert!(!text.contains("old.invalid"));
+            assert_eq!(std::fs::read_to_string(home.join("auth.json")).unwrap(), login);
+            assert_eq!(std::fs::read_to_string(&rollout).unwrap(), metadata);
+            assert_eq!(db.query_row("SELECT model_provider FROM threads", [], |row| row.get::<_, String>(0)).unwrap(), "codex_plus_managed");
+            clear_relay_config_to_home_with_auth(home, Some(login)).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -1957,11 +2018,12 @@ fn official_mix_api_profile_removes_auth_api_key_on_storage() {
 }
 
 #[test]
-fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
+fn legacy_pure_api_config_writes_api_auth_and_provider_token() {
     let temp = tempfile::tempdir().unwrap();
+    let original_auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"}}"#;
     std::fs::write(
         temp.path().join("auth.json"),
-        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"}}"#,
+        original_auth,
     )
     .unwrap();
     std::fs::write(temp.path().join("config.toml"), r#"model = "gpt-5""#).unwrap();
@@ -1979,10 +2041,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(result.configured);
     assert!(!config.contains(r#"model = "gpt-5""#));
-    assert_eq!(
-        auth,
-        serde_json::json!({"OPENAI_API_KEY":"sk-test-redacted"})
-    );
+    assert_eq!(auth, serde_json::json!({"OPENAI_API_KEY": "sk-test-redacted"}));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"name = "custom""#));
@@ -4928,6 +4987,71 @@ enabled = true
 }
 
 #[test]
+fn sync_live_config_context_entries_keeps_live_when_managed_mcp_entry_lacks_transport() {
+    // #2887：前端把 [mcp_servers.<id>.env] 压平后，managed 里只剩 env 键、
+    // 没有 command/url；此时 live 里的完整条目不能被覆盖或删除。
+    let live = r#"model = "gpt-5"
+
+[mcp_servers.vivado]
+command = "python"
+args = ["-m", "vivado_mcp"]
+
+[mcp_servers.vivado.env]
+VIVADO_PATH = "/opt/vivado"
+
+[mcp_servers.other]
+command = "other"
+"#;
+    // managed 侧同 id 条目残缺（只有 env 子表的内容被压平进来）。
+    let context = r#"[mcp_servers.vivado]
+VIVADO_PATH = "/opt/vivado"
+"#;
+
+    let updated = sync_live_config_context_entries(live, context).unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.other]"), "{updated}");
+}
+
+#[test]
+fn upsert_context_entry_rejects_mcp_body_without_transport() {
+    // #2887：残缺 mcp 条目写进 common config 会让 Codex 拒载整份 config.toml。
+    let error = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"VIVADO_PATH = "/opt/vivado""#,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("command"), "{error}");
+}
+
+#[test]
+fn upsert_context_entry_keeps_env_subtable_in_mcp_body() {
+    let updated = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"command = "python"
+args = ["-m", "vivado_mcp"]
+
+[env]
+VIVADO_PATH = "/opt/vivado"
+"#,
+    )
+    .unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_has_no_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
@@ -7733,6 +7857,54 @@ base_url = "https://api.moonshot.cn/v1"
     assert_eq!(k3["supports_search_tool"], false);
 }
 
+/// #2868：非 Kimi 的 Responses 中转手动开 `disableToolSearch` 后同样落 catalog 并关掉
+/// `supports_search_tool`；关闭时不变。
+#[test]
+fn apply_disable_tool_search_disables_search_tool_in_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "agent-space".to_string(),
+        name: "AgentSpace".to_string(),
+        model: "gpt-5.5".to_string(),
+        upstream_base_url: "https://api.agent.space/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        disable_tool_search: true,
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://api.agent.space/v1"
+"#
+        .to_string(),
+        model_list: "gpt-5.5".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let catalog_path = temp.path().join("model-catalogs").join("agent-space.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], false, "{}", model["slug"]);
+    }
+
+    // 关掉开关后不再关 supports_search_tool。
+    let off = RelayProfile {
+        disable_tool_search: false,
+        ..profile
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &off, "").unwrap();
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], true, "{}", model["slug"]);
+    }
+}
+
 /// 其他 Responses 上游不受影响：没有窗口/元数据时仍保持「不落 catalog」。
 #[test]
 fn apply_other_responses_upstream_keeps_catalog_unmanaged() {
@@ -7900,6 +8072,46 @@ base_url = "https://responses.example.test/v1"
     }
 }
 
+#[test]
+fn managed_provider_repair_failure_after_apply_does_not_report_switch_failure() {
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let log_path = home.join("codex-plus.log");
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+    let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (model_provider TEXT); \
+         INSERT INTO threads VALUES ('codex_plus_managed');",
+    )
+    .unwrap();
+    drop(db);
+    std::fs::write(home.join("backups"), "blocks only the post-write backup").unwrap();
+
+    let applied = apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+        home,
+        &responses_profile_with_model("gpt-5.4"),
+        "",
+        57321,
+    );
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert_eq!(
+        config
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap()["model"]
+            .as_str(),
+        Some("gpt-5.4"),
+    );
+    assert!(applied.is_ok(), "the profile has already been written: {applied:?}");
+    assert!(
+        std::fs::read_to_string(log_path)
+            .unwrap()
+            .contains("relay_config.managed_session_provider_repair_failed")
+    );
+}
+
 /// issue #2081：切换默认模型时只记录待迁移项，不碰 sqlite；
 /// 下次启动前（opt-in）才把仍停在旧默认的会话迁到新默认，手选模型保持不变。
 #[test]
@@ -8002,6 +8214,47 @@ fn auto_review_model_routes_responses_profile_through_local_proxy() {
 
 /// issue #228：托管生图工具的剥离发生在本地协议代理里，打开「移除托管生图工具」的
 /// Responses 供应商必须改走本地代理；关闭时保持上游直连。
+#[test]
+fn pure_api_image_generation_writes_actor_header_and_routes_through_local_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = responses_profile_with_model("gpt-5.6-sol");
+
+    profile.pure_api_image_generation = true;
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let enabled = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let doc: toml::Value = toml::from_str(&enabled).unwrap();
+    let provider = &doc["model_providers"]["custom"];
+    assert_eq!(
+        provider["base_url"].as_str(),
+        Some("http://127.0.0.1:57321/v1"),
+        "{enabled}"
+    );
+    assert_eq!(
+        provider["requires_openai_auth"].as_bool(),
+        Some(false),
+        "{enabled}"
+    );
+    assert_eq!(
+        provider["http_headers"]["x-openai-actor-authorization"].as_str(),
+        Some("codex-plus-pure-api-image-generation"),
+        "{enabled}"
+    );
+
+    profile.pure_api_image_generation = false;
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let disabled = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        !disabled.contains("x-openai-actor-authorization"),
+        "{disabled}"
+    );
+    assert!(
+        disabled.contains("https://responses.example.test/v1"),
+        "{disabled}"
+    );
+}
+
 #[test]
 fn strip_image_generation_tool_routes_responses_profile_through_local_proxy() {
     let temp = tempfile::tempdir().unwrap();
@@ -8125,8 +8378,40 @@ command = 'C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd
 command = "live-tool"
 "#;
 
+/// 把夹具里的 `C:\` 换成临时目录下的真实根，让路径在各平台上都是宿主绝对路径。
+///
+/// 写盘时会去掉 command 已不存在的 node_repl / cua_repl（#2583 后续），夹具路径必须
+/// 能按需真实存在；在 Unix 上 `\` 只是文件名字符，整段落在根目录下的单个文件名里。
+fn issue_2583_paths(home: &std::path::Path, text: &str) -> String {
+    let root = home.join("fs");
+    text.replace(r"C:\", &format!("{}\\", root.display()))
+}
+
+/// 按宿主语义创建一个文件（Windows 上 `\` 是分隔符，Unix 上是文件名的一部分）。
+fn issue_2583_touch(path: &str) {
+    let path = std::path::Path::new(path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"").unwrap();
+}
+
 fn issue_2583_seed_home(live: &str) -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
+    let live = issue_2583_paths(temp.path(), live);
+    // live 里的托管条目是 Codex 当前安装写入的，程序真实存在。
+    let live_value: toml::Value = live.parse().unwrap();
+    if let Some(servers) = live_value.get("mcp_servers").and_then(toml::Value::as_table) {
+        for id in ["node_repl", "cua_repl"] {
+            if let Some(command) = servers
+                .get(id)
+                .and_then(|entry| entry.get("command"))
+                .and_then(toml::Value::as_str)
+            {
+                if std::path::Path::new(command).is_absolute() {
+                    issue_2583_touch(command);
+                }
+            }
+        }
+    }
     std::fs::write(temp.path().join("config.toml"), live).unwrap();
     std::fs::write(
         temp.path().join("auth.json"),
@@ -8150,27 +8435,28 @@ fn issue_2583_profile(mode: RelayMode, snapshot: &str) -> RelayProfile {
     }
 }
 
-fn issue_2583_assert_live_paths_win(config: &str) {
+fn issue_2583_assert_live_paths_win(home: &std::path::Path, config: &str) {
+    let p = |text: &str| issue_2583_paths(home, text);
     let value: toml::Value = config.parse().unwrap();
     let servers = &value["mcp_servers"];
     let node_repl = &servers["node_repl"];
     assert_eq!(
         node_repl["command"].as_str(),
-        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        Some(p(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe").as_str()),
         "node_repl 应取 live 的新路径：\n{config}"
     );
     assert_eq!(
         node_repl["env"]["NODE_REPL_NODE_PATH"].as_str(),
-        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node.exe")
+        Some(p(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node.exe").as_str())
     );
     assert_eq!(
         node_repl["env"]["CODEX_CLI_PATH"].as_str(),
-        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe")
+        Some(p(r"C:\Users\u\AppData\Local\OpenAI\Codex\bin\2993767bd1dfb009\codex.exe").as_str())
     );
     assert_eq!(node_repl["startup_timeout_sec"].as_integer(), Some(120));
     assert_eq!(
         servers["cua_repl"]["command"].as_str(),
-        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe")
+        Some(p(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe").as_str())
     );
     assert!(!config.contains("78fb63cda1a9e2b2"), "旧哈希目录不应写回：\n{config}");
     assert!(!config.contains("896a0166b774037a"), "旧 CLI 目录不应写回：\n{config}");
@@ -8181,13 +8467,9 @@ fn issue_2583_assert_live_paths_win(config: &str) {
         .iter()
         .filter_map(toml::Value::as_str)
         .collect();
-    assert_eq!(
-        notify,
-        vec![
-            r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\codex-computer-use.exe",
-            "turn-ended",
-        ]
-    );
+    let expected_notify =
+        p(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\codex-computer-use.exe");
+    assert_eq!(notify, vec![expected_notify.as_str(), "turn-ended"]);
     // 用户自己的 MCP 条目仍以快照为准，live 只补缺。
     assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
     assert_eq!(
@@ -8199,34 +8481,41 @@ fn issue_2583_assert_live_paths_win(config: &str) {
 #[test]
 fn apply_pure_api_profile_keeps_live_codex_managed_mcp_paths() {
     let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
-    let profile = issue_2583_profile(RelayMode::PureApi, ISSUE_2583_SNAPSHOT);
+    let profile = issue_2583_profile(
+        RelayMode::PureApi,
+        &issue_2583_paths(temp.path(), ISSUE_2583_SNAPSHOT),
+    );
 
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    issue_2583_assert_live_paths_win(&config);
+    issue_2583_assert_live_paths_win(temp.path(), &config);
 }
 
 #[test]
 fn apply_official_profile_keeps_live_codex_managed_mcp_paths() {
     let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
-    let mut profile = issue_2583_profile(RelayMode::Official, ISSUE_2583_SNAPSHOT);
+    let mut profile = issue_2583_profile(
+        RelayMode::Official,
+        &issue_2583_paths(temp.path(), ISSUE_2583_SNAPSHOT),
+    );
     profile.api_key.clear();
     profile.base_url.clear();
 
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
+    let p = |text: &str| issue_2583_paths(temp.path(), text);
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let value: toml::Value = config.parse().unwrap();
     let servers = &value["mcp_servers"];
     assert_eq!(
         servers["node_repl"]["command"].as_str(),
-        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        Some(p(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe").as_str()),
         "官方模式快照同样不能把旧路径写回：\n{config}"
     );
     assert_eq!(
         servers["cua_repl"]["command"].as_str(),
-        Some(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe")
+        Some(p(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1013.3656.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe").as_str())
     );
     assert!(!config.contains("78fb63cda1a9e2b2"), "{config}");
     assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
@@ -8236,7 +8525,10 @@ fn apply_official_profile_keeps_live_codex_managed_mcp_paths() {
 fn launcher_preservation_path_keeps_live_codex_managed_mcp_paths() {
     // 启动器走 apply_relay_profile_with_preservation（保留非供应商设置打开时先补缺 notify）。
     let temp = issue_2583_seed_home(ISSUE_2583_LIVE);
-    let profile = issue_2583_profile(RelayMode::PureApi, ISSUE_2583_SNAPSHOT);
+    let profile = issue_2583_profile(
+        RelayMode::PureApi,
+        &issue_2583_paths(temp.path(), ISSUE_2583_SNAPSHOT),
+    );
 
     codex_plus_core::relay_config::apply_relay_profile_with_preservation(
         temp.path(),
@@ -8248,7 +8540,7 @@ fn launcher_preservation_path_keeps_live_codex_managed_mcp_paths() {
     .unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    issue_2583_assert_live_paths_win(&config);
+    issue_2583_assert_live_paths_win(temp.path(), &config);
 }
 
 #[test]
@@ -8260,18 +8552,27 @@ fn managed_mcp_from_common_config_also_yields_to_live() {
         "model_provider = \"custom\"\nmodel = \"gpt-5\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n",
     );
     profile.use_common_config = true;
-    let common = r#"[mcp_servers.node_repl]
+    let common = issue_2583_paths(
+        temp.path(),
+        r#"[mcp_servers.node_repl]
 command = 'C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\78fb63cda1a9e2b2\bin\node_repl.exe'
 args = []
-"#;
+"#,
+    );
 
-    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, common).unwrap();
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, &common).unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     let value: toml::Value = config.parse().unwrap();
     assert_eq!(
         value["mcp_servers"]["node_repl"]["command"].as_str(),
-        Some(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"),
+        Some(
+            issue_2583_paths(
+                temp.path(),
+                r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\node_repl.exe"
+            )
+            .as_str()
+        ),
         "{config}"
     );
     assert!(!config.contains("78fb63cda1a9e2b2"), "{config}");
@@ -8297,4 +8598,182 @@ fn user_notify_outside_codex_install_keeps_snapshot_priority() {
         Some("snapshot-notify"),
         "{config}"
     );
+}
+
+// ---- #2583 后续：指向已删除程序的 node_repl / cua_repl 写盘时去掉，让插件定义生效 ----
+
+/// 在临时目录里模拟 Codex 运行时 / 插件缓存目录，返回宿主绝对路径。
+fn stale_mcp_runtime_path(home: &std::path::Path, hash: &str, file: &str) -> std::path::PathBuf {
+    home.join("fs")
+        .join("OpenAI")
+        .join("Codex")
+        .join("runtimes")
+        .join("cua_node")
+        .join(hash)
+        .join("bin")
+        .join(file)
+}
+
+fn stale_mcp_touch(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"").unwrap();
+}
+
+const STALE_MCP_PROVIDER: &str = "model_provider = \"custom\"\nmodel = \"gpt-5\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n";
+
+#[test]
+fn stale_codex_managed_mcp_with_missing_command_is_removed_with_env_subtable() {
+    let temp = tempfile::tempdir().unwrap();
+    let old_node = stale_mcp_runtime_path(temp.path(), "78fb63cda1a9e2b2", "node");
+    let codex_notify = stale_mcp_runtime_path(temp.path(), "1fb7137c46617d50", "codex-computer-use");
+    let user_missing = temp.path().join("fs").join("tools").join("missing-tool");
+    let live = format!(
+        r#"notify = [{notify}, "turn-ended"]
+{STALE_MCP_PROVIDER}
+[mcp_servers.cua_repl]
+command = {old_node}
+args = []
+
+[mcp_servers.cua_repl.env]
+CODEX_HOME = "stale-home"
+
+[mcp_servers.my_tool]
+command = {user_missing}
+"#,
+        notify = toml_path_literal(&codex_notify),
+        old_node = toml_path_literal(&old_node),
+        user_missing = toml_path_literal(&user_missing),
+    );
+    std::fs::write(temp.path().join("config.toml"), &live).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+    let profile = issue_2583_profile(RelayMode::PureApi, STALE_MCP_PROVIDER);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("cua_repl"), "指向已删除程序的 cua_repl 应整条移除：\n{config}");
+    assert!(!config.contains("stale-home"), "env 子表应一并移除：\n{config}");
+    assert!(!config.contains("78fb63cda1a9e2b2"), "{config}");
+    // 用户自己的条目即便指向不存在的程序也不动。
+    assert!(config.contains("[mcp_servers.my_tool]"), "{config}");
+    assert!(config.contains("missing-tool"), "{config}");
+    // notify 仍按原有规则跟随 live。
+    let value: toml::Value = config.parse().unwrap();
+    assert_eq!(
+        value["notify"].as_array().unwrap()[0].as_str(),
+        Some(codex_notify.display().to_string().as_str()),
+        "{config}"
+    );
+}
+
+#[test]
+fn codex_managed_mcp_with_existing_command_is_kept() {
+    let temp = tempfile::tempdir().unwrap();
+    let node = stale_mcp_runtime_path(temp.path(), "5c41f77a7900391c", "node");
+    let cua_repl_js = stale_mcp_runtime_path(temp.path(), "5c41f77a7900391c", "cua-repl.mjs");
+    stale_mcp_touch(&node);
+    stale_mcp_touch(&cua_repl_js);
+    let live = format!(
+        r#"{STALE_MCP_PROVIDER}
+[mcp_servers.cua_repl]
+command = {node}
+args = [{js}]
+
+[mcp_servers.cua_repl.env]
+CODEX_HOME = "live-home"
+"#,
+        node = toml_path_literal(&node),
+        js = toml_path_literal(&cua_repl_js),
+    );
+    std::fs::write(temp.path().join("config.toml"), &live).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+    let profile = issue_2583_profile(RelayMode::PureApi, STALE_MCP_PROVIDER);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("[mcp_servers.cua_repl]"), "{config}");
+    assert!(config.contains("live-home"), "{config}");
+}
+
+#[test]
+fn codex_managed_mcp_with_missing_runtime_arg_is_removed() {
+    // command 还在，但 args 里运行时目录下的脚本已随旧版本删除。
+    let temp = tempfile::tempdir().unwrap();
+    let node = stale_mcp_runtime_path(temp.path(), "5c41f77a7900391c", "node");
+    stale_mcp_touch(&node);
+    let old_js = stale_mcp_runtime_path(temp.path(), "78fb63cda1a9e2b2", "cua-repl.mjs");
+    let live = format!(
+        r#"{STALE_MCP_PROVIDER}
+[mcp_servers.cua_repl]
+command = {node}
+args = ["--import", {js}]
+"#,
+        node = toml_path_literal(&node),
+        js = toml_path_literal(&old_js),
+    );
+    std::fs::write(temp.path().join("config.toml"), &live).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+    let profile = issue_2583_profile(RelayMode::PureApi, STALE_MCP_PROVIDER);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("cua_repl"), "{config}");
+}
+
+#[test]
+fn codex_managed_mcp_with_non_absolute_command_is_kept() {
+    let temp = tempfile::tempdir().unwrap();
+    let live = format!(
+        "{STALE_MCP_PROVIDER}\n[mcp_servers.node_repl]\ncommand = \"npx\"\nargs = [\"-y\", \"node-repl\"]\n\n[mcp_servers.cua_repl]\ncommand = \"node\"\n"
+    );
+    std::fs::write(temp.path().join("config.toml"), &live).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+    let profile = issue_2583_profile(RelayMode::PureApi, STALE_MCP_PROVIDER);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let value: toml::Value = config.parse().unwrap();
+    assert_eq!(value["mcp_servers"]["node_repl"]["command"].as_str(), Some("npx"), "{config}");
+    assert_eq!(value["mcp_servers"]["cua_repl"]["command"].as_str(), Some("node"), "{config}");
+}
+
+#[test]
+fn stale_codex_managed_mcp_in_snapshot_is_not_written_back() {
+    // 用户按临时办法手动删掉了 live 里的 cua_repl；快照里还留着旧条目，也不能再写回。
+    let temp = tempfile::tempdir().unwrap();
+    let old_node = stale_mcp_runtime_path(temp.path(), "78fb63cda1a9e2b2", "node");
+    std::fs::write(temp.path().join("config.toml"), STALE_MCP_PROVIDER).unwrap();
+    std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+    let snapshot = format!(
+        "{STALE_MCP_PROVIDER}\n[mcp_servers.cua_repl]\ncommand = {old_node}\n\n[mcp_servers.cua_repl.env]\nCODEX_HOME = \"stale-home\"\n\n[mcp_servers.my_tool]\ncommand = \"snapshot-tool\"\n",
+        old_node = toml_path_literal(&old_node),
+    );
+    let profile = issue_2583_profile(RelayMode::PureApi, &snapshot);
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("cua_repl"), "快照里的旧条目不应写回：\n{config}");
+    assert!(!config.contains("stale-home"), "{config}");
+    assert!(config.contains("snapshot-tool"), "{config}");
+}
+
+#[test]
+fn stale_codex_managed_mcp_in_snapshot_is_dropped_when_live_is_empty() {
+    // live config.toml 为空（首次写入）时同样不能把快照里的旧条目写出去。
+    let temp = tempfile::tempdir().unwrap();
+    let old_node = stale_mcp_runtime_path(temp.path(), "78fb63cda1a9e2b2", "node_repl");
+    let snapshot = format!(
+        "{STALE_MCP_PROVIDER}\n[mcp_servers.node_repl]\ncommand = {old_node}\nargs = []\n",
+        old_node = toml_path_literal(&old_node),
+    );
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        temp.path(),
+        &snapshot,
+    )
+    .unwrap();
+    assert!(!out.contains("node_repl"), "{out}");
 }
