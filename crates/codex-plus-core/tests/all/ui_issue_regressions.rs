@@ -5,6 +5,8 @@ fn renderer_and_manager_ui_behaviors() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = Command::new("node")
         .arg("--test")
+        // 汇总测试会与其他 Rust 用例并行，限制 Node 子进程数，避免 VM 测试耗尽本机资源。
+        .arg("--test-concurrency=4")
         .arg("src/*.test.ts")
         .current_dir(root.join("apps/codex-plus-manager"))
         .output()

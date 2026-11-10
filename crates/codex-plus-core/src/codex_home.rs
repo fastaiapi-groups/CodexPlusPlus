@@ -398,7 +398,13 @@ mod tests {
         assert!(!missing.exists());
         let log = std::fs::read_to_string(log_path).unwrap();
         assert!(log.contains("codex_home.explicit_path_missing"));
-        assert_eq!(log.lines().count(), 1, "同一显式路径只记录一次");
+        // 日志路径为进程级覆盖，并发用例也可能写入无关事件；只统计当前路径的告警。
+        let matching = log.lines().filter(|line| {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            record["event"] == "codex_home.explicit_path_missing"
+                && record["detail"]["path"] == serde_json::json!(&missing)
+        }).count();
+        assert_eq!(matching, 1, "同一显式路径只记录一次");
         crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
     }
 

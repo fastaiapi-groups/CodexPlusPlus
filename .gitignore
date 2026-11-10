@@ -58,3 +58,40 @@ stepfun-*-stall-bugreport.md
 
 # 2026-10 官网改版草稿，已被 site/ 的正式实现取代，暂留本地不入库
 /site-next/
+
+# Cloudflare Wrangler 本地缓存，不随源码提交
+/.wrangler/
+
+# 本机环境文件；示例模板仍可提交
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.*.example
+!.env.*.sample
+!.env.*.template
+/integrations/fastaiapi/media-api/connection.json
+
+# 编译、测试与类型检查缓存
+*.pyc
+*.pyo
+*.tsbuildinfo
+*.dSYM/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nyc_output/
+coverage/
+/test-results/
+/playwright-report/
+/apps/codex-plus-manager/test-results/
+/apps/codex-plus-manager/playwright-report/
+
+# 编辑器临时文件与本机备份
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.bak

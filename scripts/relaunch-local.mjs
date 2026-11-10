@@ -4,14 +4,14 @@
 // 固定使用 dist/local-build/Codex++.app：
 //   - 只替换 Contents/MacOS/CodexPlusPlus，保留 bundle 的 Info.plist / LSEnvironment / state，
 //     这样每次构建都复用同一个应用身份和测试配置，不会在 Finder / Launchpad 里多出一个 Codex++。
-//   - 图标源（src-tauri/icons/icon-macos.png）变了（按内容指纹判断），按打包脚本同样的方式重新生成 .icns，
-//     否则换了 logo 之后 Dock 里还是旧图标。只换这一个文件，不动 Info.plist 与 bundle 身份。
+//   - 默认保留固定实例的自有图标；只有显式 --refresh-icon 才按上游图标源重建 .icns。
 //   - 旧的历史构建交给 scripts/prune-local-builds.mjs 移入废纸篓。
 //
 // 用法：
 //   node scripts/relaunch-local.mjs                 # 构建前端 + cargo，替换固定 bundle，重启，清理旧构建
 //   node scripts/relaunch-local.mjs --skip-build    # 跳过构建，用现有 target/release 二进制重装并重启
 //   node scripts/relaunch-local.mjs --no-open       # 不自动启动（只替换 bundle）
+//   node scripts/relaunch-local.mjs --refresh-icon  # 显式更新图标（默认不改）
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -71,6 +71,7 @@ function localBundleProcessPattern(bundle) {
 const args = new Set(process.argv.slice(2));
 const skipBuild = args.has("--skip-build");
 const noOpen = args.has("--no-open");
+const refreshIcon = args.has("--refresh-icon");
 
 const run = (command, argv, options = {}) => {
   console.log(`$ ${command} ${argv.join(" ")}`);
@@ -94,7 +95,17 @@ if (!skipBuild) {
     "--release",
     "-p",
     "codex-plus-manager",
-  ], { cwd: root, env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}` } });
+  ], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}`,
+      // 本地实测用的 release 打开增量编译：时间几乎全花在本仓库 crate（core 25 万行）上，
+      // 改一处函数体从 2 分半降到 25 秒左右；产物大小基本不变，增量缓存约占 2 GB。
+      // 只作用于本脚本，CI 与发版仍是默认的非增量 release。
+      CARGO_PROFILE_RELEASE_INCREMENTAL: process.env.CARGO_PROFILE_RELEASE_INCREMENTAL ?? "true",
+    },
+  });
 }
 
 if (!existsSync(builtBinary)) {
@@ -109,7 +120,7 @@ mkdirSync(stagingDir, { recursive: true });
 cpSync(bundle, stagingBundle, { recursive: true, verbatimSymlinks: true });
 cpSync(builtBinary, path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"));
 chmodSync(path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"), 0o755);
-const iconUpdated = refreshBundleIcon(stagingBundle);
+const iconUpdated = refreshIcon && refreshBundleIcon(stagingBundle);
 // Developer ID 证书按 Team ID 记账，重建后 TCC 授权（屏幕录制等）不会因 cdhash 变化而失效。
 // ad-hoc（"-"）则每次都产生新 cdhash，必须在系统设置里重新授权。
 // 只在 /usr/bin/security 能找到证书时用 Developer ID，否则回退 ad-hoc。
@@ -209,7 +220,13 @@ if (iconUpdated) {
 if (!noOpen) {
   console.log("4/4 启动");
   // 正式版可同时运行且 bundle id 相同；强制启动这个路径，避免仅激活正式版。
-  spawn("open", ["-n", bundle], { detached: true, stdio: "ignore" }).unref();
+  // open 会把调用方的环境变量带给应用：从 Claude Code / 终端里跑本脚本时，
+  // 会话变量（CLAUDE_CODE_*、ANTHROPIC_*）和代理变量会一路漏进 Codex++ 拉起的 Claude，
+  // 让完整功能模式的 Claude Code 绕过本地服务直连官方而 401。按访达启动的干净环境来。
+  const launchEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|(HTTPS?|ALL|NO)_PROXY$)/i.test(name)),
+  );
+  spawn("open", ["-n", bundle], { detached: true, stdio: "ignore", env: launchEnv }).unref();
 } else {
   console.log("4/4 已跳过启动（--no-open）");
 }

@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   deploy:
+    # 同步上游站点源码不等于部署到用户平台。
+    if: github.repository == 'BigPizzaV3/CodexPlusPlus'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

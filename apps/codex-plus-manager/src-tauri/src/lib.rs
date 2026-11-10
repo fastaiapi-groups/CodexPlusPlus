@@ -6,6 +6,7 @@ mod agent_mcp_commands;
 mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
+mod config_doctor_commands;
 mod cu_pip;
 mod dsh_plugin_commands;
 mod extension_community_commands;
@@ -241,6 +242,24 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
+    // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
+    std::thread::spawn(|| {
+        match codex_plus_core::claude_local_backend::resume_attached_proxy() {
+            Ok(Some(port)) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resumed",
+                    serde_json::json!({"port": port}),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resume_failed",
+                    serde_json::json!({"message": format!("{error:#}")}),
+                );
+            }
+        }
+    });
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
         // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
         // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。
@@ -344,6 +363,7 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::stop_codex_plus,
             commands::load_settings,
+            config_doctor_commands::config_doctor_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,
@@ -351,6 +371,9 @@ pub fn run() {
             commands::download_dictation_local_model,
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
+            commands::claude_local_status,
+            commands::claude_local_configure,
+            commands::claude_local_action,
             commands::claude_localization_status,
             commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
@@ -404,9 +427,11 @@ pub fn run() {
             gateway_commands::save_gateway_local_login_discovery,
             gateway_commands::scan_gateway_local_logins,
             gateway_commands::save_gateway_auto_group,
+            gateway_commands::set_gateway_auto_group_enabled,
             gateway_commands::save_gateway_auto_models,
             gateway_commands::save_gateway_favorites,
             gateway_commands::save_gateway_options,
+            gateway_commands::save_gateway_subagent_model_policy,
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
             gateway_commands::update_gateway_provider,
@@ -430,6 +455,7 @@ pub fn run() {
             gateway_commands::set_gateway_provider_enabled,
             gateway_commands::reorder_gateway_providers,
             gateway_commands::save_gateway_group,
+            gateway_commands::set_gateway_group_enabled,
             gateway_commands::delete_gateway_group,
             gateway_commands::reveal_gateway_agent_config,
             gateway_commands::load_gateway_usage,
@@ -663,6 +689,7 @@ pub fn run() {
                         // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
                         // 不会关它（见 core::resident_helper）。
                         gateway_commands::restore_for_exit();
+                        codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);
@@ -832,16 +859,15 @@ fn tray_event_shows_main_window(event: &TrayIconEvent) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
-    // 模板图标只看透明度。品牌 logo 的白十字和灰阴影本身不透明，直接用会糊成
-    // 两块实心方块，所以按「偏橙程度」（R - B）重算 alpha：橙色块保留，
-    // 白十字/阴影抠空，过渡带线性渐变保留抗锯齿边缘。
+    // FastAiApi 图标的青色连线与白色节点都要保留，深色底板需要抠空。
+    // 模板只使用 alpha；按前景亮度覆盖率转换，保留原图的抗锯齿与透明度。
     let brand = tauri::include_image!("icons/icon.png");
     let rgba = brand
         .rgba()
         .chunks_exact(4)
         .flat_map(|pixel| {
-            let warmth = pixel[0].saturating_sub(pixel[2]) as u32;
-            let coverage = warmth.saturating_sub(40).min(60) * 255 / 60;
+            let brightness = pixel[0].max(pixel[1]).max(pixel[2]) as u32;
+            let coverage = brightness.saturating_sub(60).min(120) * 255 / 120;
             let alpha = (coverage * pixel[3] as u32 / 255) as u8;
             [0, 0, 0, alpha]
         })
@@ -855,16 +881,19 @@ mod tray_tests {
     use tauri::{PhysicalPosition, Rect};
 
     #[test]
-    fn macos_tray_template_keeps_the_blocks_and_hollows_out_the_crosses() {
+    fn macos_tray_template_preserves_fastai_foreground_and_removes_background() {
         let icon = super::macos_tray_icon();
         assert_eq!(icon.width(), icon.height());
         let size = icon.width() as usize;
         let alpha_at = |x: usize, y: usize| icon.rgba()[(y * size + x) * 4 + 3];
-        // 坐标按 512px 品牌图取比例：前方块正面左侧为橙色，前方十字中心为白色。
+        // 按自有图标比例检查青色连线、白色节点、内部空隙和深色底板。
         let at = |fraction: f32| (fraction * size as f32) as usize;
-        assert_eq!(alpha_at(at(0.15), at(0.5)), 255, "橙色方块应不透明");
-        assert_eq!(alpha_at(at(0.37), at(0.64)), 0, "白十字应抠空");
+        assert_eq!(alpha_at(at(0.3), at(0.6)), 255, "青色连线应保留");
+        assert_eq!(alpha_at(at(0.5), at(0.24)), 255, "白色节点应保留");
+        assert_eq!(alpha_at(at(0.5), at(0.5)), 0, "标志内部空隙应透明");
+        assert_eq!(alpha_at(at(0.1), at(0.1)), 0, "深色底板应抠空");
         assert_eq!(alpha_at(0, 0), 0, "背景应透明");
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0 && pixel[3] < 255), "保留抗锯齿过渡");
         // 模板图标只用 alpha，颜色通道统一为黑。
         assert!(icon.rgba().chunks_exact(4).all(|pixel| pixel[..3] == [0, 0, 0]));
     }

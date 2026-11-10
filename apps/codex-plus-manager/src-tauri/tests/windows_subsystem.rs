@@ -336,13 +336,19 @@ fn github_release_workflow_builds_one_universal_macos_dmg() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
-    // 用 lipo 合并。两个架构的 std 都要装。
-    assert!(workflow.contains("macos-14"));
-    assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
+    // 上游改为分架构并行编译，再由唯一的打包 job 合成通用安装包。
+    assert!(workflow.contains("runs-on: macos-15"));
+    assert!(workflow.contains("target: [x86_64-apple-darwin, aarch64-apple-darwin]"));
+    assert!(workflow.contains("targets: ${{ matrix.target }}"));
+    assert!(workflow.contains("needs: [prepare, macos-build]"));
+    assert!(workflow.contains("name: macos-bin-x86_64-apple-darwin"));
+    assert!(workflow.contains("name: macos-bin-aarch64-apple-darwin"));
+    assert!(workflow.contains("UNIVERSAL_SKIP_BUILD: \"1\""));
     assert!(workflow.contains("build-universal.sh \"$VERSION\""));
+    assert!(workflow.contains("-macos-universal.dmg"));
+    assert!(workflow.contains("if: github.repository == 'BigPizzaV3/CodexPlusPlus'"));
 
-    // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
+    // 仍只发布通用包，不恢复旧的分架构安装包矩阵。
     assert!(!workflow.contains("matrix.arch"));
     assert!(!workflow.contains("macos-15-intel"));
 }

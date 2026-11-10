@@ -2,6 +2,8 @@
 
 初始盘点：2026-11-11，自有代码基线 `4ed1f862`。这是行为保护清单，不是「这些文件永远不能修改」的白名单。每次同步先检查新增自有提交并补齐，下面路径仅为当前入口；上游可重构路径，原有能力与数据兼容必须保留。
 
+本轮同步目标：`38033bf9`（上游 v2.6.2 之后的 main）。冲突决策及本轮验收状态见 [2026-11-11 同步记录](upstream-sync/2026-11-11-38033bf9.md)，不能将这条目标记录视为真实接口已全部验收。
+
 与 [上游同步维护方案](upstream-sync.md) 配合使用。每轮在同步记录中填写各项状态：通过 / 有意替代且已验证 / 阻塞 / 未验证，并附命令或人工验收证据。不能默认勾选全部通过。
 
 | 编号 | 要保留的用户行为 | 当前关键入口 | 验收重点 |
@@ -20,7 +22,7 @@
 ## 已有验证入口
 
 - 前端：`apps/codex-plus-manager/src/fastaiapi-*.test.ts`；在前端目录运行既有 `npm test`、`npm run check`。
-- 核心：`cargo test -p codex-plus-core` 包含平台、凭据、媒体、定价等现有单测，以及 `tests/relay_config.rs`、`tests/model_catalog.rs`、`tests/updater.rs` 等集成测试。按变动检查数据层和 Tauri 既有测试，不能仅测前端。
+- 核心：`cargo test -p codex-plus-core` 包含平台、凭据、媒体、定价等现有单测。上游已将集成测试移到 `tests/all/`；单跑配置回归用 `cargo test -p codex-plus-core --test all relay_config::`，模型目录、供应商归属与更新回归同属此入口。按变动检查数据层和 Tauri 既有测试，不能仅测前端。
 - 媒体：`integrations/fastaiapi/media-api/scripts/test_media_api.py` 与 `test_managed_media.py`。先检查测试隔离方式再运行，不加载真实连接或进行付费生成。
 - 安装升级：参考 `docs/plans/2026-10-24-client-upgrade-acceptance.md`、自有 Windows 构建工作流和现有平台验收脚本；不能在 macOS 上声称已完成 Windows 验收。
 - 历史证据：`docs/verification/2026-11-07-app-media/report.md`、`docs/verification/2026-11-05-platforms/report.md`。历史成功不等于本次通过；报告尾部已有未完成的钥匙串授权与真实 App 联测，后续仍需据实核验。
@@ -28,3 +30,11 @@
 ## 每次清单更新规则
 
 新增定制时登记入口、兼容要求、离线测试及需要用户参与的验收；共享文件里的薄接入也要记。上游替代实现时记录替代依据和数据迁移验证，不静默删除保护项。列表不完备时以自有历史和用户现有功能为准，先补盘点再合并。
+
+## 本轮共享接入的维护点
+
+- App 的 `routeVisible` 统一叠加定制过滤，`visibleActiveTool`/`shownTools` 保留 Codex 发行范围；新版侧栏 general 注册账号概览、教程、反馈、手册，路线选择在新版页头。
+- 主窗口仍经过 `FastAiApiGate`，上游悬浮预览、托盘和启动错误边界保留；Tauri 的五个平台命令、技能安装、媒体环境 CLI 入口必须同时存在。
+- 后台下载及安装都重新核验自有签名清单；缓存必须匹配签名摘要，不能只凭 `.complete` 文件或同尺寸复用。公钥、官网域名及防降级序号保持有效。
+- 本地 relaunch 默认保留原图标（更新图标需显式 `--refresh-icon`）；自有 Windows ICO 仅将最大尺寸目录项前置，图像数据不变；macOS 托盘按自有图标的亮色前景生成模板，不能恢复成仅识别官方橙色的算法。
+- 官方 release/Pages 工作流限定官方仓库；自有签名更新和安装包构建流程独立保留。
