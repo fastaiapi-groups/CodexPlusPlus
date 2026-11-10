@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-本仓库是用户自己的 [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) 仓库，支持按模型粒度配置上下文窗口与自动压缩阈值（对应 issue #1171 / #931）。
+本仓库是用户维护的 [FastAiApi 定制版](https://github.com/fastaiapi-groups/CodexPlusPlus)，上游为 [BigPizzaV3/CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)。支持按模型粒度配置上下文窗口与自动压缩阈值（对应 issue #1171 / #931）。
 
 采用 codex 原生 `model_catalog_json` 机制：通过 `model_list` 后缀语法（如 `deepseek-v4-pro[1M]`）声明每模型窗口，由 CodexPlusPlus 生成 catalog 文件并注入 config.toml 指针，codex 客户端运行时按模型识别各自窗口。
 
@@ -92,3 +92,14 @@
 
 - 默认直接提交并合入 `main`。
 - 仅在用户明确要求时创建 PR。
+
+## 上游同步与定制保留（长期约定）
+
+用户说「更新同步」「同步官网」「合并上游」时，按 [上游同步维护方案](docs/upstream-sync.md) 执行，并先读 [FastAiApi 定制保护清单](docs/fastai-customizations.md)。
+
+- `origin` 是官方上游，只读取、拉取；`fastai` 是用户仓库，`main` 跟踪 `fastai/main`。推送必须显式指定 `fastai`，禁止向 `origin` 推送、强推或用上游覆盖用户分支。
+- 默认同步当时的 `origin/main`，先固定目标 SHA、建立本地备份引用、审查差异，再在临时 `codex/sync-upstream-*` 分支使用普通 merge；验证通过后快进合入 `main`，不默认创建 PR。不使用 rebase 改写已发布历史。
+- 必须逐项保留清单里的用户行为、数据兼容和自有更新源。冲突按行为合并，不批量选 ours/theirs，不用整文件覆盖；无文本冲突也必须检查语义兼容。
+- 尽量减少长期差异：新增定制放独立模块，共享文件只做必要接入；优先复用上游能力，不在同步中夹带大重构。只有确认上游实现覆盖原定制行为并通过回归后，才移除重复实现。
+- 每次同步更新定制清单和同步记录，记录上游/本地 SHA、冲突决策、测试及未验收项；执行本文要求的构建启动后再交付。遇到脏工作区、历史断裂、定制行为无法判定等阻碍，保留现场并说明，不猜测覆盖。
+- 本约定不授权生产部署、发布安装包、触发付费请求或真实充值；这些另按用户当次授权执行。
