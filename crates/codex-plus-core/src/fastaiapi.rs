@@ -709,7 +709,8 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
     }
     let credential_service = service(s.route, "remembered-login");
     if action == "remembered_login" {
-        return Ok(crate::fastaiapi_secret_store::load(&credential_service)
+        drop(s);
+        return Ok(crate::fastaiapi_secret_store::load_with_timeout(credential_service).await?
             .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
             .unwrap_or(json!({})));
     }

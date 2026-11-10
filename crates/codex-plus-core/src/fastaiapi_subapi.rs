@@ -449,8 +449,9 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
     let mut s = state().lock().await;
     match action {
         "remembered_login" => {
+            drop(s);
             return Ok(
-                crate::fastaiapi_secret_store::load(&PLATFORM.service("remembered-login"))
+                crate::fastaiapi_secret_store::load_with_timeout(PLATFORM.service("remembered-login")).await?
                     .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
                     .unwrap_or(json!({})),
             );

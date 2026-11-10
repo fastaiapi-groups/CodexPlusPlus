@@ -13,6 +13,41 @@ pub(crate) fn load(service: &str) -> Option<Vec<u8>> {
     { let _ = service; None }
 }
 
+// 钥匙串可能等待系统授权；不能阻塞运行时线程并无限占用平台锁。
+pub(crate) async fn load_with_timeout(service: String) -> Result<Option<Vec<u8>>, String> {
+    read_with_timeout(std::time::Duration::from_secs(6), move || load(&service)).await
+}
+
+async fn read_with_timeout<T: Send + 'static>(
+    duration: std::time::Duration,
+    read: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::time::timeout(duration, tokio::task::spawn_blocking(read))
+        .await
+        .map_err(|_| "系统凭据库未响应，请允许访问钥匙串或重新登录".to_string())?
+        .map_err(|_| "无法读取系统凭据库".to_string())
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn credential_read_returns_value() {
+        assert_eq!(read_with_timeout(std::time::Duration::from_secs(1), || 42).await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn credential_read_releases_caller_while_system_waits() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let result = read_with_timeout(std::time::Duration::from_millis(20), move || {
+            let _ = wait.recv();
+        }).await;
+        release.send(()).unwrap();
+        assert!(result.unwrap_err().contains("系统凭据库未响应"));
+    }
+}
+
 pub(crate) fn save(service: &str, bytes: &[u8]) -> bool {
     #[cfg(target_os = "macos")]
     { security_framework::passwords::set_generic_password(service, &account(), bytes).is_ok() }
