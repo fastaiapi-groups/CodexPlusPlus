@@ -45,6 +45,9 @@ fn main() {
     // 卸载器在删除主程序前调用：config.toml 仍指向本机代理时恢复官方配置（issue #406）。
     // 结果只写诊断日志，失败也以 0 退出，不能让卸载器卡住。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-uninstall-cleanup") {
+        // 先把走网关的 Agent（Codex / Claude Code / Grok）恢复成直连：卸载后网关不在了。
+        // 失败只记日志，万一 panic 也接住，不影响下面的清理。
+        let _ = std::panic::catch_unwind(codex_plus_manager_lib::restore_gateway_for_uninstall);
         let home = codex_plus_core::codex_home::default_codex_home_dir();
         let detail = match codex_plus_core::relay_config::clear_managed_proxy_config_for_uninstall(
             &home,
@@ -127,27 +130,8 @@ fn main() {
             if codex_plus_manager_lib::handle_dream_skin_url(&arg) {
                 codex_plus_manager_lib::focus_existing_manager_window();
             }
-        } else if arg.starts_with("codexplusplus://") {
-            match codex_plus_core::provider_import::save_pending_provider_import_from_url(&arg) {
-                Ok(request) => {
-                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                        "manager.provider_import_url.pending",
-                        serde_json::json!({
-                            "name": request.name,
-                            "baseUrl": request.base_url
-                        }),
-                    );
-                    codex_plus_manager_lib::focus_existing_manager_window();
-                }
-                Err(error) => {
-                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                        "manager.provider_import_url.failed",
-                        serde_json::json!({
-                            "error": error.to_string()
-                        }),
-                    );
-                }
-            }
+        } else if codex_plus_manager_lib::handle_provider_import_url(&arg) {
+            codex_plus_manager_lib::focus_existing_manager_window();
         }
     }
     if std::env::args().any(|arg| arg == "--show-update") {

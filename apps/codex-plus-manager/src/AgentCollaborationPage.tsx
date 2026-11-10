@@ -2,9 +2,13 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowRightLeft, Check, Copy, Loader2, Play, RefreshCw, Save, Square } from "lucide-react";
 import { PageHeader } from "./ManagementPages";
+import { AppSelect } from "./AppSelect";
+import { agentQueueState, DEFAULT_MAX_CONCURRENT_TASKS_LIMIT, normalizeConcurrency } from "./agent-collaboration-queue";
+import { t, tf } from "./i18n";
 import "./AgentCollaborationPage.css";
 
-type Agent = { id: string; name: string; executable: string; enabled: boolean; model: string; reuseSavedAuth: boolean };
+// maxConcurrentTasks：同一 Agent 最多同时运行的任务数（1–4，默认 1），超出时排队（#2800）。
+type Agent = { id: string; name: string; executable: string; enabled: boolean; model: string; reuseSavedAuth: boolean; maxConcurrentTasks: number };
 type CollaborationConfig = { enabled: boolean; defaultAgentId: string; agents: Agent[]; maxRuntimeMinutes: number };
 const defaultMaxRuntimeMinutes = 10;
 const maxRuntimeMinutesLimit = 240;
@@ -37,9 +41,12 @@ type TaskRecord = {
 type Snapshot = {
   config: CollaborationConfig;
   tasks: TaskRecord[];
-  availability?: { id: string; available: boolean; path?: string | null }[];
+  /** configuredMissing：已保存的路径不存在；recovered：已改用自动找到的 CLI（桌面版更新后哈希目录变化，#2751）。 */
+  availability?: { id: string; available: boolean; path?: string | null; configuredMissing?: boolean; recovered?: boolean }[];
   integration?: Integration;
   runtime?: CodexRuntime;
+  /** maxQueuedPerAgent：每个 Agent 最多排队的任务数（#2772）；maxConcurrentTasksLimit：并发上限的可选上界（#2800）。 */
+  capabilities?: { maxQueuedPerAgent?: number; maxConcurrentTasksLimit?: number };
 };
 type McpConfig = { codexToml: string; claudeJson: string; command: string; args: string[] };
 
@@ -47,9 +54,9 @@ const defaultConfig = (): CollaborationConfig => ({
   enabled: false,
   defaultAgentId: "deepseek",
   agents: [
-    { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false },
-    { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: false, model: "", reuseSavedAuth: false },
-    { id: "claude", name: "Claude Code", executable: "", enabled: false, model: "", reuseSavedAuth: false },
+    { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+    { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+    { id: "claude", name: "Claude Code", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
   ],
   maxRuntimeMinutes: defaultMaxRuntimeMinutes,
 });
@@ -67,7 +74,7 @@ const copyConfig = (config: CollaborationConfig): CollaborationConfig => ({
   defaultAgentId: config.defaultAgentId || "deepseek",
   maxRuntimeMinutes: Number.isInteger(config.maxRuntimeMinutes) && config.maxRuntimeMinutes > 0
     ? config.maxRuntimeMinutes : defaultMaxRuntimeMinutes,
-  agents: config.agents.map((agent) => ({ ...agent, model: agent.model || "", reuseSavedAuth: agent.reuseSavedAuth === true })),
+  agents: config.agents.map((agent) => ({ ...agent, model: agent.model || "", reuseSavedAuth: agent.reuseSavedAuth === true, maxConcurrentTasks: normalizeConcurrency(agent.maxConcurrentTasks) })),
 });
 const formatTime = (value: number) => Number.isFinite(value) && value > 0
   ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
@@ -244,16 +251,29 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
     : enabledAgents.find((agent) => agent.id === snapshot?.config.defaultAgentId)?.id ?? enabledAgents[0]?.id ?? "");
   const targetAgent = enabledAgents.find((agent) => agent.id === targetId);
   const targetUnavailable = snapshot?.availability?.find((item) => item.id === targetId)?.available === false;
-  const targetBusy = tasks.some((task) => task.agentId === targetId && unfinished(task));
+  // 同一 Agent 运行中的任务未达并发上限时直接启动，达到上限时排队、任一结束后按提交顺序启动；
+  // 只有排队已满才禁止提交（#2772、#2800）。
+  const reportedConcurrencyMax = snapshot?.capabilities?.maxConcurrentTasksLimit;
+  const concurrencyMax = Number.isInteger(reportedConcurrencyMax) && (reportedConcurrencyMax as number) > 0
+    ? reportedConcurrencyMax as number : DEFAULT_MAX_CONCURRENT_TASKS_LIMIT;
+  const concurrencyLimit = (id: string) => normalizeConcurrency(snapshot?.config.agents.find((agent) => agent.id === id)?.maxConcurrentTasks);
+  const targetQueue = agentQueueState(tasks, targetId, snapshot?.capabilities?.maxQueuedPerAgent, concurrencyLimit(targetId));
   const targetCwd = continuation?.cwd ?? cwd;
+  // 并发任务共用工作目录时只提示、不阻止（#2800）。
+  const trimmedCwd = (value: string) => value.trim().replace(/[\\/]+$/, "");
+  const sameCwdRunning = targetCwd.trim() ? tasks.filter((task) => task.status === "running" && trimmedCwd(task.cwd) === trimmedCwd(targetCwd)).length : 0;
   const formDisabledReason = !snapshot ? "正在读取协作配置。"
     : !snapshot.config.enabled ? "请先启用外部子 Agent 并保存设置。"
     : !targetAgent ? "请先启用至少一个 CLI 并保存配置。"
     : targetUnavailable ? "目标 CLI 的可执行文件不可用，请检查路径并保存。"
-    : targetBusy ? "此 Agent 已有排队或执行中的任务，请等待结束后再提交。"
+    : targetQueue.full ? tf("此 Agent 的排队任务已达上限（{0} 个），请等待前面的任务结束或取消部分排队任务。", [targetQueue.limit])
     : continuation && (continuation.status !== "completed" || !continuation.sessionId) ? "该任务目前无法续聊，请创建新任务。"
     : "";
   const agentName = (id: string) => snapshot?.config.agents.find((agent) => agent.id === id)?.name ?? id;
+  // 任务列表顶部按 Agent 汇总并发与排队情况（#2800）：只列出有未结束任务的 Agent。
+  const agentLoads = (snapshot?.config.agents ?? [])
+    .map((agent) => ({ agent, state: agentQueueState(tasks, agent.id, snapshot?.capabilities?.maxQueuedPerAgent, concurrencyLimit(agent.id)) }))
+    .filter(({ state }) => state.active > 0);
   const runtimeRefreshing = busy === "connect_codex" || busy === "refresh_codex";
   const runtimeSucceeded = runtimeReady(runtime);
   const connectCodex = () => {
@@ -293,7 +313,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
       setPrompt("");
       setContinueTaskId("");
       setCwd(targetCwd);
-      setNotice("任务已提交，可在下方查看执行状态。");
+      setNotice(targetQueue.willQueue ? t("任务已提交并进入排队，前面的任务结束后自动启动。") : "任务已提交，可在下方查看执行状态。");
     });
   };
   const continueTask = (task: TaskRecord) => {
@@ -365,7 +385,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
           <span className="mg-badge">{snapshot?.config.enabled ? "已启用" : "未启用"}</span>
         </label>
         <div className="agent-collaboration-default">
-          <label className="mg-field" htmlFor="agent-collaboration-default"><span>默认子 Agent</span><select id="agent-collaboration-default" value={draft.defaultAgentId} disabled={!snapshot || busy === "save_config"} onChange={(event) => editConfig({ ...draft, defaultAgentId: event.target.value })}>{draft.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.enabled ? "" : "（未启用）"}</option>)}</select></label>
+          <div className="mg-field"><span>默认子 Agent</span><AppSelect ariaLabel="默认子 Agent" disabled={!snapshot || busy === "save_config"} id="agent-collaboration-default" onChange={(next) => editConfig({ ...draft, defaultAgentId: next })} options={draft.agents.map((agent) => ({ value: agent.id, label: `${agent.name}${agent.enabled ? "" : "（未启用）"}` }))} value={draft.defaultAgentId} /></div>
           <label className="mg-field" htmlFor="agent-collaboration-runtime"><span>单个任务运行上限（分钟）</span><input id="agent-collaboration-runtime" type="number" min={1} max={maxRuntimeMinutesLimit} step={1} value={runtimeText} disabled={!snapshot || busy === "save_config"} aria-invalid={parsedRuntimeMinutes(runtimeText) === null} onChange={(event) => editRuntimeText(event.target.value)} onBlur={() => { if (parsedRuntimeMinutes(runtimeText) === null) setRuntimeText(String(draft.maxRuntimeMinutes)); }} /></label>
           <p className="agent-collaboration-hint">说“交给默认子 Agent”时使用此选择；直接说“让 DeepSeek”或“让 Claude Code”时使用指定的子 Agent。子 Agent 任务超过运行上限（1–240 分钟，默认 10）会被终止。{draft.enabled && !draft.agents.some((agent) => agent.id === draft.defaultAgentId && agent.enabled) && " 所选默认子 Agent 尚未启用，默认分派不可用；仍可点名调用其他已启用的子 Agent。"}</p>
         </div>
@@ -379,7 +399,8 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
               <label className="agent-collaboration-agent-title"><input type="checkbox" checked={agent.enabled} disabled={!snapshot || busy === "save_config"} onChange={(event) => editAgent(agent.id, { enabled: event.target.checked })} /><strong>{agent.name}</strong></label>
               <label className="mg-field" htmlFor={`agent-collaboration-path-${agent.id}`}><span>可执行文件路径（可选）</span><input id={`agent-collaboration-path-${agent.id}`} value={agent.executable} disabled={!snapshot || busy === "save_config"} placeholder={availability?.path || "留空自动查找已安装的 CLI"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { executable: event.target.value })} /></label>
               <label className="mg-field" htmlFor={`agent-collaboration-model-${agent.id}`}><span>{agent.id === "deepseek" ? "模型路由（可选）" : "模型（可选）"}</span><input id={`agent-collaboration-model-${agent.id}`} value={agent.model} disabled={!snapshot || busy === "save_config"} placeholder={agent.id === "deepseek" ? "deepseek-account/deepseek-flash" : "留空沿用该 CLI 默认模型"} spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={agent.id === "deepseek" ? "agent-collaboration-deepseek-model-hint" : undefined} onChange={(event) => editAgent(agent.id, { model: event.target.value })} />{agent.id === "deepseek" && <small id="agent-collaboration-deepseek-model-hint">使用 provider/model 格式。账户登录用 deepseek-account，API 密钥用 deepseek-official；留空沿用 headless 默认模型。</small>}</label>
-              <small className="agent-collaboration-agent-state" data-unavailable={available === false}>{!savedPath ? "路径尚未保存" : available === true ? "已找到 CLI 文件" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI"}{availability?.path && <code>{availability.path}</code>}</small>
+              <div className="mg-field"><span>{t("同时执行任务数")}</span><AppSelect ariaLabel={tf("{0} 同时执行任务数", [agent.name])} disabled={!snapshot || busy === "save_config"} id={`agent-collaboration-concurrency-${agent.id}`} onChange={(next) => editAgent(agent.id, { maxConcurrentTasks: normalizeConcurrency(Number(next), concurrencyMax) })} options={Array.from({ length: concurrencyMax }, (_, index) => ({ value: String(index + 1), label: index === 0 ? t("1（逐个执行，其余排队）") : String(index + 1) }))} value={String(agent.maxConcurrentTasks)} /><small className="agent-collaboration-agent-note">{t("同一 Agent 最多同时运行的任务数。超出时排队，任一任务结束后按提交顺序启动下一个；并发任务请使用不同的工作目录，避免互相修改相同文件。")}</small></div>
+              <small className="agent-collaboration-agent-state" data-unavailable={available === false}>{!savedPath ? "路径尚未保存" : availability?.recovered ? "已保存的路径已失效（桌面版更新后版本目录会变化），本次自动使用当前 CLI；清空路径保存可一直自动查找" : available === true ? "已找到 CLI 文件" : availability?.configuredMissing ? "已保存的路径不存在；清空路径保存可自动查找，或重新填写" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI"}{availability?.path && <code>{availability.path}</code>}</small>
               {agent.id === "deepseek" && <>
                 <label className="agent-collaboration-auth"><input type="checkbox" checked={agent.reuseSavedAuth} disabled={!snapshot || busy === "save_config"} aria-describedby="agent-collaboration-deepseek-auth-hint" onChange={(event) => editAgent(agent.id, { reuseSavedAuth: event.target.checked })} /><span>复用 DSH 已保存的登录与密钥</span></label>
                 <small id="agent-collaboration-deepseek-auth-hint" className="agent-collaboration-agent-note">默认关闭。开启后由 dsh 自行读取已保存的认证，Codex++ 不读取或保存登录与密钥；不会自动选择桌面当前使用的模型。</small>
@@ -425,18 +446,24 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
         {continuation && <div className="agent-collaboration-continuation"><div><strong>续聊 {agentName(continuation.agentId)} 的任务</strong><span>{continuation.prompt}</span><small>任务 {continuation.id} · 沿用原会话与工作目录</small></div><button type="button" className="mg-button" disabled={busy === "submit"} onClick={() => { setContinueTaskId(""); setPrompt(""); }}>返回新任务</button></div>}
         <form className="agent-collaboration-form" onSubmit={submitTask}>
           <div className="agent-collaboration-form-row">
-            <label className="mg-field" htmlFor="agent-collaboration-target"><span>执行 Agent</span><select id="agent-collaboration-target" value={targetId} disabled={Boolean(continuation) || busy === "submit" || !enabledAgents.length} onChange={(event) => setAgentId(event.target.value)}>
-              {continuation ? <option value={continuation.agentId}>{agentName(continuation.agentId)}</option> : enabledAgents.length ? enabledAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>) : <option value="">请先启用一个 CLI</option>}
-            </select></label>
+            <div className="mg-field"><span>执行 Agent</span><AppSelect
+              ariaLabel="执行 Agent"
+              disabled={Boolean(continuation) || busy === "submit" || !enabledAgents.length}
+              id="agent-collaboration-target"
+              onChange={(next) => setAgentId(next)}
+              options={continuation ? [{ value: continuation.agentId, label: agentName(continuation.agentId) }] : enabledAgents.map((agent) => ({ value: agent.id, label: agent.name }))}
+              placeholder="请先启用一个 CLI"
+              value={targetId}
+            /></div>
             <label className="mg-field" htmlFor="agent-collaboration-cwd"><span>工作目录</span><input id="agent-collaboration-cwd" value={targetCwd} disabled={Boolean(continuation) || busy === "submit"} placeholder="/absolute/path/to/project" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setCwd(event.target.value)} /></label>
           </div>
           <label className="mg-field" htmlFor="agent-collaboration-prompt"><span>{continuation ? "追加任务或问题" : "任务内容"}</span><textarea id="agent-collaboration-prompt" ref={promptRef} rows={4} value={prompt} disabled={busy === "submit"} placeholder={continuation ? "基于刚才的结果，继续…" : "描述目标、需要检查的文件，以及希望返回的结果…"} onChange={(event) => setPrompt(event.target.value)} /></label>
-          <div className="agent-collaboration-form-footer"><p className="agent-collaboration-hint" id="agent-collaboration-submit-hint">{formDisabledReason || "新任务会创建 CLI 会话。已有任务可在结果区选择“继续该任务”。"}</p><button type="submit" className="mg-button mg-primary" aria-describedby="agent-collaboration-submit-hint" disabled={Boolean(busy) || Boolean(formDisabledReason) || !prompt.trim() || !targetCwd.trim()}>{busy === "submit" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <Play size={15} />}{busy === "submit" ? "提交中…" : continuation ? "发送并续聊" : "提交任务"}</button></div>
+          <div className="agent-collaboration-form-footer"><p className="agent-collaboration-hint" id="agent-collaboration-submit-hint">{formDisabledReason || (targetQueue.willQueue ? tf("此 Agent 还有 {0} 个任务未结束，新任务会排队，前面的结束后按提交顺序自动启动。", [targetQueue.active]) : targetQueue.running ? tf("此 Agent 正在执行 {0} 个任务（同时最多 {1} 个），新任务会直接并发启动。", [targetQueue.running, targetQueue.concurrency]) : "新任务会创建 CLI 会话。已有任务可在结果区选择“继续该任务”。")}{!formDisabledReason && sameCwdRunning > 0 && tf(" 同一工作目录已有 {0} 个任务在运行，并发执行可能互相修改相同文件，建议使用不同的工作目录。", [sameCwdRunning])}</p><button type="submit" className="mg-button mg-primary" aria-describedby="agent-collaboration-submit-hint" disabled={Boolean(busy) || Boolean(formDisabledReason) || !prompt.trim() || !targetCwd.trim()}>{busy === "submit" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <Play size={15} />}{busy === "submit" ? "提交中…" : continuation ? "发送并续聊" : "提交任务"}</button></div>
         </form>
       </section>
 
       <section className="agent-collaboration-section" aria-labelledby="agent-collaboration-tasks-title">
-        <div className="agent-collaboration-section-head"><div><h2 id="agent-collaboration-tasks-title">任务与结果 <span className="agent-collaboration-count">{tasks.length}</span></h2><p role="status">{hasUnfinishedTasks ? "任务执行期间每 2 秒更新状态。" : "每 10 秒检查新任务，可接收其他客户端派发的任务。"}</p></div></div>
+        <div className="agent-collaboration-section-head"><div><h2 id="agent-collaboration-tasks-title">任务与结果 <span className="agent-collaboration-count">{tasks.length}</span></h2><p role="status">{hasUnfinishedTasks ? "任务执行期间每 2 秒更新状态。" : "每 10 秒检查新任务，可接收其他客户端派发的任务。"}</p>{agentLoads.length > 0 && <p className="agent-collaboration-hint" aria-label={t("各 Agent 并发情况")}>{agentLoads.map(({ agent, state }) => tf("{0}：执行中 {1}/{2}，排队 {3}", [agent.name, state.running, state.concurrency, state.queued])).join("；")}</p>}</div></div>
         {!tasks.length ? <div className="agent-collaboration-empty">还没有子 Agent 任务。接入后，在 Codex 对话中分派第一个任务。</div> : <div className="agent-collaboration-task-workspace">
           <ul className="agent-collaboration-task-list" aria-label="协作任务">
             {tasks.map((task) => <li key={task.id}><button type="button" className="agent-collaboration-task-select" aria-pressed={task.id === selectedId} onClick={() => setSelectedId(task.id)}><span className="agent-collaboration-task-title"><strong>{agentName(task.agentId)}</strong><span className="agent-collaboration-status" data-status={task.status}>{statusLabels[task.status] ?? task.status}</span></span><span className="agent-collaboration-task-prompt">{task.prompt}</span><small>{formatTime(task.createdAtMs)}{task.parentTaskId ? " · 续聊" : ""}</small></button></li>)}

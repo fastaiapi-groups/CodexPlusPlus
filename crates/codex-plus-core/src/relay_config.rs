@@ -393,7 +393,10 @@ pub fn ensure_active_protocol_proxy_config_in_home(
                     "活动 provider 需要修复 model_providers.{transport_provider_id}.name"
                 )
             })?;
-        provider["name"] = toml_edit::value(transport_provider_id.as_str());
+        // 优先换成供应商显示名（issue #192），显示名不可用时退回 provider id。
+        let repaired_name =
+            codex_provider_display_name(&profile).unwrap_or_else(|| transport_provider_id.clone());
+        provider["name"] = toml_edit::value(repaired_name);
         changed = true;
     }
 
@@ -820,6 +823,57 @@ pub fn apply_relay_profile_with_preservation(
     apply_relay_profile_to_home_with_switch_rules_and_proxy_port(home, &effective, common, proxy_port)
 }
 
+/// 多开实例专用（issue #2794）：把纯 API 供应商整理成「只用供应商 Key」的形态。
+///
+/// 主实例切到纯 API 时会保留 live 的 ChatGPT 登录态（#2173，CUA 插件靠它），profile
+/// 快照里也可能留着从官方 profile 改过来时的 `tokens` / `auth_mode`。这些原样写进多开
+/// 实例的 auth.json，实例就以官方账号登录；会话身份为 `openai` 时 `openai_base_url`
+/// 指向的还是主进程的本地代理（端口按主进程算），主进程按它自己的官方登录转发，结果
+/// 消耗官方额度、调不到供应商。多开实例要与主实例互不干扰，所以这里：
+/// - auth.json 只保留 `OPENAI_API_KEY`（与 `apply_pure_api_config_to_home_*` 的写法一致）；
+/// - 会话身份 `openai` 改回 `custom`，并去掉 `openai_base_url`；
+/// - 当前 provider 的 `requires_openai_auth` 置为 false，不让 Codex 去读账号登录态。
+///
+/// 非纯 API 的 profile（官方登录、官方 + API 混合）原样返回，行为不变。
+pub fn pure_api_profile_for_isolated_instance(
+    profile: &RelayProfile,
+) -> anyhow::Result<RelayProfile> {
+    let mut profile = profile.clone();
+    if profile.relay_mode != RelayMode::PureApi {
+        return Ok(profile);
+    }
+    // 与写进 `experimental_bearer_token` 的是同一把 Key（当前选中的 Key 优先）；
+    // 免 Key 供应商返回空串，auth.json 写空对象。
+    let api_key = relay_profile_api_key(&profile);
+    let auth = if api_key.is_empty() {
+        json!({})
+    } else {
+        json!({ "OPENAI_API_KEY": api_key })
+    };
+    profile.auth_contents = format!("{}\n", serde_json::to_string_pretty(&auth)?);
+
+    if !profile.config_contents.trim().is_empty() {
+        let mut doc = parse_toml_document(&profile.config_contents)?;
+        if active_provider_id(&doc).as_deref() == Some("openai") {
+            // `openai` 会话身份下真正的传输 provider 就是 `custom`（见补全逻辑）。
+            set_provider_id(&mut doc, RELAY_PROVIDER);
+            doc.as_table_mut().remove(OPENAI_BASE_URL_KEY);
+        }
+        let provider_id = active_or_default_provider_id(&doc);
+        if let Some(provider) = doc
+            .get_mut("model_providers")
+            .and_then(Item::as_table_like_mut)
+            .and_then(|providers| providers.get_mut(&provider_id))
+            .and_then(Item::as_table_like_mut)
+            && provider.get("requires_openai_auth").is_some()
+        {
+            provider.insert("requires_openai_auth", toml_edit::value(false));
+        }
+        profile.config_contents = ensure_trailing_newline(doc.to_string());
+    }
+    Ok(profile)
+}
+
 pub fn preserve_live_nonprovider_settings(home: &Path, config: &str) -> anyhow::Result<String> {
     let mut target = parse_toml_document(config)?;
     let live = read_optional_text(&home.join("config.toml"))?;
@@ -1086,7 +1140,7 @@ pub async fn test_relay_profile(
         crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT
     } else if !profile.user_agent.trim().is_empty() { profile.user_agent.trim() }
     else { "CodexPlusPlus/RelayTest" };
-    let client = crate::http_client::proxied_client_for_profile(user_agent, &profile.id)?;
+    let client = crate::http_client::proxied_client_for_relay(user_agent, &profile)?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(base_url),
         RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(base_url),
@@ -1437,7 +1491,13 @@ pub fn backfill_relay_profile_from_home(
     profile: &mut RelayProfile,
 ) -> anyhow::Result<()> {
     let live_contents = read_optional_text(&home.join("config.toml"))?;
+    let template_config = profile.config_contents.clone();
     profile.config_contents = strip_tool_written_model_from_config(home, profile, &live_contents);
+    profile.config_contents = restore_profile_provider_name_for_backfill(
+        &profile.config_contents,
+        &template_config,
+        profile,
+    )?;
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     let live_config = profile.config_contents.clone();
     sync_context_limits_from_config(profile, &live_config);
@@ -1565,6 +1625,11 @@ fn backfill_profile_from_text(
     };
     profile.config_contents =
         restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
+    profile.config_contents = restore_profile_provider_name_for_backfill(
+        &profile.config_contents,
+        &template_config,
+        profile,
+    )?;
     profile.config_contents =
         strip_tool_written_model_from_config(home, profile, &profile.config_contents);
     if profile.protocol == RelayProtocol::Responses
@@ -1671,8 +1736,10 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
+        || profile.strips_image_generation_tool()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -2020,12 +2087,11 @@ pub fn merge_common_config_into_config(
 /// 用户表现为「编辑通用配置后 MCP 连接配置丢失」，实际是整份配置都没加载
 /// （#2147 / #1997 / #2123 同源）。
 fn mcp_server_entry_has_transport(table: &dyn TableLike) -> bool {
-    ["command", "url"].iter().any(|key| {
-        table
-            .get(key)
-            .and_then(Item::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+    // 和 Codex 的判断一致：只看有没有 command / url 字符串，空串 Codex 也能加载（只是起不来那一个），
+    // 不能当成残缺条目删掉。
+    ["command", "url"]
+        .iter()
+        .any(|key| table.get(key).and_then(Item::as_str).is_some())
 }
 
 /// 落盘前的 MCP 完整性校验（#2147）。
@@ -2534,9 +2600,10 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
     if contents.trim().is_empty() {
         Ok(DocumentMut::new())
     } else {
-        contents
-            .parse::<DocumentMut>()
-            .map_err(|error| anyhow::anyhow!("config.toml TOML 解析失败：{error}"))
+        // 解析错误不带原文（那一行可能是 Key），只报行列。
+        contents.parse::<DocumentMut>().map_err(|error| {
+            crate::gateway::restore::toml_syntax_error("config.toml", contents, error.span())
+        })
     }
 }
 
@@ -2555,7 +2622,7 @@ fn remove_provider_specific_common_keys(table: &mut dyn TableLike) {
     table.remove("model_providers");
 }
 
-fn is_provider_specific_common_root_key(key: &str) -> bool {
+pub(crate) fn is_provider_specific_common_root_key(key: &str) -> bool {
     let key = key.trim().trim_matches(['\"', '\'']);
     PROVIDER_SPECIFIC_COMMON_ROOT_KEYS.contains(&key) || is_provider_credential_root_key(key)
 }
@@ -2942,6 +3009,80 @@ fn fill_missing_toml_item(target: &mut Item, source: &Item) {
     }
 }
 
+/// Codex 自身安装管理的 MCP 条目 id（#2583）。
+///
+/// 这些条目由 Codex 桌面端 / 内置插件按当前安装写入 config.toml，command、args、
+/// env 里带版本号或内容哈希目录（`WindowsApps\OpenAI.Codex_<ver>`、
+/// `runtimes\cua_node\<hash>`、`bin\<hash>\codex.exe`），Codex 更新后旧目录会被删掉。
+const CODEX_MANAGED_MCP_SERVER_IDS: &[&str] = &["node_repl", "cua_repl"];
+
+/// 路径是否落在 Codex 自身维护的安装目录里（随版本/哈希变化的那几处）。
+fn is_codex_managed_install_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    // 桌面版在 %LOCALAPPDATA%\OpenAI\Codex 下维护的运行时与 CLI：runtimes\<名>\<哈希>、bin\<哈希>。
+    if normalized.contains("/openai/codex/runtimes/") || normalized.contains("/openai/codex/bin/") {
+        return true;
+    }
+    // Store 包目录：WindowsApps\OpenAI.Codex_<版本>_x64__<publisher>\...，包名识别复用 app_paths。
+    let segments: Vec<&str> = normalized.split('/').collect();
+    segments.windows(2).any(|pair| {
+        pair[0] == "windowsapps" && crate::app_paths::is_supported_windows_app_package_name(pair[1])
+    })
+}
+
+/// `notify` 是否是 Codex 写入的那份（任一参数指向 Codex 安装目录）。
+fn notify_points_to_codex_install(item: &Item) -> bool {
+    item.as_array().is_some_and(|array| {
+        array
+            .iter()
+            .filter_map(|value| value.as_str())
+            .any(is_codex_managed_install_path)
+    })
+}
+
+/// Codex 托管的条目以 live 为准（#2583）。
+///
+/// 快照（例如首次导入的「系统默认」）、模板与通用配置里的同名条目只是当时的副本，
+/// Codex 更新换了目录后仍指向已删除的路径；按「模板优先、live 补缺」的通用规则，
+/// 每次启动重写 config.toml 都会把旧路径写回，node_repl / cua_repl 报 os error 3。
+/// 这里只把 Codex 托管的 MCP 条目整条换成 live 版本；`notify` 仅在 live 或模板那份
+/// 指向 Codex 安装目录时才跟随 live。用户自己添加的 MCP 条目与 notify 维持原有优先级。
+fn prefer_live_codex_managed_entries(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    if let Some(live_servers) = live_doc.get("mcp_servers").and_then(Item::as_table_like) {
+        for id in CODEX_MANAGED_MCP_SERVER_IDS {
+            let Some(live_item) = live_servers.get(id) else {
+                continue;
+            };
+            // live 里这条本身残缺时不拿它覆盖，交给后面的补缺修复处理。
+            if !live_item
+                .as_table_like()
+                .is_some_and(mcp_server_entry_has_transport)
+            {
+                continue;
+            }
+            if target_doc
+                .get("mcp_servers")
+                .and_then(Item::as_table_like)
+                .is_none()
+            {
+                target_doc["mcp_servers"] = toml_edit::table();
+            }
+            if let Some(target_servers) = target_doc["mcp_servers"].as_table_like_mut() {
+                target_servers.insert(id, live_item.clone());
+            }
+        }
+    }
+    if let Some(live_notify) = live_doc.get("notify") {
+        let codex_managed = notify_points_to_codex_install(live_notify)
+            || target_doc
+                .get("notify")
+                .is_some_and(notify_points_to_codex_install);
+        if codex_managed {
+            target_doc["notify"] = live_notify.clone();
+        }
+    }
+}
+
 /// mcp_servers 的形状权威在 live。模板里可能留着被压平的残形（启动键缺失、
 /// env 键混进父表），这里在写盘前用 live 补齐缺键，并把与 env 子表重复的父表键移除。
 fn repair_mcp_servers_from_live(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
@@ -3001,9 +3142,11 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     remove_unsupported_approval_policies(&mut target_doc);
     let live_text = read_optional_text(&home.join("config.toml"))?;
     if live_text.trim().is_empty() {
+        repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
         return Ok(normalize_optional_toml(target_doc));
     }
     let Ok(live_doc) = parse_toml_document(&live_text) else {
+        repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
         return Ok(normalize_optional_toml(target_doc));
     };
     if let Some(live_desktop) = live_doc.get("desktop").cloned() {
@@ -3022,9 +3165,22 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // 消失（#2263）。整体合并会覆盖通用配置的新值，所以只补缺。
     // 同一个 server 在模板里可能是被压平的残形，这时只补整条不够，
     // 还要用 live 补齐条目内缺失的键，并清掉混进父表的 env 键。
+    // 例外：Codex 自身托管的条目（node_repl / cua_repl）与 notify 带版本化路径，
+    // 以 live 为准，避免旧快照把已删除的目录写回（#2583）。
+    prefer_live_codex_managed_entries(&mut target_doc, &live_doc);
     repair_mcp_servers_from_live(&mut target_doc, &live_doc);
+    // 写盘前兜底：用 live 补过仍缺 command / url 的条目（模板减出来的残表，或 live 里本来就坏的），
+    // Codex 会以 invalid transport 拒绝整份 config.toml、桌面版起不来，这里去掉并记诊断（#2765）。
+    repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
+    // #2683：补回前先记下目标是否自己声明了 multi_agent_v2（v1 闸门写入或模板自带），
+    // 补回之后据此决定要不要还原 v1 压下的闸门。
+    let target_declares_multi_agent_v2 = target_doc
+        .get("features")
+        .and_then(Item::as_table_like)
+        .is_some_and(|features| features.get("multi_agent_v2").is_some());
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
+    restore_multi_agent_v2_gate(home, &mut target_doc, &live_doc, target_declares_multi_agent_v2);
     // 同上：`[plugins."<id>"]` 由用户与 Codex 桌面端管理，模板里没有时从 live 补回。
     // 这条是兜底——正常切换路径已经在 preserve_unmanaged_live_context_entries 补过，
     // 但 apply_relay_files_to_home / apply_relay_config_file_to_home 等入口不经过那一步，
@@ -3297,6 +3453,252 @@ fn apply_context_limits_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
+/// 外部 `model_catalog_json` 路径的 v1 闸门联动（#2683）：用户手写/live 外部目录时
+/// 目录内容由那份文件负责，Codex++ 不改写；但显式选 v1 的闸门压下动作不能省——
+/// 否则 `[features] multi_agent_v2` 开着会单向覆盖一切目录声明（含用户外部目录里的
+/// v1），且冲突提示里「重新保存让 Codex++ 自动压闸」的建议会永远落空。
+///
+/// 压下值只在当前供应商生效期间有意义：首次压下前把 live 里的原值存档，切走的
+/// 那次写入由 [`restore_multi_agent_v2_gate`] 还原，否则 features 补回逻辑会把
+/// 压下的 false 一直带给后面的供应商，用户原来的开启状态就丢了。
+fn gate_multi_agent_v2_for_v1(home: &Path, doc: &mut DocumentMut) {
+    let stash = load_multi_agent_gate_stash(home);
+    // live 只在两种形态下需要读：首次压闸存原值，或模板没写而 live 是子表写法
+    // （子表要整表带进新配置再压 enabled，见下）。其余情况跳过这次读取。
+    let live_gate_item = live_multi_agent_v2_item(home);
+    // 首次压闸读 live 原值：此时 config.toml 还是切换前的状态。重新应用同一
+    // 供应商时存档已在，不能把自己写进去的 false 当成原值覆盖掉。
+    let original = if stash.is_none() {
+        match &live_gate_item {
+            Ok(item) => Some(item.as_ref().and_then(toml_item_to_json)),
+            // live 读不出就没法存原值：只压闸、不建档（还原逻辑自然不触发），
+            // 不把「读不出」误当成「原本不存在」而在切走时删掉用户的键。
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "relay_config.multi_agent_gate_stash_read_failed",
+                    json!({ "message": error.to_string() }),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let live_sub_table = match &live_gate_item {
+        Ok(Some(Item::Table(table))) => Some(Item::Table(table.clone())),
+        Ok(Some(Item::Value(toml_edit::Value::InlineTable(table)))) => {
+            Some(Item::Value(toml_edit::Value::InlineTable(table.clone())))
+        }
+        _ => None,
+    };
+    let features = doc
+        .entry("features")
+        .or_insert(Item::Table(Table::new()));
+    if let Some(table) = features.as_table_like_mut() {
+        if table.get("multi_agent_v2").is_none() {
+            if let Some(live_sub_table) = live_sub_table.clone() {
+                // 子表写法在 live 里而模板没写：整表带进来，features 补回之后
+                // 表里除 enabled 之外的设置才不会丢（#2714 review）。
+                table.insert("multi_agent_v2", live_sub_table);
+            }
+        }
+        if table
+            .get("multi_agent_v2")
+            .and_then(Item::as_table_like)
+            .is_some()
+        {
+            // 子表写法 `[features.multi_agent_v2]`：只压 enabled=false，表里其他
+            // 设置原样保留，不能把整张子表替换成标量 false（#2714 review）。
+            if let Some(sub_table) = table
+                .get_mut("multi_agent_v2")
+                .and_then(Item::as_table_like_mut)
+            {
+                sub_table.insert("enabled", toml_edit::value(false));
+            }
+        } else {
+            table.insert("multi_agent_v2", toml_edit::value(false));
+        }
+    }
+    if let Some(original) = original {
+        // 存档里记下这次实际写入的形态，还原前用它确认 live 没被手动改过。
+        let gated = doc
+            .get("features")
+            .and_then(Item::as_table_like)
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(toml_item_to_json)
+            .unwrap_or(Value::Bool(false));
+        if let Err(error) = crate::settings::atomic_write(
+            &multi_agent_gate_stash_path(home),
+            serde_json::to_string_pretty(&MultiAgentGateStash {
+                original,
+                gated,
+            })
+            .unwrap_or_default()
+            .as_bytes(),
+        ) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "relay_config.multi_agent_gate_stash_write_failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+    }
+}
+
+/// v1 闸门的存档（#2714 review：压下前原值 + 写入形态，切走时还原）。
+///
+/// 放在 `<home>/model-catalogs/multi-agent-gate.json`，与每供应商的 catalog 同目录。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MultiAgentGateStash {
+    /// 压下前 `[features] multi_agent_v2` 的原值；键原本不存在时为 None。
+    original: Option<Value>,
+    /// 压下时写进去的形态；还原前确认 live 仍是它，期间用户手动改过就尊重改动。
+    gated: Value,
+}
+
+fn multi_agent_gate_stash_path(home: &Path) -> PathBuf {
+    home.join("model-catalogs").join("multi-agent-gate.json")
+}
+
+fn load_multi_agent_gate_stash(home: &Path) -> Option<MultiAgentGateStash> {
+    std::fs::read_to_string(multi_agent_gate_stash_path(home))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+}
+
+/// 读 live config.toml 里 `[features] multi_agent_v2` 的当前值；键不存在（或 live
+/// 文件本就不存在）时为 Ok(None)。live 存在但解析失败时返回 Err，调用方据此放弃
+/// 建档，而不是把「读不出」误当成「原本不存在」。
+fn live_multi_agent_v2_item(home: &Path) -> anyhow::Result<Option<Item>> {
+    let live_text = read_optional_text(&home.join("config.toml"))?;
+    if live_text.trim().is_empty() {
+        return Ok(None);
+    }
+    let live_doc = parse_toml_document(&live_text)?;
+    Ok(live_doc
+        .get("features")
+        .and_then(Item::as_table_like)
+        .and_then(|features| features.get("multi_agent_v2"))
+        .cloned())
+}
+
+/// toml_edit 项 → JSON 值（只用来存档与比较，features 下只可能是标量与子表）。
+/// toml_edit 的类型不实现 serde::Serialize，这里按形态手写转换。
+fn toml_item_to_json(item: &Item) -> Option<Value> {
+    match item {
+        Item::None => None,
+        Item::Value(value) => toml_value_to_json(value),
+        Item::Table(table) => {
+            let mut map = serde_json::Map::new();
+            for (key, entry) in table.iter() {
+                map.insert(key.to_string(), toml_item_to_json(entry)?);
+            }
+            Some(Value::Object(map))
+        }
+        Item::ArrayOfTables(tables) => Some(Value::Array(
+            tables
+                .iter()
+                .map(|table| toml_item_to_json(&Item::Table(table.clone())))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+    }
+}
+
+fn toml_value_to_json(value: &toml_edit::Value) -> Option<Value> {
+    match value {
+        toml_edit::Value::String(text) => Some(Value::String(text.value().clone())),
+        toml_edit::Value::Integer(number) => Some(json!(number.value())),
+        toml_edit::Value::Float(number) => {
+            serde_json::Number::from_f64(*number.value()).map(Value::Number)
+        }
+        toml_edit::Value::Boolean(flag) => Some(Value::Bool(*flag.value())),
+        toml_edit::Value::Datetime(when) => Some(Value::String(when.value().to_string())),
+        toml_edit::Value::Array(array) => Some(Value::Array(
+            array
+                .iter()
+                .map(toml_value_to_json)
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        toml_edit::Value::InlineTable(table) => {
+            let mut map = serde_json::Map::new();
+            for (key, entry) in table.iter() {
+                map.insert(key.to_string(), toml_value_to_json(entry)?);
+            }
+            Some(Value::Object(map))
+        }
+    }
+}
+
+/// JSON 值 → toml_edit 项（还原存档原值用；覆盖标量与标量表，其余形态放不下原位）。
+fn json_value_to_toml_item(value: &Value) -> Option<Item> {
+    match value {
+        Value::Bool(boolean) => Some(toml_edit::value(*boolean)),
+        Value::String(text) => Some(toml_edit::value(text.as_str())),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                Some(toml_edit::value(integer))
+            } else {
+                number.as_f64().map(toml_edit::value)
+            }
+        }
+        Value::Object(map) => {
+            let mut table = Table::new();
+            for (key, entry) in map {
+                table.insert(key, json_value_to_toml_item(entry)?);
+            }
+            Some(Item::Table(table))
+        }
+        Value::Null | Value::Array(_) => None,
+    }
+}
+
+/// 切走时还原 v1 闸门压下的 `[features] multi_agent_v2`（#2683 review）。
+///
+/// 在 `preserve_live_app_settings` 的 features 补回之后调用：补回会把压下的 false
+/// 带进新配置，这里把它换成存档的原值。只在这次写入的配置自己没有声明该键、且
+/// live 仍是我们写入的形态时才回写——闸门生效期间用户手动改过就尊重用户的改动，
+/// 存档一并清掉。
+fn restore_multi_agent_v2_gate(
+    home: &Path,
+    target_doc: &mut DocumentMut,
+    live_doc: &DocumentMut,
+    target_declares_gate_key: bool,
+) {
+    let Some(stash) = load_multi_agent_gate_stash(home) else {
+        return;
+    };
+    if target_declares_gate_key {
+        // 这次写入自己带 multi_agent_v2（v1 闸门又压下、或模板自带值）：
+        // 压下继续有效，存档留给真正切走的那次。
+        return;
+    }
+    // 不再压闸：存档用完即删，无论是否回写。
+    let _ = std::fs::remove_file(multi_agent_gate_stash_path(home));
+    let live_value = live_doc
+        .get("features")
+        .and_then(Item::as_table_like)
+        .and_then(|features| features.get("multi_agent_v2"))
+        .and_then(toml_item_to_json);
+    if live_value.as_ref() != Some(&stash.gated) {
+        // 闸门期间 live 被改过（用户手动改、或上一家模板写过）：尊重现状，不回写。
+        return;
+    }
+    let features = target_doc
+        .entry("features")
+        .or_insert(Item::Table(Table::new()));
+    if let Some(table) = features.as_table_like_mut() {
+        match stash.original.as_ref().and_then(json_value_to_toml_item) {
+            Some(original) => {
+                table.insert("multi_agent_v2", original);
+            }
+            // 原本不存在（或形态无法还原）：把补回带进来的压下值整个拿掉。
+            None => {
+                table.remove("multi_agent_v2");
+            }
+        }
+    }
+}
+
 /// 外部 `model_catalog_json` 与每模型配置冲突时的降级路径（issue #2203）。
 ///
 /// 保留用户手写的外部指针不动，只往 config.toml 顶层写 `model_context_window` /
@@ -3474,6 +3876,14 @@ fn apply_model_catalog_to_config_with_live_policy(
         parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
     validate_model_auto_compact(&model_auto_compact)?;
     let model_metadata = parse_model_metadata_map(&profile.model_metadata)?;
+    // 供应商级 Multi-Agent 显式选择（#2683）：只认 v1/v2，其余值一律按 Auto 落回现有行为。
+    // 在所有 catalog 分支（含外部目录早退）之前计算：显式 v1 的闸门压下动作对
+    // 外部目录路径同样生效，否则用户手写目录里的 v1 声明也会被 [features] 闸门
+    // 单向覆盖。强制落盘只对「用户显式写了模型列表」的形态生效（见落盘判定处）。
+    let provider_multi_agent = match profile.multi_agent.trim() {
+        "v1" | "v2" if !model_list.trim().is_empty() => Some(profile.multi_agent.trim()),
+        _ => None,
+    };
     let entries = crate::model_suffix::collect_catalog_entries(
         &model_list,
         &model_windows,
@@ -3561,6 +3971,15 @@ fn apply_model_catalog_to_config_with_live_policy(
                 {
                     let mut doc = parse_toml_document(&config_text)?;
                     doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
+                    if provider_multi_agent == Some("v1") {
+                        gate_multi_agent_v2_for_v1(home, &mut doc);
+                    }
+                    return Ok(normalize_optional_toml(doc));
+                }
+                if provider_multi_agent == Some("v1") {
+                    // 外部目录原样保留，但 v1 的闸门联动不能省（#2683）。
+                    let mut doc = parse_toml_document(&config_text)?;
+                    gate_multi_agent_v2_for_v1(home, &mut doc);
                     return Ok(normalize_optional_toml(doc));
                 }
                 return Ok(config_text);
@@ -3594,6 +4013,10 @@ fn apply_model_catalog_to_config_with_live_policy(
         } else {
             doc["model_catalog_json"] = toml_edit::value(external_catalog);
         }
+        // 外部目录（含 copy 副本）路径同样执行 v1 闸门联动（#2683）。
+        if provider_multi_agent == Some("v1") {
+            gate_multi_agent_v2_for_v1(home, &mut doc);
+        }
         return Ok(normalize_optional_toml(doc));
     }
     // Known bundled metadata entries need a catalog even without a user-supplied window.
@@ -3620,6 +4043,12 @@ fn apply_model_catalog_to_config_with_live_policy(
         && root_key_string(&config_text, "model_catalog_json").is_some_and(|pointer| {
             pointer == catalog_relative || pointer == catalog_pointer
         });
+    // 供应商级 Multi-Agent 显式选择（#2683）：只认 v1/v2，其余值一律按 Auto 落回现有行为。
+    // 提前到落盘判定之前计算：显式选择必须落 catalog，否则单模型无覆盖的
+    // 「无后缀不落盘」契约会把声明静默吞掉，设置形同虚设。
+    // 但强制落盘只对「用户显式写了模型列表」的形态生效：模型列表留空时 catalog
+    // 只有 0~1 个条目，会替换 Codex 内置的官方模型列表（选择器变空）——Mixed API
+    // （官方登录+API）走同一条链路且字段可见，必须沿用上面的空列表保护。
     if !should_write_managed_model_catalog(
         &entries,
         has_metadata_overrides,
@@ -3630,7 +4059,8 @@ fn apply_model_catalog_to_config_with_live_policy(
         // （典型是官方登录）时 catalog 里只剩 0~1 个模型，会替换 Codex 内置的
         // 官方模型列表，选择器变空；这种情况沿用顶层 model_context_window。
         fallback.is_some() && !model_list.trim().is_empty(),
-    ) && !upstream_rejects_tool_search(profile)
+    ) && provider_multi_agent.is_none()
+        && !upstream_rejects_tool_search(profile)
         && !existing_managed_catalog
     {
         let mut doc = parse_toml_document(&config_text)?;
@@ -3652,6 +4082,7 @@ fn apply_model_catalog_to_config_with_live_policy(
         None,
         (!lite_supported).then_some(false),
         official_deepseek_responses,
+        provider_multi_agent,
     );
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     let catalog_json = if upstream_rejects_tool_search(profile) {
@@ -3663,6 +4094,14 @@ fn apply_model_catalog_to_config_with_live_policy(
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
+    // #2683 验收 2：显式 v1 时必须压下 [features] multi_agent_v2——上游 schema 明言
+    // 「An enabled features.multi_agent_v2 setting takes precedence」，闸门开着会单向
+    // 覆盖目录里的经典协议声明，只写目录不够。这里写显式 false（false 不属于
+    // enabled 形态，不会反向触发优先级），preserve_missing_table_keys 也不会把
+    // live 里的 true 补回来——显式写出的键优先于补缺逻辑。
+    if provider_multi_agent == Some("v1") {
+        gate_multi_agent_v2_for_v1(home, &mut doc);
+    }
     Ok(normalize_optional_toml(doc))
 }
 
@@ -5092,6 +5531,26 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
         .unwrap_or_default()
 }
 
+/// 改 profile 的默认模型：`model` 字段和配置快照里的根键 `model =` 一起改。
+/// [`relay_profile_model`] 优先读快照，只改字段的话，读盘规范化时会把旧模型改回来、
+/// 再并回模型列表。快照为空时只改字段（规范化会按字段补全快照）；`model` 为空时去掉根键。
+pub fn set_relay_profile_model(profile: &mut RelayProfile, model: &str) -> anyhow::Result<()> {
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    let slug = slug.trim().to_string();
+    profile.model = slug.clone();
+    if profile.config_contents.trim().is_empty() {
+        return Ok(());
+    }
+    let mut doc = parse_toml_document(&profile.config_contents)?;
+    if slug.is_empty() {
+        doc.as_table_mut().remove("model");
+    } else {
+        doc["model"] = toml_edit::value(slug);
+    }
+    profile.config_contents = normalize_optional_toml(doc);
+    Ok(())
+}
+
 /// 「测试供应商」与 Provider Doctor 使用的模型：供应商配置的默认模型 → 模型列表第一项 → 内置兜底。
 /// 不再读取单独的测试模型设置，避免测的模型和实际使用的模型不一致。
 pub fn relay_profile_test_model(profile: &RelayProfile) -> String {
@@ -5122,8 +5581,10 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
+        || profile.strips_image_generation_tool()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -5191,6 +5652,134 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
         })
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| profile.api_key.trim().to_string())
+}
+
+/// 测试请求实际用的 Key 怎么称呼：(多个 Key 时的名称, 末 4 位)。
+///
+/// 只露名称和末 4 位（与上游报错里的 `****xxxx` 对得上），不泄露整串 Key；
+/// 不用 Key 的供应商（免 Key、聚合、官方登录）和太短的 Key（露末 4 位等于露了大半）返回 None。
+/// 直连模式的「测试」与网关供应商池的「测试」共用。
+pub fn relay_test_key_identity(profile: &RelayProfile) -> Option<(Option<String>, String)> {
+    if profile.uses_no_auth()
+        || profile.relay_mode == RelayMode::Aggregate
+        || crate::official_login::is_official_login_profile(profile)
+    {
+        return None;
+    }
+    let api_key = relay_profile_api_key(profile);
+    let chars: Vec<char> = api_key.trim().chars().collect();
+    if chars.len() < 12 {
+        return None;
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    let name = profile
+        .selected_api_key()
+        .filter(|selected| profile.api_keys.len() > 1 && !selected.name.trim().is_empty())
+        .map(|selected| selected.name.trim().to_string());
+    Some((name, tail))
+}
+
+/// 供应商测试被上游以 401 / 403 拒绝时，附在结果里的「本次实际用了哪个 Key」（#2754）。
+///
+/// 测试、切换与多开实例都取 [`relay_profile_api_key`]，即 API Keys 列表里打勾的当前 Key；
+/// 「添加 Key」不会自动切换，用户在新行里填了新 Key 却没勾选时，请求一直带着旧 Key，
+/// 上游只回「Key 无效」，用户看不出是哪个 Key。这里只露名称和末 4 位，
+/// 与 DeepSeek 等上游报错里的 `****xxxx` 对得上，方便比对，不泄露整串 Key。
+pub fn relay_test_auth_failure_hint(profile: &RelayProfile, http_status: u16) -> Option<String> {
+    if !matches!(http_status, 401 | 403) {
+        return None;
+    }
+    let (name, tail) = relay_test_key_identity(profile)?;
+    let key_label = match name {
+        Some(name) => format!("「{name}」（末 4 位 {tail}）"),
+        None => format!("末 4 位 {tail}"),
+    };
+    let mut hint = format!("本次测试用的是当前 Key：{key_label}。");
+    if profile.api_keys.len() > 1 {
+        hint.push_str(
+            "该供应商存了多个 Key，「添加 Key」不会自动切换；如果新 Key 填在了别的行，请在编辑页点它左侧的勾设为当前 Key 并保存。",
+        );
+    } else {
+        hint.push_str("如与供应商后台的 Key 对不上，请编辑该供应商重新填写并保存。");
+    }
+    Some(hint)
+}
+
+/// 写进 `[model_providers.<id>].name` 的供应商显示名（issue #192）。
+///
+/// 去掉首尾空白，换行等控制字符折成空格；为空、或会被 codex 当成官方 OpenAI
+/// （大小写 / 空白变体都算，issue #2217）时返回 None，由调用方退回原来的值。
+/// 引号、反斜杠等 TOML 转义交给 toml_edit 处理。
+pub(crate) fn codex_provider_display_name(profile: &RelayProfile) -> Option<String> {
+    let name: String = profile
+        .name
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let name = name.trim();
+    let compact: String = name.chars().filter(|ch| !ch.is_whitespace()).collect();
+    (!name.is_empty() && !compact.eq_ignore_ascii_case("OpenAI")).then(|| name.to_string())
+}
+
+/// provider name 是否还是 Codex++ 自动填的值（空、provider id、旧版内置 id），
+/// 只有这种情况才会被显示名接管；用户手写的标签不动。
+fn provider_name_is_generated(name: &str, provider_id: &str) -> bool {
+    let name = name.trim();
+    name.is_empty()
+        || name == provider_id
+        || name == RELAY_PROVIDER
+        || LEGACY_RELAY_PROVIDERS.contains(&name)
+}
+
+/// 回填 live config 时，把 Codex++ 自己写进去的显示名换回快照里的原值，
+/// 免得显示名被固化成「用户手写的 name」，之后改名就不再同步（issue #192）。
+fn restore_profile_provider_name_for_backfill(
+    config: &str,
+    template_config: &str,
+    profile: &RelayProfile,
+) -> anyhow::Result<String> {
+    let Some(display_name) = codex_provider_display_name(profile) else {
+        return Ok(config.to_string());
+    };
+    if config.trim().is_empty() {
+        return Ok(config.to_string());
+    }
+    let mut doc = parse_toml_document(config)?;
+    let transport_provider_id = if active_session_provider_id(&doc) == "openai" {
+        RELAY_PROVIDER.to_string()
+    } else {
+        active_or_default_provider_id(&doc)
+    };
+    let live_name_is_display_name = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(&transport_provider_id))
+        .and_then(|provider| provider.get("name"))
+        .and_then(Item::as_str)
+        .is_some_and(|name| name.trim() == display_name);
+    if !live_name_is_display_name {
+        return Ok(config.to_string());
+    }
+    let template_name = parse_toml_document(template_config)
+        .ok()
+        .and_then(|template| {
+            template
+                .get("model_providers")?
+                .get(&transport_provider_id)?
+                .get("name")?
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && *name != display_name)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| transport_provider_id.clone());
+    if let Some(provider) = doc
+        .get_mut("model_providers")
+        .and_then(|providers| providers.get_mut(&transport_provider_id))
+        .and_then(Item::as_table_like_mut)
+    {
+        provider.insert("name", toml_edit::value(template_name));
+    }
+    Ok(doc.to_string())
 }
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
@@ -5283,25 +5872,27 @@ fn complete_relay_profile_config_with_proxy_port(
         }
     }
     let provider = ensure_provider_table(&mut doc, &transport_provider_id)?;
-    if provider
+    let current_name = provider
         .get("name")
         .and_then(Item::as_str)
         .map(str::trim)
-        .is_none_or(str::is_empty)
-    {
-        provider["name"] = toml_edit::value(transport_provider_id.as_str());
-    }
+        .unwrap_or_default()
+        .to_string();
     // codex 用 `name == "OpenAI"` 的严格匹配判定 provider 是否走 v2 远程压缩
     // （RemoteCompactionSupport::V2，见 openai/codex issue #42313），第三方中转
     // 顶着这个名字会被要求返回 `compaction` 输出项而稳定报错（issue #2217）。
     // 只有真正的 OpenAI 会话身份（官方 OAuth / 混合模式）可以保留该名称，
-    // 其余情况一律改写成 provider id，让 codex 回退到本地压缩。
-    if !uses_openai_provider
-        && provider
-            .get("name")
-            .and_then(Item::as_str)
-            .is_some_and(|name| name.trim().eq_ignore_ascii_case("OpenAI"))
-    {
+    // 其余情况一律改写，让 codex 回退到本地压缩。
+    let name_must_leave_openai =
+        !uses_openai_provider && current_name.eq_ignore_ascii_case("OpenAI");
+    // name 仍是 Codex++ 自动生成的值时，换成供应商列表里的显示名（issue #192）；
+    // 用户手写过的标签（issue #1886 / #2682）原样保留。
+    let display_name = codex_provider_display_name(profile).filter(|_| {
+        name_must_leave_openai || provider_name_is_generated(&current_name, &transport_provider_id)
+    });
+    if let Some(display_name) = display_name {
+        provider["name"] = toml_edit::value(display_name);
+    } else if current_name.is_empty() || name_must_leave_openai {
         provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
     // Codex 26.901 起不再支持 `wire_api = "chat"`（见 openai/codex discussion #7782），
@@ -5329,8 +5920,10 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.uses_no_auth()
         || profile.uses_independent_proxy()
         || profile.web_search_history_compat_enabled()
+        || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
+        || profile.strips_image_generation_tool()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
@@ -5658,6 +6251,22 @@ fn remove_experimental_bearer_token_from_config(config_contents: &str) -> anyhow
         }
     }
     Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+/// 单独增删、替换 Key 后（#2782）：从直连模式导入的供应商在 auth / config 文本里也存着 Key，
+/// 有的话同步成当前选中的 Key，删掉或换掉的旧 Key 不会留在文件里。没有就不动。
+pub(crate) fn sync_stored_api_key(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let key = profile.api_key.trim().to_string();
+    if codex_auth_api_key(&profile.auth_contents).is_some() {
+        profile.auth_contents = set_openai_api_key_in_auth_contents(&profile.auth_contents, &key)?;
+    }
+    if !profile.config_contents.trim().is_empty()
+        && experimental_bearer_token_from_config(&profile.config_contents)?.is_some()
+    {
+        profile.config_contents =
+            set_experimental_bearer_token_in_config(&profile.config_contents, &key)?;
+    }
+    Ok(())
 }
 
 fn provider_tables(doc: &DocumentMut) -> Vec<&dyn TableLike> {

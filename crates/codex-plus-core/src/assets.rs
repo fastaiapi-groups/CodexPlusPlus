@@ -5,73 +5,46 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
-const WHALE_DEFAULT_IMAGE: &[u8] =
-    include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
-const WHALE_RUNTIME: &str =
-    include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
-const WHALE_MEDIA: &[(&str, &str, &[u8])] = &[
-    ("DSniang1.png", "image/png", WHALE_DEFAULT_IMAGE),
+/// Agent 桌宠的按压 / 松开音效，按音效组内嵌：(组名, 按压音, 松开音)。
+/// 音效随启动器本地内嵌，运行时不下载；桌宠图片则不内嵌，见 `agent_pet`。
+const AGENT_PET_SOUNDS: &[(&str, &[u8], &[u8])] = &[
     (
-        "Ya1.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya1.mp3"),
+        "duck",
+        include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
+        include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
     ),
     (
-        "Ya2.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya2.mp3"),
-    ),
-    (
-        "D1.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/D1.mp3"),
-    ),
-    (
-        "D2.mp3",
-        "audio/mpeg",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/D2.mp3"),
-    ),
-    (
-        "minecraft-exp-orb.wav",
-        "audio/wav",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/minecraft-exp-orb.wav"),
-    ),
-    (
-        "task-end-a.wav",
-        "audio/wav",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/task-end-a.wav"),
-    ),
-    (
-        "bubble-petpet.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-petpet.gif"),
-    ),
-    (
-        "bubble-money1.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-money1.gif"),
-    ),
-    (
-        "rua.gif",
-        "image/gif",
-        include_bytes!("../../../assets/inject/upstream/whale-widget/rua.gif"),
+        "fx1",
+        include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
+        include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
     ),
 ];
 
-fn whale_assets_json() -> String {
-    let values: serde_json::Map<String, Value> = WHALE_MEDIA
+/// 全部音效组：`{ 组名: { press, release } }`，值为 data URI。管理器试听与 Codex 注入共用。
+pub fn agent_pet_sounds() -> Value {
+    let values: serde_json::Map<String, Value> = AGENT_PET_SOUNDS
         .iter()
-        .map(|(name, mime, bytes)| ((*name).to_string(), json!(image_data_uri(mime, bytes))))
+        .map(|(name, press, release)| {
+            (
+                (*name).to_string(),
+                json!({
+                    "press": image_data_uri("audio/mpeg", press),
+                    "release": image_data_uri("audio/mpeg", release),
+                }),
+            )
+        })
         .collect();
-    Value::Object(values).to_string()
+    Value::Object(values)
 }
 
-fn whale_runtime_script() -> String {
-    // 直接注入函数声明；完整引擎使用词法宿主，不要求 renderer 开放 unsafe-eval。
+fn agent_pet_sounds_json() -> String {
+    agent_pet_sounds().to_string()
+}
+
+fn agent_pet_sounds_script() -> String {
     format!(
-        "window.__CODEX_PLUS_WHALE_ASSETS__ = {};\nwindow.__CODEX_PLUS_WHALE_ENGINE__ = function(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{}\n}};\n",
-        whale_assets_json(),
-        WHALE_RUNTIME
+        "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = {};",
+        agent_pet_sounds_json()
     )
 }
 
@@ -119,6 +92,8 @@ const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-rea
 const API_QUOTA_GATE_SCRIPT: &str = include_str!("../../../assets/inject/api-quota-gate.js");
 const NATIVE_FAST_UNLOCK_SCRIPT: &str =
     include_str!("../../../assets/inject/native-fast-unlock.js");
+const NATIVE_PREDICTIONS_SCRIPT: &str =
+    include_str!("../../../assets/inject/native-predictions.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -402,6 +377,10 @@ pub fn native_fast_unlock_script() -> &'static str {
     NATIVE_FAST_UNLOCK_SCRIPT
 }
 
+pub fn native_predictions_script() -> &'static str {
+    NATIVE_PREDICTIONS_SCRIPT
+}
+
 const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
   const isV2Sprite = async (mascot) => {
     if (!mascot) return false;
@@ -525,6 +504,22 @@ fn renderer_after_document_ready(script: &str) -> String {
     )
 }
 
+/// 注入脚本里的皮肤运行时：等文档就绪再安装（#2680）。
+///
+/// 注入脚本同时登记为新文档脚本；只要启动器发过 Page.enable（开了原生 Fast / 输入预测），
+/// Page.reload、启动壳自救重载等每次新文档都会在根节点建立前执行它。这时
+/// `document.documentElement` 为空，皮肤 API 引导里的 `root.style.setProperty` 和
+/// `observer.observe(document.documentElement)` 直接抛错，整个皮肤运行时没装上，
+/// 页面里只剩 Codex++ 的其它增强，看起来就是「重启 Codex 后皮肤不生效」。
+/// 实时注入（Runtime.evaluate，body 已在）仍立即执行；没开皮肤时为空串，不加任何包装。
+fn dream_skin_target_runtime_after_document_ready(settings: &BackendSettings) -> String {
+    let runtime = dream_skin_target_runtime_script(settings, false);
+    if runtime.is_empty() {
+        return runtime;
+    }
+    renderer_after_document_ready(&runtime)
+}
+
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let instance_label = std::env::var("CODEX_PLUS_INSTANCE_LABEL")
@@ -544,12 +539,12 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
-    let dream_skin_target_runtime = dream_skin_target_runtime_script(settings, false);
+    let dream_skin_target_runtime = dream_skin_target_runtime_after_document_ready(settings);
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
-    // Fast 的新文档脚本需要 Page.enable；DOM 增强必须等正常文档就绪，不能访问空的根节点。
-    let renderer_runtime = if settings.enhancements_enabled && settings.codex_app_native_fast_unlock {
+    // 原生模块补丁的新文档脚本需要 Page.enable；DOM 增强必须等正常文档就绪，不能访问空的根节点。
+    let renderer_runtime = if crate::native_predictions::native_modules_requested(settings) {
         renderer_after_document_ready(renderer_script())
     } else {
         renderer_script().to_string()
@@ -580,15 +575,15 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\n{}\n{}\n{}\n{}",
-            serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
-                .expect("whale image should serialize"),
-            whale_runtime_script(),
+            "{}\n{}\n{}\n{}",
+            agent_pet_sounds_script(),
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
-                "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});",
+                "{}\nwindow.__codexPlusNativeFastUnlock.runtime.update({});\n{}\nwindow.__codexPlusNativePredictions.runtime.update({});",
                 native_fast_unlock_script(),
                 json!(crate::native_fast::runtime_settings(settings)),
+                native_predictions_script(),
+                json!(crate::native_predictions::runtime_settings(settings)),
             ),
             renderer_runtime
         ),
@@ -716,6 +711,65 @@ mod tests {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     }
 
+    // 回归 #2680：注入脚本作为新文档脚本执行时根节点还不存在，皮肤运行时必须等文档就绪。
+    #[test]
+    fn dream_skin_runtime_in_injection_waits_for_document_ready() {
+        let mut settings = BackendSettings::default();
+        settings.codex_app_dream_skin_enabled = true;
+        let runtime = dream_skin_target_runtime_script(&settings, false);
+        assert!(!runtime.is_empty());
+        let script = injection_script_with_settings(57321, &settings);
+        assert!(script.contains(&renderer_after_document_ready(&runtime)));
+        // 皮肤运行时只出现在包装里，不能另有一份在根节点建立前直接执行。
+        assert_eq!(script.matches(runtime.as_str()).count(), 1);
+
+        // 没开或暂停皮肤时不注入任何皮肤运行时，也不加包装。
+        for (enabled, paused) in [(false, false), (true, true)] {
+            settings.codex_app_dream_skin_enabled = enabled;
+            settings.codex_app_dream_skin_paused = paused;
+            assert!(dream_skin_target_runtime_after_document_ready(&settings).is_empty());
+        }
+    }
+
+    #[test]
+    fn dream_skin_api_bootstrap_throws_before_root_but_wrapped_installs_after_ready() {
+        let bootstrap = dream_skin_skin_api_bootstrap_script(r##"{"colors":{"background":"#102030"}}"##);
+        let test = format!(r#"
+          const vm=require('node:vm'),assert=require('node:assert/strict');
+          const run=(source)=>{{
+            let listener=null,observed=null;
+            const props={{}};
+            const root={{style:{{setProperty:(name,value)=>{{props[name]=value;}}}}}};
+            // 与 Chromium 新文档脚本一致：根节点、head、body 都还是 null。
+            const document={{documentElement:null,body:null,querySelectorAll:()=>[],
+              addEventListener:(name,callback,options)=>{{
+                assert.equal(name,'DOMContentLoaded');assert.equal(options.once,true);listener=callback;
+              }}}};
+            class MutationObserver{{
+              observe(node){{if(!node)throw new TypeError("parameter 1 is not of type 'Node'");observed=node;}}
+              disconnect(){{}}
+            }}
+            const window={{}};
+            vm.runInNewContext(source,{{window,document,MutationObserver,setTimeout,clearTimeout}});
+            return {{document,root,props,ready:()=>{{document.documentElement=root;document.body={{}};listener();}},observed:()=>observed}};
+          }};
+          // 未包装：新文档阶段直接抛错，整份皮肤运行时就此中断。
+          // vm 里抛出的 TypeError 属于另一个 realm，按 name 判断。
+          assert.throws(()=>run({raw}),(error)=>error.name==='TypeError');
+          // 包装后：新文档阶段不碰 DOM，文档就绪时正常写主题变量、监听根节点。
+          const env=run({wrapped});
+          assert.deepEqual(env.props,{{}});
+          env.ready();
+          assert.equal(env.props['--ds-theme-color-background'],'#102030');
+          assert.equal(env.observed(),env.root);
+        "#,
+            raw = serde_json::to_string(&bootstrap).unwrap(),
+            wrapped = serde_json::to_string(&renderer_after_document_ready(&bootstrap)).unwrap(),
+        );
+        let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
     #[test]
     fn native_shell_compatibility_is_present_without_managed_safe_css() {
         let temp = tempfile::tempdir().unwrap();
@@ -738,33 +792,34 @@ mod tests {
     }
 
     #[test]
-    fn whale_character_is_embedded_for_offline_and_live_enable() {
+    fn agent_pet_sounds_are_embedded_byte_for_byte() {
         let script = injection_script(57321);
-        let prefix = "window.__CODEX_PLUS_WHALE_IMAGE__ = ";
+        let prefix = "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = ";
         let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
-        let uri: String = serde_json::from_str(value.trim_end_matches(';')).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        assert_eq!(bytes, WHALE_DEFAULT_IMAGE);
-        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
-    }
-
-    #[test]
-    fn whale_media_preserves_original_audio_and_animation_bytes() {
-        let values: Value = serde_json::from_str(&whale_assets_json()).unwrap();
-        assert_eq!(values.as_object().unwrap().len(), 10);
-        for (name, mime, expected) in WHALE_MEDIA {
-            let uri = values[*name].as_str().unwrap();
-            let prefix = format!("data:{mime};base64,");
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(uri.strip_prefix(&prefix).unwrap())
-                .unwrap();
-            assert_eq!(&decoded, expected);
+        let sounds: Value = serde_json::from_str(value.trim_end_matches(';')).unwrap();
+        assert_eq!(sounds.as_object().unwrap().len(), 2);
+        let decode = |uri: &Value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(uri.as_str().unwrap().strip_prefix("data:audio/mpeg;base64,").unwrap())
+                .unwrap()
+        };
+        let expected: [(&str, &[u8], &[u8]); 2] = [
+            (
+                "duck",
+                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
+                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
+            ),
+            (
+                "fx1",
+                include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
+                include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
+            ),
+        ];
+        for (name, press, release) in expected {
+            assert!(!press.is_empty() && !release.is_empty());
+            assert_eq!(decode(&sounds[name]["press"]), press, "{name} press");
+            assert_eq!(decode(&sounds[name]["release"]), release, "{name} release");
         }
-        let script = whale_runtime_script();
-        assert!(script.contains("window.__CODEX_PLUS_WHALE_ENGINE__ = function("));
-        assert!(!script.contains("new Function("));
     }
 
     #[test]

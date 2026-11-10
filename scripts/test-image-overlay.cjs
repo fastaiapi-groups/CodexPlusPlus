@@ -313,7 +313,7 @@ check("extension widgets keep their native layer above the composer", async page
     '#widget{position:fixed;left:60px;top:60px;width:80px;height:80px;background:#00ff00;z-index:9999}' +
     '#typing{position:fixed;left:160px;top:60px;width:80px;height:80px;z-index:2147483000;pointer-events:none}',
     '<div id="composer" class="_ComposerLayoutRoot_test"><input></div>' +
-    '<div id="widget" data-codex-plus-ext="whale-widget"></div>' +
+    '<div id="widget" data-codex-plus-ext="agent-pet"></div>' +
     '<canvas id="typing" data-codex-plus-ext="builtin-typing-effects" width="80" height="80"></canvas>');
   await page.$eval("#typing", canvas => { const context = canvas.getContext("2d"); context.fillStyle = "#dc2832"; context.fillRect(0, 0, 80, 80); });
   await configure(page);
@@ -353,6 +353,66 @@ async function popup(page, kind, opacity = .2) {
   await configure(page, { opacity });
   assert.deepEqual(await rect(page, "#surface"), geometry);
 }
+
+for (const anchor of ["composer", "header"]) check(`native shared tooltip portal clears ${anchor}`, async page => {
+  await html(page, `
+    .fixed{position:fixed}.inset-0{inset:0}.pointer-events-none{pointer-events:none}.contain-layout{contain:layout}
+    #anchor{position:fixed;left:0;top:0;width:600px;height:200px;background:#303030;z-index:20}
+    #portal{z-index:60}#portal>*{pointer-events:auto}
+    #boundary{position:fixed;left:20px;top:20px;z-index:50;transform:translate(7px,11px)}
+    #tooltip{width:280px;height:120px;background:rgb(240,240,240)}
+    #tooltip button{margin:20px;width:100px;height:30px;background:#00ff00}
+    #sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  `, `<div id="anchor" ${anchor === "composer" ? 'class="_ComposerLayoutRoot_test"' : 'data-app-shell-header-layout="thread"'}>Native anchor</div>
+    <div id="portal" class="pointer-events-none fixed inset-0 zoom-adjusted-viewport contain-layout">
+      <div id="boundary" data-radix-popper-content-wrapper>
+        <div id="tooltip" class="_Tooltip_test"><button id="tooltip-action">Usage</button><span id="sr" role="tooltip">Usage</span></div>
+      </div>
+    </div>`);
+  const geometry = await rect(page, "#boundary");
+  await configure(page);
+  assert.deepEqual(await rect(page, "#boundary"), geometry);
+  assert.equal(await page.$eval("#tooltip", (node, attr) => node.hasAttribute(attr), material), true,
+    "the visible tooltip receives material instead of only its screen-reader description");
+  near(pixel(await shot(page), 200, 110), [201, 203, 208], "tooltip is above the painted native anchor");
+  await click(page, "#tooltip-action");
+  const work = await delta(page, () => page.evaluate(async () => {
+    for (let i = 0; i < 8; i++) {
+      document.getElementById("boundary").style.transform = `translate(${7 + i}px,11px)`;
+      await new Promise(requestAnimationFrame);
+    }
+  }));
+  zero(work, ["rectReads", "layerWrites", "filterNodes"]);
+  await page.evaluate(() => {
+    const wrapper = document.createElement("div");
+    wrapper.id = "second"; wrapper.setAttribute("data-radix-popper-content-wrapper", "");
+    wrapper.style.cssText = "position:fixed;left:400px;top:250px";
+    wrapper.innerHTML = '<div role="menu" style="background:#eee"><button>Second</button></div>';
+    document.getElementById("portal").append(wrapper);
+  });
+  await settle(page);
+  await page.$eval("#boundary", node => node.remove()); await settle(page);
+  assert.equal(await page.$eval("#portal", node => getComputedStyle(node).zIndex), "1002");
+  await page.$eval("#second", node => node.remove()); await settle(page);
+  assert.equal(await page.$eval("#portal", node => getComputedStyle(node).zIndex), "60",
+    "the shared portal returns to its native layer after its last popup closes");
+});
+
+check("archive sticky controls do not leave a dark gradient over wallpaper", async page => {
+  await html(page, `
+    body{background:#303030}
+    #header{position:sticky;top:0;height:80px;z-index:30;background:#303030}
+    #header::after{content:"";position:absolute;top:100%;left:0;right:0;height:32px;pointer-events:none;background:linear-gradient(#303030,transparent)}
+  `, '<div id="header" class="sticky z-30 bg-surface after:bg-linear-to-b after:from-surface after:to-transparent">Archived chats</div>');
+  await configure(page);
+  const frame = await shot(page);
+  for (const y of [81, 90, 105]) near(pixel(frame, 400, y), pixel(frame, 400, 140),
+    "the native sticky fade reveals one continuous wallpaper");
+  assert.deepEqual(await css(page, "#header", ["filter", "backdropFilter"]), ["none", "none"]);
+  await page.evaluate(() => window.__codexPlusImageOverlayCleanup()); await settle(page);
+  assert.match(await page.$eval("#header", node => getComputedStyle(node, "::after").backgroundImage), /linear-gradient/,
+    "disabling the overlay restores the native gradient");
+});
 
 check("popup batches commit one stylesheet before paint", async page => {
   await html(page, '.menu{position:fixed;left:20px;top:20px;width:160px;height:100px;background:rgb(240,240,240)}',

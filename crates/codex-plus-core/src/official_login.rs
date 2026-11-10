@@ -215,6 +215,35 @@ fn live_chatgpt_login_from(home: &Path) -> Option<OfficialLogin> {
     official_login_from_auth_value(&value)
 }
 
+/// 凭据里带这个标记的是网关自己登录的账号：token 存在 gateway.json，刷新也写回那里，
+/// 且不采纳 Codex 的 live 登录（两边是各自独立的登录，代际不能混用）。
+pub const GATEWAY_OWNED_MARKER: &str = "codex_plus_gateway";
+
+/// 网关的账号正借给 Codex 登录（Codex 接入网关、自己没登录时）：这期间 token 以 Codex 的
+/// auth.json 为准（Codex 自己会刷新），网关刷新后也同时写回 auth.json，两边始终是同一代。
+pub const LENT_TO_CODEX_MARKER: &str = "codex_plus_lent_to_codex";
+
+fn auth_flag(profile: &RelayProfile, key: &str) -> bool {
+    serde_json::from_str::<Value>(&profile.auth_contents)
+        .ok()
+        .and_then(|value| value.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn gateway_owned(profile: &RelayProfile) -> bool {
+    auth_flag(profile, GATEWAY_OWNED_MARKER)
+}
+
+/// 网关自己登录的 ChatGPT 账号（不是从直连模式复制来的）。
+pub fn is_gateway_owned_login(profile: &RelayProfile) -> bool {
+    gateway_owned(profile) && member_uses_official_login_transport(profile)
+}
+
+/// 网关的这个账号是否正借给 Codex 登录。
+pub fn is_lent_to_codex(profile: &RelayProfile) -> bool {
+    gateway_owned(profile) && auth_flag(profile, LENT_TO_CODEX_MARKER)
+}
+
 /// 同一账号时优先使用 live 凭据：Codex 客户端每次使用都会刷新并轮换
 /// refresh token，live 代际比快照新。账号不一致或 live 缺少 refresh token
 /// 而快照有时，保留快照。
@@ -462,17 +491,39 @@ async fn resolve_official_credential_with(
             profile.name
         )
     })?;
-    let login = prefer_live_login(stored, live_chatgpt_login_from(codex_home));
+    let owned_by_gateway = gateway_owned(profile);
+    let lent_to_codex = is_lent_to_codex(profile);
+    // 借给 Codex 时与直连模式的官方账号一样，同一账号以 Codex 的 live 凭据为准。
+    let live = |home: &Path| {
+        if owned_by_gateway && !lent_to_codex {
+            None
+        } else {
+            live_chatgpt_login_from(home)
+        }
+    };
+    let login = prefer_live_login(stored, live(codex_home));
     if !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
 
     // 串行刷新：并发请求只发一次刷新，其余等锁后直接用新凭据。
     let _guard = refresh_lock().lock().await;
-    let stored = current_auth_contents(store, &profile.id)
+    let current = if owned_by_gateway {
+        crate::gateway::store::GatewayStore::default()
+            .load()
+            .ok()
+            .and_then(|gateway| {
+                gateway
+                    .provider(&profile.id)
+                    .map(|provider| provider.relay.auth_contents.clone())
+            })
+    } else {
+        current_auth_contents(store, &profile.id)
+    };
+    let stored = current
         .and_then(|contents| official_login_from_auth_contents(&contents))
         .unwrap_or(login);
-    let login = prefer_live_login(stored, live_chatgpt_login_from(codex_home));
+    let login = prefer_live_login(stored, live(codex_home));
     if !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
@@ -492,16 +543,18 @@ async fn resolve_official_credential_with(
     let token_url = token_url_override
         .map(str::to_string)
         .unwrap_or_else(oauth_token_url);
-    let refreshed = match refresh_codex_tokens(&token_url, &login.refresh_token).await {
+    let proxy = token_refresh_proxy(profile);
+    let proxy = proxy.as_deref();
+    let refreshed = match refresh_codex_tokens(&token_url, &login.refresh_token, proxy).await {
         Ok(tokens) => tokens,
         Err(error) => {
             // live 里可能是更新一代的 refresh token：换它再试一次。
-            let live = live_chatgpt_login_from(codex_home).filter(|live| {
+            let live = live(codex_home).filter(|live| {
                 !live.refresh_token.is_empty() && live.refresh_token != login.refresh_token
             });
             match live {
                 Some(live) if live.account_id == login.account_id => {
-                    match refresh_codex_tokens(&token_url, &live.refresh_token).await {
+                    match refresh_codex_tokens(&token_url, &live.refresh_token, proxy).await {
                         Ok(tokens) => tokens,
                         Err(retry_error) => {
                             mark_refresh_failure(&account_key);
@@ -522,13 +575,31 @@ async fn resolve_official_credential_with(
     } else {
         refreshed.account_id.clone()
     };
-    persist_refreshed_login(
-        store,
-        &profile.id,
-        &refreshed.access_token,
-        &refreshed.refresh_token,
-        &account_id,
-    );
+    if owned_by_gateway {
+        persist_gateway_login(
+            &crate::gateway::store::GatewayStore::default(),
+            &profile.id,
+            &refreshed.access_token,
+            &refreshed.refresh_token,
+            &account_id,
+        );
+        if lent_to_codex {
+            persist_live_login(
+                codex_home,
+                &refreshed.access_token,
+                &refreshed.refresh_token,
+                &account_id,
+            );
+        }
+    } else {
+        persist_refreshed_login(
+            store,
+            &profile.id,
+            &refreshed.access_token,
+            &refreshed.refresh_token,
+            &account_id,
+        );
+    }
     Ok(OfficialCredential {
         access_token: refreshed.access_token,
         account_id,
@@ -544,14 +615,26 @@ fn current_auth_contents(store: &SettingsStore, profile_id: &str) -> Option<Stri
         .map(|profile| profile.auth_contents.clone())
 }
 
+/// 官方登录 token 刷新用的代理。网关供应商（`gateway_proxy` 为 Some）的刷新属于这个供应商，
+/// 按它自己的代理设置发，没开系统代理时也能刷新（#2775）。直连模式的纯官方登录不走独立代理
+/// （与 [`RelayProfile::uses_independent_proxy`] 一致），不读残留的按 id 代理表或
+/// `CODEX_PLUS_PROXY`，保持原来的 reqwest 默认行为（系统代理 / 代理环境变量）。
+fn token_refresh_proxy(profile: &RelayProfile) -> Option<String> {
+    profile.gateway_proxy.as_ref()?;
+    crate::relay_proxy::proxy_for_relay(profile)
+}
+
 async fn refresh_codex_tokens(
     token_url: &str,
     refresh_token: &str,
+    proxy: Option<&str>,
 ) -> anyhow::Result<RefreshedTokens> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let client = crate::http_client::build_with_relay_proxy(
+        reqwest::Client::builder()
+            .user_agent(format!("CodexPlusPlus/{}", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(30)),
+        proxy,
+    )?;
     let response = client
         .post(token_url)
         .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -629,6 +712,80 @@ fn extract_error_code(text: &str) -> String {
 
 /// 把刷新后的 tokens 写回供应商快照的 authContents。写失败只记录日志：
 /// 当前请求仍用新 token，下一次请求会再刷新。
+/// 把 tokens 写进 auth.json 结构（保留其它字段）。
+fn auth_with_tokens(
+    auth_contents: &str,
+    access_token: &str,
+    refresh_token: &str,
+    account_id: &str,
+) -> anyhow::Result<String> {
+    let mut value: Value = serde_json::from_str(auth_contents)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({ "auth_mode": "chatgpt" }));
+    if !value.get("tokens").is_some_and(Value::is_object) {
+        value["tokens"] = serde_json::json!({});
+    }
+    value["tokens"]["access_token"] = serde_json::json!(access_token);
+    value["tokens"]["refresh_token"] = serde_json::json!(refresh_token);
+    if !account_id.trim().is_empty() {
+        value["tokens"]["account_id"] = serde_json::json!(account_id);
+    }
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+/// 借给 Codex 的账号由网关刷新后，新一代 token 也写回 Codex 的 auth.json（只在仍是同一账号时）。
+fn persist_live_login(codex_home: &Path, access_token: &str, refresh_token: &str, account_id: &str) {
+    let path = codex_home.join("auth.json");
+    let result = (|| -> anyhow::Result<()> {
+        let contents = std::fs::read_to_string(&path)?;
+        if chatgpt_account_id_from_auth_contents(&contents) != account_id {
+            return Ok(());
+        }
+        let updated = auth_with_tokens(&contents, access_token, refresh_token, account_id)?;
+        crate::settings::atomic_write(&path, format!("{updated}\n").as_bytes())
+    })();
+    if let Err(error) = result {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "official_login.lent_refresh_persist_failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
+}
+
+/// 网关自己登录的账号：刷新结果写回 gateway.json 里同 id 的供应商。
+pub(crate) fn persist_gateway_login(
+    store: &crate::gateway::store::GatewayStore,
+    provider_id: &str,
+    access_token: &str,
+    refresh_token: &str,
+    account_id: &str,
+) {
+    // 带锁读改写：界面命令同时改 gateway.json 时不会拿旧状态整体覆盖，也不会被它覆盖。
+    let result = store.update(|gateway| {
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == provider_id)
+        else {
+            return Ok(());
+        };
+        provider.relay.auth_contents = auth_with_tokens(
+            &provider.relay.auth_contents,
+            access_token,
+            refresh_token,
+            account_id,
+        )?;
+        Ok(())
+    });
+    if let Err(error) = result {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "official_login.gateway_refresh_persist_failed",
+            serde_json::json!({ "providerId": provider_id, "error": error.to_string() }),
+        );
+    }
+}
+
 fn persist_refreshed_login(
     store: &SettingsStore,
     profile_id: &str,
@@ -648,19 +805,8 @@ fn persist_refreshed_login(
         if !is_official_login_profile(profile) {
             return Ok(());
         }
-        let mut value: Value = serde_json::from_str(&profile.auth_contents)
-            .ok()
-            .filter(Value::is_object)
-            .unwrap_or_else(|| serde_json::json!({ "auth_mode": "chatgpt" }));
-        if !value.get("tokens").is_some_and(Value::is_object) {
-            value["tokens"] = serde_json::json!({});
-        }
-        value["tokens"]["access_token"] = serde_json::json!(access_token);
-        value["tokens"]["refresh_token"] = serde_json::json!(refresh_token);
-        if !account_id.trim().is_empty() {
-            value["tokens"]["account_id"] = serde_json::json!(account_id);
-        }
-        profile.auth_contents = serde_json::to_string_pretty(&value)?;
+        profile.auth_contents =
+            auth_with_tokens(&profile.auth_contents, access_token, refresh_token, account_id)?;
         store.save(&settings)
     })();
     if let Err(error) = result {
@@ -695,6 +841,33 @@ mod tests {
             auth_contents: auth_contents.to_string(),
             ..RelayProfile::default()
         }
+    }
+
+    /// 直连模式的纯官方登录：即使按 id 代理表里残留了这个供应商的代理，token 刷新也不套用；
+    /// 网关供应商才按它自己的代理设置（含「直连」）刷新。
+    #[test]
+    fn token_refresh_proxy_applies_only_to_gateway_providers() {
+        let temp = tempfile::tempdir().unwrap();
+        let _scope = crate::relay_proxy::ProxyPathTestScope::new(temp.path());
+        crate::relay_proxy::set_proxy_for_profile("official", "http://127.0.0.1:9").unwrap();
+        let mut profile = official_profile("{}");
+        assert_eq!(
+            crate::relay_proxy::configured_proxy_for_profile("official").as_deref(),
+            Some("http://127.0.0.1:9")
+        );
+        assert!(!profile.uses_independent_proxy());
+        assert_eq!(token_refresh_proxy(&profile), None);
+
+        profile.gateway_proxy = Some("http://127.0.0.1:8".to_string());
+        assert_eq!(
+            token_refresh_proxy(&profile).as_deref(),
+            Some("http://127.0.0.1:8")
+        );
+        profile.gateway_proxy = Some(crate::relay_proxy::DIRECT_PROXY.to_string());
+        assert_eq!(
+            token_refresh_proxy(&profile).as_deref(),
+            Some(crate::relay_proxy::DIRECT_PROXY)
+        );
     }
 
     #[test]
@@ -865,5 +1038,95 @@ mod tests {
         let login = official_login_from_auth_contents(&persisted.auth_contents).unwrap();
         assert_eq!(login.access_token, "fresh-access");
         assert_eq!(login.refresh_token, "fresh-refresh");
+    }
+
+    /// #2775：供应商单独填了（带用户名密码的）HTTP 代理时，官方登录的 token 刷新要经过它，
+    /// 不能只看系统代理，否则没开系统代理时刷新直连 OpenAI 失败。
+    #[tokio::test]
+    async fn token_refresh_goes_through_the_relays_own_proxy() {
+        use base64::Engine;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // 本地「代理」：收下第一条请求原样记录，再替上游回刷新结果。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let proxy = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 8192];
+            let mut request = Vec::new();
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n")
+                    && String::from_utf8_lossy(&request).contains("grant_type=refresh_token")
+                {
+                    break;
+                }
+            }
+            let body = r#"{"access_token":"proxied-access","refresh_token":"proxied-refresh"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        let expired = fake_jwt(json!({ "exp": now_ms() / 1000 - 60 }));
+        let mut profile = official_profile(
+            &json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": expired,
+                    "refresh_token": "proxy-refresh",
+                    "account_id": "acct-proxy-2775"
+                }
+            })
+            .to_string(),
+        );
+        // 密码里的 @ 按 URL 规则写成 %40，代理认证时要还原。
+        profile.gateway_proxy = Some(format!("http://user-2775:p%40ss@{address}"));
+        let mut settings = crate::settings::BackendSettings::default();
+        settings.relay_profiles = vec![profile.clone()];
+        store.save(&settings).unwrap();
+
+        // 上游是个解析不了的域名：不经过代理就到不了。
+        let credential = resolve_official_credential_with(
+            &profile,
+            false,
+            &store,
+            temp.path(),
+            Some("http://auth.codex-plus-2775.invalid/oauth/token"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(credential.access_token, "proxied-access");
+
+        let request = proxy.join().unwrap();
+        assert!(
+            request.starts_with("POST http://auth.codex-plus-2775.invalid/oauth/token "),
+            "{request}"
+        );
+        let expected_auth = format!(
+            "basic {}",
+            base64::engine::general_purpose::STANDARD.encode("user-2775:p@ss")
+        );
+        assert!(
+            request.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.eq_ignore_ascii_case("proxy-authorization")
+                        && value.trim().eq_ignore_ascii_case(&expected_auth)
+                })
+            }),
+            "{request}"
+        );
+        assert!(request.contains("refresh_token=proxy-refresh"), "{request}");
     }
 }
