@@ -343,8 +343,11 @@ pub(crate) fn registration_username(email: &str) -> Result<String, String> {
 
 async fn setup_default_media(s: &mut State) -> Result<Value, String> {
     if crate::fastaiapi_media_env::use_native_on_save() {
-        crate::fastaiapi_media::validate_media_origin(crate::fastaiapi_platform::Platform::NewApi, ORIGINS[s.route])
-            .map_err(|error| error.to_string())?;
+        crate::fastaiapi_media::validate_media_origin(
+            crate::fastaiapi_platform::Platform::NewApi,
+            ORIGINS[s.route],
+        )
+        .map_err(|error| error.to_string())?;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -479,7 +482,8 @@ pub(crate) async fn media_status_for(
             let defaults = crate::fastaiapi_media_env::model_defaults(platform);
             Ok(
                 json!({"state":if warning.is_some() || fallback {"environment_warning"} else {"ready"},"message":message,"models":ids,
-                "image_model":defaults["image_model"],"video_model":defaults["video_model"],"default_video_model":defaults["video_model"],"default_video_available":ids.contains(&defaults["video_model"].as_str().unwrap_or("minimax-h3"))}),
+                "image_model":defaults["image_model"],"video_model":defaults["video_model"],"default_video_model":defaults["video_model"],
+                "fallback_key_id":crate::fastaiapi_media_env::pricing_key_id(platform).ok(),"default_video_available":ids.contains(&defaults["video_model"].as_str().unwrap_or("minimax-h3"))}),
             )
         }
         Err(error) if error.contains("HTTP 401") || error.contains("HTTP 403") => Ok(
@@ -506,7 +510,9 @@ pub(crate) async fn media_test_for(
         return Err("请选择文本或图片测试".into());
     }
     let key = if crate::fastaiapi_media::native_enabled() {
-        crate::fastaiapi_media::current_key(platform, origin).await.map_err(|error| error.to_string())?
+        crate::fastaiapi_media::current_key(platform, origin, kind)
+            .await
+            .map_err(|error| error.to_string())?
     } else {
         let secret = crate::fastaiapi_media_env::load_for(platform).ok_or("请先配置媒体 Key")?;
         let saved = secret["api_key"].as_str().ok_or("媒体 Key 缺失")?;
@@ -648,12 +654,15 @@ pub(crate) async fn select_media_model(
     body: &Value,
 ) -> Result<Value, String> {
     let status = media_status_for(platform, origin).await?;
-    let models = status["models"].as_array().ok_or_else(|| {
-        status["message"]
-            .as_str()
-            .unwrap_or("请先修复媒体连接")
-            .to_owned()
-    })?;
+    let models = status["models_by_kind"][body["kind"].as_str().unwrap_or("")]
+        .as_array()
+        .or_else(|| status["models"].as_array())
+        .ok_or_else(|| {
+            status["message"]
+                .as_str()
+                .unwrap_or("请先修复媒体连接")
+                .to_owned()
+        })?;
     let ids: Vec<&str> = models.iter().filter_map(Value::as_str).collect();
     crate::fastaiapi_media_env::select_model(
         platform,
@@ -725,9 +734,12 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
     let credential_service = service(s.route, "remembered-login");
     if action == "remembered_login" {
         drop(s);
-        return Ok(crate::fastaiapi_secret_store::load_with_timeout(credential_service).await?
-            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
-            .unwrap_or(json!({})));
+        return Ok(
+            crate::fastaiapi_secret_store::load_with_timeout(credential_service)
+                .await?
+                .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+                .unwrap_or(json!({})),
+        );
     }
     if action == "forget_login" {
         crate::fastaiapi_secret_store::clear(&credential_service)?;
@@ -747,9 +759,14 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         }
         s.session = logged_out;
         s.session_loaded = true;
-        let warning = crate::fastaiapi_secret_store::clear(&service(s.route, "media"))
-            .err()
-            .map(|_| "已退出登录。媒体连接凭据未能清理，请检查系统凭据库权限。");
+        let warning = crate::fastaiapi_media_env::clear_group_credentials(
+            crate::fastaiapi_platform::Platform::NewApi,
+        )
+        .and(crate::fastaiapi_secret_store::clear(&service(
+            s.route, "media",
+        )))
+        .err()
+        .map(|_| "已退出登录。媒体连接凭据未能清理，请检查系统凭据库权限。");
         return Ok(json!({"warning":warning}));
     }
     let remember = body
@@ -842,8 +859,11 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         "media_status" => media_status(&mut s).await,
         "media_manual" => {
             if crate::fastaiapi_media_env::use_native_on_save() {
-                crate::fastaiapi_media::validate_media_origin(crate::fastaiapi_platform::Platform::NewApi, ORIGINS[s.route])
-                    .map_err(|error| error.to_string())?;
+                crate::fastaiapi_media::validate_media_origin(
+                    crate::fastaiapi_platform::Platform::NewApi,
+                    ORIGINS[s.route],
+                )
+                .map_err(|error| error.to_string())?;
             }
             let key = body["api_key"]
                 .as_str()
@@ -868,12 +888,26 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         }
         "media_test" => media_test(&mut s, &body).await,
         "media_select" => {
-            select_media_model(
-                crate::fastaiapi_platform::Platform::NewApi,
-                ORIGINS[s.route],
-                &body,
-            )
-            .await
+            let platform = crate::fastaiapi_platform::Platform::NewApi;
+            let origin = ORIGINS[s.route];
+            if let Some(id) = body["key_id"].as_i64() {
+                let key =
+                    data(request(&mut s, "GET", &format!("/api/token/{id}"), Value::Null).await?);
+                let group = key["group"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("default");
+                if body["group_id"] != group {
+                    return Err("Key 所属分组已变更，请刷新后重试".into());
+                }
+                let secret = key_secret(&mut s, id).await?;
+                let models = models_for_key(origin, &secret).await?;
+                crate::fastaiapi_media_env::select_group_model(
+                    platform, origin, &body, &secret, &models,
+                )
+            } else {
+                select_media_model(platform, origin, &body).await
+            }
         }
         "me" => {
             // 新版 JWT 到期时通过同源 refresh cookie 恢复；旧版仍走 session cookie。
@@ -921,6 +955,31 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 .rev()
                 .find(|k| k["name"] == name && !before.iter().any(|b| b["id"] == k["id"]))
                 .ok_or("Key 已创建，请刷新列表后选择".into())
+        }
+        "group_model_pricing" => {
+            let group = body["group_id"].as_str().ok_or("请选择模型分组")?;
+            let groups = data(request(&mut s, "GET", "/api/user/self/groups", Value::Null).await?);
+            if groups.get(group).is_none() {
+                return Err("该分组不可用".into());
+            }
+            let mut url = reqwest::Url::parse("https://placeholder/api/user/models").unwrap();
+            url.query_pairs_mut().append_pair("group", group);
+            let path = format!("{}?{}", url.path(), url.query().unwrap());
+            let listed = request(&mut s, "GET", &path, Value::Null)
+                .await
+                .ok()
+                .map(data);
+            let pricing = request(&mut s, "GET", "/api/pricing", Value::Null).await;
+            let status = if pricing.is_ok() {
+                data(
+                    request(&mut s, "GET", "/api/status", Value::Null)
+                        .await
+                        .unwrap_or_default(),
+                )
+            } else {
+                Value::Null
+            };
+            group_model_catalog(group, listed.as_ref(), pricing, &status)
         }
         "model_pricing" | "media_pricing" => {
             let media_id = if action == "media_pricing" {
@@ -1034,6 +1093,25 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
     }
 }
 
+fn group_model_catalog(
+    group: &str,
+    listed: Option<&Value>,
+    pricing: Result<Value, String>,
+    status: &Value,
+) -> Result<Value, String> {
+    let mut catalog = match pricing {
+        Ok(pricing) => model_pricing(&pricing, group, status),
+        Err(error) if listed.is_some_and(Value::is_array) => {
+            json!({"group":group, "models":[], "pricing_warning":format!("价格暂时无法获取。{error}")})
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(list) = listed.filter(|ids| ids.is_array()) {
+        catalog["model_ids"] = list.clone();
+    }
+    Ok(catalog)
+}
+
 fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
     let rate = raw["group_ratio"][group].as_f64();
     let currency = if status["quota_display_type"] == "CNY" {
@@ -1073,16 +1151,21 @@ pub async fn key_and_models(key_id: i64) -> Result<(String, Vec<String>), String
         return Err("请先登录当前路线".into());
     }
     let secret = key_secret(&mut s, key_id).await?;
-    let response = send(
-        ORIGINS[s.route],
-        &mut s.session,
-        "GET",
-        "/v1/models",
-        Value::Null,
-        Some(&secret),
-    )
-    .await?;
-    let raw = data(response);
+    let ids = models_for_key(ORIGINS[s.route], &secret).await?;
+    Ok((secret, ids))
+}
+async fn models_for_key(origin: &str, secret: &str) -> Result<Vec<String>, String> {
+    let raw = data(
+        send(
+            origin,
+            &mut Session::default(),
+            "GET",
+            "/v1/models",
+            Value::Null,
+            Some(secret),
+        )
+        .await?,
+    );
     let rows = raw.as_array().ok_or("模型列表格式无效")?;
     let mut ids: Vec<String> = rows
         .iter()
@@ -1090,7 +1173,7 @@ pub async fn key_and_models(key_id: i64) -> Result<(String, Vec<String>), String
         .collect();
     ids.sort();
     ids.dedup();
-    Ok((secret, ids))
+    Ok(ids)
 }
 pub fn model_kind(id: &str) -> &'static str {
     let lower = id.to_ascii_lowercase();
@@ -1168,6 +1251,23 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn group_model_discovery_survives_unavailable_pricing() {
+        let ids = json!(["gpt-image-2", "gpt-5.6-sol"]);
+        let result =
+            group_model_catalog("default", Some(&ids), Err("HTTP 401".into()), &Value::Null)
+                .unwrap();
+        assert_eq!(result["model_ids"], ids);
+        assert_eq!(result["models"], json!([]));
+        assert!(
+            result["pricing_warning"]
+                .as_str()
+                .unwrap()
+                .contains("HTTP 401")
+        );
+        assert!(group_model_catalog("other", None, Err("HTTP 401".into()), &Value::Null).is_err());
+    }
+
     #[test]
     fn tiered_expression_prices_override_stale_legacy_ratios() {
         let pricing = json!({"group_ratio":{"default":0.5},"data":[{

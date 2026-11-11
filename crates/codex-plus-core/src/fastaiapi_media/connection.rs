@@ -53,6 +53,8 @@ pub(super) struct Connection {
     pub origin: String,
     pub key: String,
     pub defaults: Value,
+    pub group_credential: Option<String>,
+    pub grouped_models: Value,
 }
 
 impl Connection {
@@ -61,7 +63,11 @@ impl Connection {
     }
 }
 
-pub(super) async fn load(state: &Path, pinned: Option<(Platform, &str)>) -> Result<Connection> {
+pub(super) async fn load(
+    state: &Path,
+    kind: Option<&str>,
+    pinned: Option<(Platform, &str, Option<&str>)>,
+) -> Result<Connection> {
     let scope: Scope =
         read_json(&state.join(MARKER), 16 * 1024).context("请先在 Codex++ 中连接媒体工具")?;
     let descriptor: Value = read_json(&scope.descriptor, 256 * 1024)
@@ -77,7 +83,7 @@ pub(super) async fn load(state: &Path, pinned: Option<(Platform, &str)>) -> Resu
         "媒体凭据引用无效"
     );
     let (platform, origin) = match pinned {
-        Some((platform, origin)) => (platform, origin.to_owned()),
+        Some((platform, origin, _)) => (platform, origin.to_owned()),
         None => (
             current,
             descriptor["origin"].as_str().unwrap_or("").to_owned(),
@@ -96,7 +102,21 @@ pub(super) async fn load(state: &Path, pinned: Option<(Platform, &str)>) -> Resu
             "平台或路线已切换，请在 Codex++ 中连接当前 HTTPS 路线"
         );
     }
-    let names = fastaiapi_media_env::credential_services(platform);
+    let group_credential = match pinned {
+        Some((_, _, credential)) => credential,
+        None => kind.and_then(|kind| {
+            fastaiapi_media_env::group_model(&descriptor, platform, &origin, kind)["credential"]
+                .as_str()
+        }),
+    };
+    let names = if let Some(credential) = group_credential {
+        vec![
+            fastaiapi_media_env::group_service(platform, credential)
+                .context("媒体分组凭据引用无效")?,
+        ]
+    } else {
+        fastaiapi_media_env::credential_services(platform)
+    };
     let account = scope.account;
     let secret = tokio::time::timeout(
         Duration::from_secs(8),
@@ -115,7 +135,7 @@ pub(super) async fn load(state: &Path, pinned: Option<(Platform, &str)>) -> Resu
         platform.origins().contains(&saved_origin),
         "媒体凭据与平台不匹配"
     );
-    if pinned.is_none() {
+    if pinned.is_none() && group_credential.is_none() {
         ensure!(
             saved_origin == origin,
             "媒体凭据与当前路线不匹配，请重新连接"
@@ -125,11 +145,15 @@ pub(super) async fn load(state: &Path, pinned: Option<(Platform, &str)>) -> Resu
         .as_str()
         .filter(|key| !key.is_empty() && !key.chars().any(char::is_whitespace))
         .context("系统凭据库中的媒体 Key 无效")?;
+    let defaults = fastaiapi_media_env::defaults_for(&descriptor, platform, &origin);
+    let grouped_models = descriptor["group_models"][platform.id()][&origin].clone();
     Ok(Connection {
         platform,
         origin,
         key: key.to_owned(),
-        defaults: descriptor["model_defaults"][platform.id()].clone(),
+        defaults,
+        group_credential: group_credential.map(str::to_owned),
+        grouped_models,
     })
 }
 
@@ -220,7 +244,7 @@ pub(super) async fn models(client: &Client, connection: &Connection) -> Result<V
 }
 
 pub async fn verify_connection(platform: Platform, origin: &str) -> Result<()> {
-    let connection = active_connection(platform, origin).await?;
+    let connection = active_connection(platform, origin, None).await?;
     models(&client()?, &connection).await?;
     Ok(())
 }
@@ -309,9 +333,13 @@ pub fn has_saved_route(platform: Platform, origin: &str) -> bool {
     )
 }
 
-pub(crate) async fn active_connection(platform: Platform, origin: &str) -> Result<Connection> {
+async fn active_connection(
+    platform: Platform,
+    origin: &str,
+    kind: Option<&str>,
+) -> Result<Connection> {
     validate_media_origin(platform, origin)?;
-    let connection = load(&paths::default_app_state_dir(), None).await?;
+    let connection = load(&paths::default_app_state_dir(), kind, None).await?;
     ensure!(
         connection.platform == platform && connection.origin == origin,
         "请连接当前平台及路线"
@@ -319,20 +347,105 @@ pub(crate) async fn active_connection(platform: Platform, origin: &str) -> Resul
     Ok(connection)
 }
 
-pub(crate) async fn status_for(platform: Platform, origin: &str) -> Value {
-    use serde_json::json;
-    let result = async {
-        let active = active_connection(platform,origin).await?;
-        let ids = models(&client()?, &active).await?;
-        let defaults = fastaiapi_media_env::model_defaults(platform);
-        let video = defaults["video_model"].as_str().unwrap_or("minimax-h3");
-        let available = ids.iter().any(|id| id == video);
-        Ok::<_,anyhow::Error>(json!({"state":"ready","message":"系统凭据与媒体路线已连接","models":ids,
-            "image_model":defaults["image_model"],"video_model":video,"default_video_model":video,"default_video_available":available}))
-    }.await;
-    result.unwrap_or_else(|error| json!({"state":"needs_connection","message":error.to_string()}))
+pub(super) async fn models_by_kind(
+    state: &Path,
+    client: &Client,
+    base: &Connection,
+) -> serde_json::Map<String, Value> {
+    let mut lists = serde_json::Map::new();
+    let base_models = models(client, base).await;
+    if let Ok(ids) = &base_models {
+        lists.insert(
+            "text".into(),
+            serde_json::json!(
+                ids.iter()
+                    .filter(|id| crate::fastaiapi::model_kind(id) == "text")
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    for kind in ["image", "video"] {
+        let grouped = if base.grouped_models[kind]["credential"].is_string() {
+            Some(match load(state, Some(kind), None).await {
+                Ok(active) => models(client, &active).await,
+                Err(error) => Err(error),
+            })
+        } else {
+            None
+        };
+        let ids = grouped.as_ref().unwrap_or(&base_models);
+        if let Ok(ids) = ids {
+            lists.insert(
+                kind.into(),
+                serde_json::json!(
+                    ids.iter()
+                        .filter(|id| crate::fastaiapi::model_kind(id) == kind)
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+    }
+    lists
 }
 
-pub(crate) async fn current_key(platform: Platform, origin: &str) -> Result<String> {
-    Ok(active_connection(platform, origin).await?.key)
+pub(crate) async fn status_for(platform: Platform, origin: &str) -> Value {
+    use serde_json::json;
+    let state = paths::default_app_state_dir();
+    let descriptor = read_json::<Value>(&fastaiapi_media_env::descriptor_path(), 256 * 1024)
+        .ok()
+        .filter(|descriptor| descriptor["account"] == fastaiapi_secret_store::account())
+        .unwrap_or_default();
+    let bindings = json!({
+        "image": fastaiapi_media_env::group_model(&descriptor, platform, origin, "image")["group_id"],
+        "video": fastaiapi_media_env::group_model(&descriptor, platform, origin, "video")["group_id"],
+    });
+    let key_ids = json!({
+        "image": fastaiapi_media_env::group_model(&descriptor, platform, origin, "image")["key_id"],
+        "video": fastaiapi_media_env::group_model(&descriptor, platform, origin, "video")["key_id"],
+    });
+    let defaults = fastaiapi_media_env::defaults_for(&descriptor, platform, origin);
+    let video = defaults["video"].as_str().unwrap_or("minimax-h3");
+    let mut result = json!({"group_ids":bindings, "key_ids":key_ids, "fallback_key_id":fastaiapi_media_env::pricing_key_id(platform).ok(),
+        "image_model":defaults["image"].as_str().unwrap_or("gpt-image-2"), "video_model":video});
+    match active_connection(platform, origin, None).await {
+        Ok(base) => match client() {
+            Ok(client) => {
+                let lists = models_by_kind(&state, &client, &base).await;
+                let ready = lists.contains_key("image") && lists.contains_key("video");
+                result["state"] = json!(if ready { "ready" } else { "needs_connection" });
+                result["message"] = json!(if ready {
+                    "系统凭据与媒体路线已连接"
+                } else {
+                    "部分媒体分组未能读取模型，请检查路线和分组 Key"
+                });
+                result["default_video_available"] = json!(
+                    lists
+                        .get("video")
+                        .and_then(Value::as_array)
+                        .is_some_and(|ids| ids.iter().any(|id| id == video))
+                );
+                result["models"] = json!(
+                    lists
+                        .values()
+                        .filter_map(Value::as_array)
+                        .flatten()
+                        .collect::<Vec<_>>()
+                );
+                result["models_by_kind"] = json!(lists);
+            }
+            Err(error) => {
+                result["state"] = json!("needs_connection");
+                result["message"] = json!(error.to_string());
+            }
+        },
+        Err(error) => {
+            result["state"] = json!("needs_connection");
+            result["message"] = json!(error.to_string());
+        }
+    }
+    result
+}
+
+pub(crate) async fn current_key(platform: Platform, origin: &str, kind: &str) -> Result<String> {
+    Ok(active_connection(platform, origin, Some(kind)).await?.key)
 }

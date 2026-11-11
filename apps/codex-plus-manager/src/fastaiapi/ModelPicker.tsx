@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { MessageSquare } from "lucide-react";
 import { ModelDialog } from "./ModelDialog";
+import type { ModelChoice } from "./modelGroups";
 
-export function ModelPicker({keyId, models, value, busy, onApply, onReload}: {
+export function ModelPicker({keyId, models, value, busy, onApply}: {
   keyId: number; models: string[]; value: string; busy: boolean;
-  onApply: (model: string) => Promise<void>; onReload: () => void;
+  onApply: (choice: ModelChoice) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   return <>
@@ -14,6 +15,6 @@ export function ModelPicker({keyId, models, value, busy, onApply, onReload}: {
       <b>{value || "使用已有配置"}</b>
       <button type="button" disabled={busy} onClick={() => setOpen(true)}>切换文字模型 ▾</button>
     </article>
-    {open && <ModelDialog keyId={keyId} models={models} value={value} busy={busy} onApply={onApply} onReload={onReload} onClose={() => setOpen(false)}/>}
+    {open && <ModelDialog keyId={keyId} models={models} value={value} busy={busy} onApply={onApply} onClose={() => setOpen(false)}/>}
   </>;
 }

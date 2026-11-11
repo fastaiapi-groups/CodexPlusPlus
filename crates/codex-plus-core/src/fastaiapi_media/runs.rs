@@ -46,6 +46,8 @@ struct Receipt {
     platform: String,
     origin: String,
     key_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group_credential: Option<String>,
     kind: String,
     model: String,
     state: String,
@@ -150,6 +152,7 @@ impl Run {
             platform: connection.platform.id().into(),
             origin: connection.origin.clone(),
             key_fingerprint: connection.fingerprint(),
+            group_credential: connection.group_credential.clone(),
             kind: kind.into(),
             model,
             state: state.into(),
@@ -189,7 +192,8 @@ impl Run {
             file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
-            publish_new_file(&staging, &path).context("无法原子保存产物，请检查项目目录与文件系统")?;
+            publish_new_file(&staging, &path)
+                .context("无法原子保存产物，请检查项目目录与文件系统")?;
             Ok(())
         })();
         let _ = fs::remove_file(&staging);
@@ -272,7 +276,16 @@ fn private_directory(path: &Path) -> Result<PathBuf> {
 
 async fn pinned_connection(state: &Path, receipt: &Receipt) -> Result<Connection> {
     let platform = Platform::parse(&receipt.platform).map_err(anyhow::Error::msg)?;
-    let connection = connection::load(state, Some((platform, &receipt.origin))).await?;
+    let connection = connection::load(
+        state,
+        None,
+        Some((
+            platform,
+            &receipt.origin,
+            receipt.group_credential.as_deref(),
+        )),
+    )
+    .await?;
     ensure!(
         connection.fingerprint() == receipt.key_fingerprint,
         "原任务的媒体 Key 已变更，请恢复原平台 Key 或到平台查询原任务"
@@ -293,7 +306,7 @@ pub(super) async fn generate(
         result["message"] = json!("此请求已有回执，未再次提交。结果不明确时请查询或恢复原任务。");
         return Ok(result);
     }
-    let connection = connection::load(state, None).await?;
+    let connection = connection::load(state, Some(kind), None).await?;
     let model = args.model(&connection, kind)?;
     let (path, body) = args.build(connection.platform, kind, &model, &run.workspace)?;
     ensure!(
@@ -457,7 +470,7 @@ pub(super) async fn recover(state: &Path, client: &Client, args: Recover) -> Res
                 protocol::valid_model_id(model) && crate::fastaiapi::model_kind(model) == "video"
             })
             .context("旧回执的视频模型无效")?;
-        let connection = connection::load(state, Some((platform, origin))).await?;
+        let connection = connection::load(state, None, Some((platform, origin, None))).await?;
         let receipt = run.create(&connection, "video", model.to_owned(), "submitted");
         (
             receipt,
@@ -514,6 +527,8 @@ mod tests {
 
     fn fixture(origin: String) -> Connection {
         Connection {
+            group_credential: None,
+            grouped_models: Value::Null,
             platform: Platform::NewApi,
             origin,
             key: "fixture-secret".into(),

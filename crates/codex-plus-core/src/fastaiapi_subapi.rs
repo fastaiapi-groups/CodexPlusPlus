@@ -450,11 +450,12 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
     match action {
         "remembered_login" => {
             drop(s);
-            return Ok(
-                crate::fastaiapi_secret_store::load_with_timeout(PLATFORM.service("remembered-login")).await?
-                    .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
-                    .unwrap_or(json!({})),
-            );
+            return Ok(crate::fastaiapi_secret_store::load_with_timeout(
+                PLATFORM.service("remembered-login"),
+            )
+            .await?
+            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+            .unwrap_or(json!({})));
         }
         "forget_login" => {
             crate::fastaiapi_secret_store::clear(&PLATFORM.service("remembered-login"))?;
@@ -524,7 +525,8 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
         crate::fastaiapi_secret_store::clear(&PLATFORM.service("session"))?;
         crate::fastaiapi_secret_store::clear(&PLATFORM.service("media"))?;
         s.session = LoginSession::default();
-        return Ok(json!({}));
+        let warning = crate::fastaiapi_media_env::clear_group_credentials(PLATFORM).err();
+        return Ok(json!({"warning":warning}));
     }
     if s.session.access_token.is_empty() {
         return Err("请先登录 SubAPI".into());
@@ -586,6 +588,22 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             .await?;
             Ok(json!({}))
         }
+        "group_model_pricing" => {
+            let group_id = body["group_id"]
+                .as_str()
+                .and_then(|id| id.parse::<i64>().ok())
+                .filter(|id| *id > 0)
+                .ok_or("请选择有效分组")?;
+            let groups = request(&mut s, "GET", "/api/v1/groups/available", Value::Null).await?;
+            if !group_rows(&groups)
+                .iter()
+                .any(|group| group["id"] == body["group_id"])
+            {
+                return Err("当前账号无权使用该分组".into());
+            }
+            let plaza = request(&mut s, "GET", "/api/v1/model-plaza", Value::Null).await?;
+            Ok(pricing_view(&plaza, &json!(group_id)))
+        }
         "model_pricing" | "media_pricing" => {
             let key_id = if action == "media_pricing" {
                 let key_id = crate::fastaiapi_media_env::pricing_key_id(PLATFORM)?;
@@ -611,7 +629,24 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
         }
         "media_setup" => setup_media(&mut s).await,
         "media_status" => crate::fastaiapi::media_status_for(PLATFORM, &s.origin).await,
-        "media_select" => crate::fastaiapi::select_media_model(PLATFORM, &s.origin, &body).await,
+        "media_select" => {
+            if let Some(id) = body["key_id"].as_i64() {
+                let key =
+                    request(&mut s, "GET", &format!("/api/v1/keys/{id}"), Value::Null).await?;
+                if key["group_id"].as_i64().map(|id| id.to_string()).as_deref()
+                    != body["group_id"].as_str()
+                {
+                    return Err("Key 所属分组已变更，请刷新后重试".into());
+                }
+                let secret = key_secret(&mut s, id).await?;
+                let ids = models(&s.origin, &secret).await?;
+                crate::fastaiapi_media_env::select_group_model(
+                    PLATFORM, &s.origin, &body, &secret, &ids,
+                )
+            } else {
+                crate::fastaiapi::select_media_model(PLATFORM, &s.origin, &body).await
+            }
+        }
         "media_test" => crate::fastaiapi::media_test_for(PLATFORM, &s.origin, &body).await,
         "media_manual" => {
             let key = body["api_key"]

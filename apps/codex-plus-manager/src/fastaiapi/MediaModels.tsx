@@ -5,14 +5,15 @@ import { MediaTestDialog } from "./MediaTestDialog";
 
 import { usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { Image, Video, Wrench, RefreshCw, KeyRound, FlaskConical } from "lucide-react";
-export function modelKind(id: string): "text" | "image" | "video" | "other" {
-  const name = id.toLowerCase();
-  if (/video|sora|veo|kling|wan|seedance|minimax-h3|ltx|hunyuan|sd2\.5/.test(name)) return "video";
-  if (/image|dall-e|flux|midjourney|stable-diffusion|sdxl|imagen|ideogram/.test(name)) return "image";
-  if (/audio|tts|embedding|realtime|whisper|dubbing|transcribe|moderation|auto-review|reserve/.test(name)) return "other";
-  return "text";
-}
-type Status = {state: string; message: string; default_video_available?: boolean; models?: string[]; image_model?: string; video_model?: string};
+import { supportsModel } from "./modelGroups";
+
+type Status = {
+  state: string; message: string; default_video_available?: boolean; models?: string[];
+  image_model?: string; video_model?: string; fallback_key_id?: number | null;
+  key_ids?: Partial<Record<"image" | "video", number | null>>;
+  group_ids?: Partial<Record<"image" | "video", string | null>>;
+  models_by_kind?: Partial<Record<"text" | "image" | "video", string[]>>;
+};
 
 export function MediaModels({keyId, models, textModel, textPicker}: {keyId: number; models: string[]; textModel?: string; textPicker: ReactNode}) {
   const invoke = usePlatformInvoke();
@@ -44,7 +45,9 @@ export function MediaModels({keyId, models, textModel, textPicker}: {keyId: numb
   const work = async (name: string, fn: () => Promise<void>) => {setBusy(name); setLocked(true); setMessage(""); try {await fn();} catch(e) {setMessage(String(e));} finally {setBusy("");setLocked(false);}};
   const [picker, setPicker] = useState<"image" | "video" | null>(null), [test, setTest] = useState<"text" | "image" | null>(null);
   const defaults = {image: status?.image_model || "gpt-image-2", video: status?.video_model || "minimax-h3"};
-  const available = status?.models ?? models;
+  const modelsFor = (kind: "text" | "image" | "video") =>
+    (status?.models_by_kind ? status.models_by_kind[kind] ?? [] : status?.models ?? models)
+      .filter(model => supportsModel(routes.platform, kind, model));
   const connect = async (apiKey?: string) => {
     const result = await invoke<{registered: boolean; message: string}>("fastaiapi_media_tool", {action: "connect", apiKey});
     setRegistered(result.registered);
@@ -72,11 +75,18 @@ export function MediaModels({keyId, models, textModel, textPicker}: {keyId: numb
       <button type="submit" disabled={Boolean(busy) || !key.trim()}>保存并连接</button>
     </form>}
     <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
-      const list = available.filter(m => modelKind(m) === kind);
-      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{list.length} 个可用</small></header><span>默认模型</span><b>{defaults[kind]}</b><button disabled={Boolean(busy) || !list.length} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button>{!list.length && <p>当前媒体 Key 暂无对应模型，请检查分组权限。</p>}</article>;
+      const list = modelsFor(kind);
+      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{list.length} 个可用</small></header><span>默认模型</span><b>{defaults[kind]}</b><button disabled={Boolean(busy)} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button>{!list.length && <p>当前连接暂无对应模型。</p>}</article>;
     })}</div>
-    {picker && <ModelDialog kind={picker} keyId={keyId} models={available.filter(model=>modelKind(model) === picker)} value={defaults[picker]} busy={Boolean(busy)} onReload={()=>void work("refresh",refresh)} onClose={()=>setPicker(null)} onApply={async model=>{setBusy("model");setLocked(true);try {await api("media_select",{kind:picker,model});await refresh();setMessage("媒体默认模型已保存，后续任务会使用该选择。");}finally{setBusy("");setLocked(false);}}}/>}
-    {test && <MediaTestDialog kind={test} models={available.filter(model=>modelKind(model) === test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={value=>{setBusy(value ? "test" : "");setLocked(value);}}/>}
+    {picker && <ModelDialog kind={picker} keyId={status?.key_ids?.[picker] ?? status?.fallback_key_id ?? 0} groupId={status?.group_ids?.[picker]}
+      models={modelsFor(picker)} value={defaults[picker]} busy={Boolean(busy)} applyHint={registered ? undefined : "确认后会连接内置媒体工具，并保存默认分组。"} onClose={() => setPicker(null)}
+      onApply={async ({model, groupId, keyId: selectedKey}) => {
+        if (!registered) await connect();
+        await api("media_select", {kind: picker, model, ...(groupId ? {group_id: groupId, key_id: selectedKey} : {})});
+        await refresh().catch(() => {});
+        setMessage("媒体默认分组和模型已保存。");
+      }}/>}
+    {test && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={value=>{setBusy(value ? "test" : "");setLocked(value);}}/>}
     {message && <p role="status" className="fast-notice">{message}</p>}
   </section>;
 }

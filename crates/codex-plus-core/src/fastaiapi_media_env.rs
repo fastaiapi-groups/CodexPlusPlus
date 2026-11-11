@@ -70,7 +70,14 @@ fn write_descriptor_at(
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .unwrap_or_else(|| json!({}));
-    let value = json!({"platform": platform.id(), "origin": origin, "service": platform.service("media"), "account": crate::fastaiapi_secret_store::account(), "managed": true, "environment_configured": configured, "environment_warning": warning, "model_defaults": previous.get("model_defaults").filter(|v| v.is_object()).cloned().unwrap_or_else(||json!({})), "pricing_keys": previous.get("pricing_keys").filter(|v|v.is_object()).cloned().unwrap_or_else(||json!({}))});
+    let mut value = json!({"platform": platform.id(), "origin": origin, "service": platform.service("media"), "account": crate::fastaiapi_secret_store::account(), "managed": true, "environment_configured": configured, "environment_warning": warning, "model_defaults": previous.get("model_defaults").filter(|v| v.is_object()).cloned().unwrap_or_else(||json!({})), "pricing_keys": previous.get("pricing_keys").filter(|v|v.is_object()).cloned().unwrap_or_else(||json!({}))});
+    if previous["account"] == value["account"] {
+        for field in ["group_models", "group_credentials"] {
+            if previous[field].is_object() {
+                value[field] = previous[field].clone();
+            }
+        }
+    }
     write_connection_at(path, &value)
 }
 fn write_connection_at(path: &std::path::Path, value: &Value) -> Result<(), String> {
@@ -80,6 +87,34 @@ fn write_connection_at(path: &std::path::Path, value: &Value) -> Result<(), Stri
     std::fs::rename(pending, path)
         .map_err(|_| "无法更新媒体连接，请检查目录权限或文件占用后重试。".into())
 }
+pub(crate) fn defaults_for(value: &Value, platform: Platform, origin: &str) -> Value {
+    let mut defaults = value["model_defaults"][platform.id()].clone();
+    for kind in ["image", "video"] {
+        let binding = group_model(value, platform, origin, kind);
+        if let Some(model) = binding["model"]
+            .as_str()
+            .filter(|model| valid_model(kind, model))
+        {
+            defaults[kind] = json!(model);
+        }
+    }
+    defaults
+}
+
+pub(crate) fn group_model<'a>(
+    value: &'a Value,
+    platform: Platform,
+    origin: &str,
+    kind: &str,
+) -> &'a Value {
+    &value["group_models"][platform.id()][origin][kind]
+}
+
+pub(crate) fn group_service(platform: Platform, fingerprint: &str) -> Option<String> {
+    (fingerprint.len() == 64 && fingerprint.bytes().all(|ch| ch.is_ascii_hexdigit()))
+        .then(|| platform.service(&format!("media-group.{fingerprint}")))
+}
+
 fn model_defaults_from(value: &Value, platform: Platform) -> Value {
     let defaults = &value["model_defaults"][platform.id()];
     json!({"image_model":defaults["image"].as_str().filter(|model| valid_model("image", model)).unwrap_or("gpt-image-2"),
@@ -101,18 +136,18 @@ fn valid_model(kind: &str, model: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || b"._:/-".contains(&ch))
         && crate::fastaiapi::model_kind(model) == kind
 }
-fn select_model_in(
-    value: &mut Value,
+fn validate_selection(
+    value: &Value,
     platform: Platform,
     origin: &str,
     kind: &str,
     model: &str,
-    models: &[&str],
+    permitted: bool,
 ) -> Result<(), String> {
     if value["service"] != platform.service("media") || value["origin"] != origin {
         return Err("请先配置当前平台的媒体连接。".into());
     }
-    if !valid_model(kind, model) || !models.contains(&model) {
+    if !valid_model(kind, model) || !permitted {
         return Err("请选择当前媒体 Key 可用的对应类型模型。".into());
     }
     if platform == Platform::SubApi
@@ -124,13 +159,41 @@ fn select_model_in(
                 .into(),
         );
     }
+    Ok(())
+}
+fn select_model_in(
+    value: &mut Value,
+    platform: Platform,
+    origin: &str,
+    kind: &str,
+    model: &str,
+    models: &[&str],
+) -> Result<(), String> {
+    validate_selection(
+        value,
+        platform,
+        origin,
+        kind,
+        model,
+        models.contains(&model),
+    )?;
     if !value["model_defaults"].is_object() {
         value["model_defaults"] = json!({});
     }
     if !value["model_defaults"][platform.id()].is_object() {
         value["model_defaults"][platform.id()] = json!({});
     }
-    value["model_defaults"][platform.id()][kind] = json!(model);
+    if let Some(binding) = value
+        .pointer_mut("/group_models")
+        .and_then(|groups| groups.get_mut(platform.id()))
+        .and_then(|origins| origins.get_mut(origin))
+        .and_then(|kinds| kinds.get_mut(kind))
+        .filter(|binding| binding.is_object())
+    {
+        binding["model"] = json!(model);
+    } else {
+        value["model_defaults"][platform.id()][kind] = json!(model);
+    }
     Ok(())
 }
 pub fn select_model(
@@ -147,6 +210,84 @@ pub fn select_model(
     select_model_in(&mut value, platform, origin, kind, model, models)?;
     write_connection_at(&path, &value)?;
     Ok(model_defaults_from(&value, platform))
+}
+pub(crate) fn select_group_model(
+    platform: Platform,
+    origin: &str,
+    body: &Value,
+    secret: &str,
+    models: &[String],
+) -> Result<Value, String> {
+    use sha2::{Digest, Sha256};
+    if !crate::fastaiapi_media::native_enabled() {
+        return Err("请先连接内置媒体工具，再切换默认分组".into());
+    }
+    crate::fastaiapi_media::validate_media_origin(platform, origin)
+        .map_err(|error| error.to_string())?;
+    let kind = body["kind"].as_str().unwrap_or("");
+    let model = body["model"].as_str().unwrap_or("");
+    let group = body["group_id"]
+        .as_str()
+        .filter(|group| !group.is_empty())
+        .ok_or("请选择分组")?;
+    let path = descriptor_path();
+    let mut value: Value =
+        serde_json::from_slice(&std::fs::read(&path).map_err(|_| "请先连接当前路线的媒体工具")?)
+            .map_err(|_| "媒体连接配置无效，请重新连接")?;
+    if value["account"] != crate::fastaiapi_secret_store::account() {
+        return Err("请先连接当前实例的媒体工具".into());
+    }
+    validate_selection(
+        &value,
+        platform,
+        origin,
+        kind,
+        model,
+        models.iter().any(|id| id == model),
+    )?;
+    let fingerprint = format!("{:x}", Sha256::digest(secret.as_bytes()));
+    let service = group_service(platform, &fingerprint).ok_or("媒体凭据引用无效")?;
+    // 先记下用于退出登录清理的引用。凭据保存失败时，原模型分组继续生效。
+    value["group_credentials"][platform.id()][&fingerprint] = json!(true);
+    write_connection_at(&path, &value)?;
+    if !crate::fastaiapi_secret_store::save(
+        &service,
+        json!({"origin":origin, "api_key":secret})
+            .to_string()
+            .as_bytes(),
+    ) {
+        return Err("系统凭据库无法保存分组 Key，请检查授权后重试".into());
+    }
+    value["group_models"][platform.id()][origin][kind] =
+        json!({"group_id":group, "key_id":body["key_id"], "model":model, "credential":fingerprint});
+    write_connection_at(&path, &value)?;
+    Ok(json!({"group_id":group,"model":model}))
+}
+
+pub(crate) fn clear_group_credentials(platform: Platform) -> Result<(), String> {
+    let path = descriptor_path();
+    let Ok(raw) = std::fs::read(&path) else {
+        return Ok(());
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(&raw) else {
+        return Ok(());
+    };
+    if value["account"] != crate::fastaiapi_secret_store::account() {
+        return Ok(());
+    }
+    let Some(credentials) = value["group_credentials"][platform.id()].as_object() else {
+        return Ok(());
+    };
+    for fingerprint in credentials.keys() {
+        if let Some(service) = group_service(platform, fingerprint) {
+            crate::fastaiapi_secret_store::clear(&service)?;
+        }
+    }
+    value["group_credentials"][platform.id()] = Value::Null;
+    if let Some(groups) = value["group_models"].as_object_mut() {
+        groups.remove(platform.id());
+    }
+    write_connection_at(&path, &value)
 }
 pub fn pricing_key_id(platform: Platform) -> Result<i64, String> {
     let value: Value =
@@ -210,7 +351,8 @@ pub fn store_for(platform: Platform, origin: &str, key: &str) -> Result<Value, S
     }
     let native = use_native_on_save();
     if native {
-        crate::fastaiapi_media::validate_media_origin(platform, origin).map_err(|error| error.to_string())?;
+        crate::fastaiapi_media::validate_media_origin(platform, origin)
+            .map_err(|error| error.to_string())?;
         crate::fastaiapi_media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
     }
     let same_key = load_for(platform).is_some_and(|value| value["api_key"] == key);
@@ -560,6 +702,35 @@ mod tests {
             values.borrow_mut().remove(name);
         }
     }
+    #[test]
+    fn grouped_media_defaults_are_independent_by_kind_platform_and_route() {
+        let platform = Platform::NewApi;
+        let [first, second, ..] = platform.origins() else {
+            panic!("需要两条测试路线");
+        };
+        let mut value =
+            json!({"model_defaults": {"newapi": {"image":"gpt-image-1","video":"minimax-h3"}}});
+        value["group_models"][platform.id()][*first]["image"] =
+            json!({"model":"gpt-image-2","group_id":"image"});
+        value["group_models"][platform.id()][*first]["video"] =
+            json!({"model":"grok-imagine-video-1.5","group_id":"video"});
+        assert_eq!(
+            defaults_for(&value, platform, first),
+            json!({"image":"gpt-image-2","video":"grok-imagine-video-1.5"})
+        );
+        assert_eq!(
+            defaults_for(&value, platform, second),
+            json!({"image":"gpt-image-1","video":"minimax-h3"})
+        );
+        assert_eq!(defaults_for(&value, Platform::SubApi, first), Value::Null);
+        assert!(group_service(platform, "not-a-credential-reference").is_none());
+        let reference = "a".repeat(64);
+        assert_ne!(
+            group_service(platform, &reference),
+            group_service(Platform::SubApi, &reference)
+        );
+    }
+
     #[test]
     fn transaction_verifies_all_values_and_preserves_other_providers() {
         let values = RefCell::new(snapshot());

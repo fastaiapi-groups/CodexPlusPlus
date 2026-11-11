@@ -8,7 +8,8 @@ import { SubApiSubscriptions } from "./SubApiSubscriptions";
 import { SubApiRecharge } from "./SubApiRecharge";
 import { NewApiRecharge } from "./NewApiRecharge";
 import { ServiceRouteProvider, RouteSelector, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
-import { MediaModels, modelKind } from "./MediaModels";
+import { MediaModels } from "./MediaModels";
+import { modelKind } from "./modelGroups";
 import { MediaSetupGuideButton } from "./MediaSetupGuide";
 import "./gate.css";
 import { ModelPicker } from "./ModelPicker";
@@ -52,6 +53,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
   const [requires2fa, setRequires2fa] = useState(false), [totp, setTotp] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const [keys, setKeys] = useState<Key[]>([]), [keyId, setKeyId] = useState(0), [models, setModels] = useState<string[]>([]), [model, setModel] = useState("");
+  const [defaultKeyId, setDefaultKeyId] = useState(0);
   const [groups, setGroups] = useState<AccountGroup[]>([]), [keyDialog, setKeyDialog] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false), [groupsError, setGroupsError] = useState("");
   const groupCache = useRef(createGroupCache(() => api<AccountGroup[]>("groups")));
@@ -75,7 +77,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       current: () => api("configuration"),
       apply: (keyId, model) => invoke("fastaiapi_configure", {keyId, model}),
     });
-    setKeyId(configured.id); setModels(await invoke<string[]>("fastaiapi_models", {keyId: configured.id})); setModel(configured.model);
+    setKeyId(configured.id); setModels(await invoke<string[]>("fastaiapi_models", {keyId: configured.id})); setModel(configured.model); setDefaultKeyId(configured.id);
     await loadKeys();
     setNotice("已自动配置模型服务，可以启动 Codex。");
   };
@@ -88,6 +90,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       setUser(u); setAuthenticated(true); setRestoring(false); void loadGroups().catch(() => {});
       const available = await loadKeys();
       const current = await api<{key_id?: number; model?: string}>("configuration");
+      setDefaultKeyId(current.key_id ?? 0); setModel(current.model ?? "");
       const selected = available.find(k => k.status === "active" && k.id === current.key_id)
         ?? available.find(k => k.status === "active" && k.name === "Codex++ FastAiApi")
         ?? available.find(k => k.status === "active" && k.group === "default");
@@ -95,7 +98,6 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
         setKeyId(selected.id);
         const list = await invoke<string[]>("fastaiapi_models", {keyId: selected.id});
         setModels(list);
-        if (current.key_id === selected.id) setModel(current.model ?? "");
         // 恢复会话仅展示已有默认模型，不覆盖配置。
       }
     }).catch(e => {setError(/请先登录|登录已过期/.test(String(e)) ? "" : String(e));}).finally(() => {if(!disposed) {setRestoring(false); setLocked(false);}});
@@ -121,10 +123,8 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     if (!u.session_persistent) setNotice("模型服务已配置。系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
   });
   const selectKey = (id: number) => work(async () => {
-    setKeyId(id); setModels([]); setModel(""); setNotice("");
+    setKeyId(id); setModels([]); setNotice("");
     const list = await invoke<string[]>("fastaiapi_models", {keyId: id}); setModels(list);
-    const current = await api<{key_id?: number; model?: string}>("configuration");
-    if (current.key_id === id) setModel(current.model ?? "");
     if (!list.length) setNotice("该 Key 没有可用的对话模型，请选择对话分组 Key。");
   });
   const card = (officialMode = false) => <section className={`fast-account${user ? " is-connected" : ""}`} aria-label="FastAiApi 账户">
@@ -144,12 +144,20 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       {officialMode && <p className="fast-muted">当前 Codex 使用官方账号，下方保留你的 FastAiApi 模型配置。</p>}
       {routes.platform === "subapi" && <SubApiSubscriptions/>}
       <MediaModels keyId={keyId} models={models} textModel={model} textPicker={
-        <ModelPicker keyId={keyId} models={models.filter(m => modelKind(m) === "text")} value={model} busy={busy || !keyId || officialMode} onReload={() => void selectKey(keyId)} onApply={async next => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); }}/>
+        <ModelPicker keyId={defaultKeyId || keyId}
+          models={(!defaultKeyId || defaultKeyId === keyId ? models : []).filter(m => modelKind(m) === "text")}
+          value={model} busy={busy || officialMode} onApply={async ({model: next, keyId: selectedKey}) => {
+            await invoke("fastaiapi_configure", {keyId: selectedKey, model: next});
+            setDefaultKeyId(selectedKey ?? 0); setKeyId(selectedKey ?? 0); setModel(next);
+            setModels(await invoke<string[]>("fastaiapi_models", {keyId: selectedKey}).catch(() => [next]));
+            await loadKeys().catch(() => []);
+            setNotice("默认分组和模型已更新，重启 Codex 生效。");
+          }}/>
       }/>
       <details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
       <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy || officialMode} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
       {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
-      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
+      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setDefaultKeyId(0); setModel(""); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
     {!user && <div className="fast-login-help">{busy && <p role="status">正在连接平台并配置，请留意系统凭据授权提示。</p>}<MediaSetupGuideButton/></div>}

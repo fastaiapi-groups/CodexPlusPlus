@@ -132,12 +132,18 @@ async fn call(state: &Path, client: &reqwest::Client, name: &str, args: Value) -
                 args.as_object().is_some_and(|object| object.is_empty()),
                 "此工具不需要参数"
             );
-            let active = connection::load(state, None).await?;
+            let active = connection::load(state, None, None).await?;
             if name == "list_models" {
-                let models = connection::models(client, &active)
-                    .await?
-                    .into_iter()
-                    .filter(|id| matches!(crate::fastaiapi::model_kind(id), "image" | "video"))
+                let lists = connection::models_by_kind(state, client, &active).await;
+                ensure!(
+                    lists.contains_key("image") || lists.contains_key("video"),
+                    "无法读取媒体模型，请检查路线和分组 Key"
+                );
+                let models = ["image", "video"]
+                    .iter()
+                    .filter_map(|kind| lists.get(*kind))
+                    .filter_map(Value::as_array)
+                    .flatten()
                     .collect::<Vec<_>>();
                 return Ok(
                     json!({"platform":active.platform.id(),"origin":active.origin,"models":models}),
