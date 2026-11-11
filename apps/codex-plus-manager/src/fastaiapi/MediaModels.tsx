@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { MediaSetupGuideButton } from "./MediaSetupGuide";
 import { ModelDialog } from "./ModelDialog";
 import { MediaTestDialog } from "./MediaTestDialog";
@@ -14,7 +14,7 @@ export function modelKind(id: string): "text" | "image" | "video" | "other" {
 }
 type Status = {state: string; message: string; default_video_available?: boolean; models?: string[]; image_model?: string; video_model?: string};
 
-export function MediaModels({keyId, models, textModel}: {keyId: number; models: string[]; textModel?: string}) {
+export function MediaModels({keyId, models, textModel, textPicker}: {keyId: number; models: string[]; textModel?: string; textPicker: ReactNode}) {
   const invoke = usePlatformInvoke();
   const api = <T,>(action: string, body?: object) => invoke<T>("fastaiapi_account", {action, body});
   const {routes, setLocked} = useServiceRoutes();
@@ -32,7 +32,7 @@ export function MediaModels({keyId, models, textModel}: {keyId: number; models: 
     <div className="fast-row"><button disabled={Boolean(busy)} onClick={() => void work("repair",async () => {const result=await api<{warning?:string}>("media_setup"); await refresh(); setMessage(result.warning || "当前平台 Key 与系统环境变量已修复。重启 Codex 或终端后生效。");})}><Wrench size={14}/>{busy === "repair" ? "正在修复…" : "一键配置／修复"}</button><button disabled={Boolean(busy)} onClick={() => setManual(value=>!value)}><KeyRound size={14}/>手动配置</button><button disabled={Boolean(busy)} onClick={() => setTest("text")}><FlaskConical size={14}/>文本测试</button><button disabled={Boolean(busy)} onClick={() => setTest("image")}><Image size={14}/>图片测试</button><MediaSetupGuideButton/></div>
     <p>测试会真实调用当前站点并按平台计费。环境变量配置给新启动的应用使用；已运行的 Codex 或终端需重启。</p>
     {manual && <form className="fast-media-manual" onSubmit={event=>{event.preventDefault();void work("manual",async()=>{const result=await api<{warning?:string}>("media_manual",{api_key:key});setKey("");await refresh();setMessage(result.warning || "手动 Key 已保存并配置环境变量。");});}}><label>当前路线的 API Key<input type="password" autoComplete="off" required value={key} onChange={event=>setKey(event.target.value)} placeholder="输入完整 Key，不会显示或写入日志"/></label><button type="submit" disabled={Boolean(busy) || !key.trim()}>保存并配置</button></form>}
-    <div className="fast-media-grid">{(["image", "video"] as const).map(kind => {
+    <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
       const list = available.filter(m => modelKind(m) === kind);
       return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{list.length} 个可用</small></header><span>默认模型</span><b>{defaults[kind]}</b><button disabled={Boolean(busy) || !list.length} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button>{!list.length && <p>当前媒体 Key 暂无对应模型，请检查分组权限。</p>}</article>;
     })}</div>
