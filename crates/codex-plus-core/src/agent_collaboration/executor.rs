@@ -165,12 +165,9 @@ fn auto_detect_executable(provider: Provider, local_appdata: Option<&Path>) -> O
         match provider {
             Provider::Codex => {
                 for app in ["ChatGPT.app", "Codex.app"] {
-                    let resources = PathBuf::from("/Applications")
-                        .join(app)
-                        .join("Contents/Resources");
-                    candidates.push(resources.join("codex-cli/bin/codex"));
-                    candidates.push(resources.join("codex-cli/CodexCLI.app/Contents/MacOS/codex"));
-                    candidates.push(resources.join("codex"));
+                    candidates.extend(crate::app_paths::find_bundled_codex_cli(
+                        &PathBuf::from("/Applications").join(app),
+                    ));
                 }
             }
             Provider::DeepSeek => candidates.push(PathBuf::from(

@@ -863,7 +863,12 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
 
 pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
     let candidates = if app_dir.extension() == Some(OsStr::new("app")) {
-        vec![app_dir.join("Contents").join("Resources").join("codex")]
+        let resources = app_dir.join("Contents/Resources");
+        vec![
+            resources.join("codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+            resources.join("codex-cli/bin/codex"),
+            resources.join("codex"),
+        ]
     } else {
         vec![
             app_dir.join("resources").join("codex.exe"),
@@ -873,6 +878,22 @@ pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
         ]
     };
     candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+#[cfg(test)]
+#[test]
+fn mac_bundled_cli_prefers_signed_app_layout_and_keeps_legacy_layout() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("ChatGPT.app");
+    let resources = app.join("Contents/Resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    let legacy = resources.join("codex");
+    std::fs::write(&legacy, []).unwrap();
+    assert_eq!(find_bundled_codex_cli(&app), Some(legacy));
+    let cli = resources.join("codex-cli/CodexCLI.app/Contents/MacOS/codex");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, []).unwrap();
+    assert_eq!(find_bundled_codex_cli(&app), Some(cli));
 }
 
 /// 是否指向 Store 版安装目录（WindowsApps）里的可执行文件。

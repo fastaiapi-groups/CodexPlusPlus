@@ -1,11 +1,19 @@
 name: FastAiApi client installers
 on:
   workflow_dispatch:
+    inputs:
+      signed_release:
+        description: Build an Authenticode-signed distribution candidate
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,9 +29,27 @@ jobs:
       - name: Build Windows client
         run: |
           cargo test -p codex-plus-core update:: --lib
-          cargo test -p codex-plus-core --test updater
+          cargo test -p codex-plus-core --test all updater::
           cargo build --release -p codex-plus-core --example upgrade_state_probe
           cargo build --release -p codex-plus-manager
+      - name: Authenticate Windows signing identity
+        if: inputs.signed_release
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows executable before packaging
+        if: inputs.signed_release
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.WINDOWS_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\target\release\codex-plus-plus.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
       - name: Package installer
         shell: pwsh
         run: |
@@ -38,6 +64,32 @@ jobs:
             & $makensis /INPUTCHARSET UTF8 "/DVERSION=$version" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw 'Installer packaging failed' }
           } finally { Pop-Location }
+      - name: Sign Windows installer
+        if: inputs.signed_release
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.WINDOWS_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\windows
+          files-folder-filter: "*-setup.exe"
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Authenticode and trusted timestamp
+        if: inputs.signed_release
+        shell: pwsh
+        run: |
+          $files = @((Resolve-Path dist/windows/app/codex-plus-plus.exe).Path)
+          $installers = @(Get-ChildItem dist/windows/*-setup.exe -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          $files += $installers[0].FullName
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file
+            if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
+              throw "Invalid or untimestamped Authenticode signature: $file"
+            }
+          }
       - name: Test real Windows install and overwrite upgrade
         shell: pwsh
         run: |
@@ -51,7 +103,7 @@ jobs:
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: fastaiapi-windows-x64
+          name: ${{ inputs.signed_release && 'fastaiapi-windows-x64-signed' || 'fastaiapi-windows-x64-test-unsigned' }}
           path: dist/windows/*-setup.exe
           if-no-files-found: error
           retention-days: 14
