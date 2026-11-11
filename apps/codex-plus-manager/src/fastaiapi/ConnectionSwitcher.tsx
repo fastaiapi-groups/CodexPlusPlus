@@ -4,13 +4,15 @@ import { usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { type ConnectionMode } from "./connection-mode";
 import "./connection-switcher.css";
 
-export function ConnectionSwitcher({ mode, disabled, onSwitch }: {
+export function ConnectionSwitcher({ mode, activeName, disabled, onSwitch }: {
   mode: ConnectionMode | null;
+  activeName?: string;
   disabled: boolean;
   onSwitch: (mode: ConnectionMode, platform: string, profileId?: string) => Promise<boolean>;
 }) {
   const invoke = usePlatformInvoke();
   const { routes, locked, setLocked } = useServiceRoutes();
+  const platformName = routes.platforms.find(platform => platform.id === routes.platform)?.name;
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -39,9 +41,9 @@ export function ConnectionSwitcher({ mode, disabled, onSwitch }: {
   };
   return <section className="fast-connection-switcher" aria-label="Codex 连接方式">
     <div className="fast-connection-heading">
-      <div><h2>Codex 连接方式</h2><p>{mode === "official" ? "使用自己的 ChatGPT / Codex 账号额度" : mode === "fastai" ? "使用 FastAiApi 模型服务" : "当前使用其他供应商连接"}</p></div>
+      <div><h2>Codex 连接方式</h2><p>{mode === "official" ? "使用自己的 ChatGPT / Codex 账号额度" : mode === "fastai" ? `使用 ${activeName || platformName} 模型服务` : "当前使用其他供应商连接"}</p></div>
       <div className="fast-connection-options" role="group" aria-label="切换 Codex 连接方式">
-        <button type="button" aria-pressed={mode === "fastai"} disabled={disabled || locked || busy} onClick={() => void select("fastai")}>FastAiApi</button>
+        <button type="button" aria-pressed={mode === "fastai"} disabled={disabled || locked || busy} onClick={() => void select("fastai")}>{platformName}</button>
         <button type="button" aria-pressed={mode === "official"} disabled={disabled || locked || busy} onClick={() => void select("official")}>ChatGPT / Codex 官方账号</button>
       </div>
     </div>

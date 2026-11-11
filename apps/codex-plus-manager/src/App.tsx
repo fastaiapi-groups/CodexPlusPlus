@@ -5,7 +5,7 @@ import { showAccountRoute, showAccountTool } from "./fastaiapi/navigation";
 import FastAiApiAccount from "./fastaiapi/Account";
 import { ConnectionSwitcher } from "./fastaiapi/ConnectionSwitcher";
 import { connectionMode, connectionTarget, OFFICIAL_PROFILE_ID, type ConnectionMode } from "./fastaiapi/connection-mode";
-import { RouteSelector } from "./fastaiapi/ServiceRoutes";
+import { RouteSelector, useServiceRoutes } from "./fastaiapi/ServiceRoutes";
 import {
   closestCenter,
   DndContext,
@@ -109,7 +109,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
-import { PRESETS, type ProviderPreset } from "./presets";
+import type { ProviderPreset } from "./presets";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
@@ -6634,7 +6634,7 @@ function OverviewScreen({
   return (
     <>
       {activeTool === "codex" ? <>
-        <ConnectionSwitcher mode={connectionMode(activeProfile)} disabled={actions.relaySwitching} onSwitch={switchAccountConnection}/>
+        <ConnectionSwitcher mode={connectionMode(activeProfile)} activeName={activeProfile?.name} disabled={actions.relaySwitching} onSwitch={switchAccountConnection}/>
         <FastAiApiAccount officialMode={connectionMode(activeProfile) === "official"}/>
       </> : null}
       {activeTool === "codex" ? (
@@ -8563,16 +8563,18 @@ function ProviderCatalogScreen({
   onBack: () => void;
   onSelect: (profile: RelayProfile) => void;
 }) {
-  const categories: Array<{ id: ProviderPreset["category"]; label: string }> = [
-    { id: "official", label: t("账号登录") },
-    { id: "cn_official", label: t("模型厂商") },
-    { id: "aggregator", label: t("聚合/中转") },
-    { id: "third_party", label: t("第三方平台") },
-  ];
-  const filteredPresets = PRESETS.filter((preset) => {
-    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
-    return !query.trim() || haystack.includes(query.trim().toLowerCase());
-  });
+  const {routes} = useServiceRoutes();
+  const presets: ProviderPreset[] = routes.platforms.map(channel => ({
+    id: channel.id,
+    name: channel.name,
+    category: "aggregator",
+    baseUrl: `${channel.origin}/v1`,
+    protocol: "responses",
+    model: "",
+  }));
+  const filteredPresets = presets.filter(preset =>
+    `${preset.name} ${preset.baseUrl}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
   const selectPreset = (preset?: ProviderPreset) => {
     const draft = createRelayProfile(form);
     const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
@@ -8593,7 +8595,7 @@ function ProviderCatalogScreen({
           <Input
             aria-label={t("搜索供应商")}
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder={t("搜索名称或网址，例如 kimi、智谱、openrouter")}
+            placeholder={t("搜索供应商名称或网址")}
             value={query}
           />
         </div>
@@ -8605,27 +8607,23 @@ function ProviderCatalogScreen({
           </span>
           <ChevronRight className="provider-add-chevron h-4 w-4" />
         </button>
-        {categories.map((category) => {
-          const presets = filteredPresets.filter((preset) => preset.category === category.id);
-          if (!presets.length) return null;
-          return (
-            <section className="provider-add-section" key={category.id}>
-              <h3>{category.label}<span>{presets.length}</span></h3>
-              <div className="provider-add-results">
-                {presets.map((preset) => (
-                  <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} title={preset.baseUrl} type="button">
-                    <span className="provider-add-icon">{providerInitial(preset.name)}</span>
-                    <span className="provider-add-text">
-                      <strong>{preset.name}</strong>
-                      <small>{urlHost(preset.websiteUrl || preset.baseUrl)}</small>
-                    </span>
-                    <span className="provider-add-protocol">{preset.protocol === "chatCompletions" ? "Chat" : "Responses"}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          );
-        })}
+        {filteredPresets.length > 0 && (
+          <section className="provider-add-section">
+            <h3>{t("内置渠道")}<span>{filteredPresets.length}</span></h3>
+            <div className="provider-add-results">
+              {filteredPresets.map(preset => (
+                <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} title={preset.baseUrl} type="button">
+                  <span className="provider-add-icon">{providerInitial(preset.name)}</span>
+                  <span className="provider-add-text">
+                    <strong>{preset.name}</strong>
+                    <small>{urlHost(preset.baseUrl)}</small>
+                  </span>
+                  <span className="provider-add-protocol">Responses</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
         {!filteredPresets.length ? <div className="provider-add-empty">{tf("没有匹配「{0}」的预设，可以用上面的「自定义配置」手动填写。", [query.trim()])}</div> : null}
         <p className="provider-add-hint">{t("选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
       </main>

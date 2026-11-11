@@ -12,7 +12,7 @@ export function SubApiSubscriptions() {
   return <details className="fast-advanced">
     <summary>我的套餐 <span>{loading?"正在读取…":`${items.filter(s=>s.status==="active").length} 个有效套餐`}</span></summary>
     {error&&<p className="fast-error" role="alert">{error}</p>}
-    {!loading&&!items.length&&!error&&<p>当前 SubAPI 账号暂无套餐。</p>}
+    {!loading&&!items.length&&!error&&<p>当前 FastAiAPI 账号暂无套餐。</p>}
     {items.map(s=><p key={s.id}>
       <strong>{s.group?.name||`套餐 ${s.id}`}</strong> · {s.status==="active"?"有效":s.status} · {s.expires_at?`到期 ${new Date(s.expires_at).toLocaleDateString()}`:"长期有效"}
       {Number.isFinite(s.daily_usage_usd)&&<span> · 今日已用 ${s.daily_usage_usd.toFixed(2)}{s.group?.daily_limit_usd!=null&&<span> / ${s.group.daily_limit_usd.toFixed(2)}</span>}</span>}

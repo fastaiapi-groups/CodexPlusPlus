@@ -8,7 +8,7 @@
 
 | 编号 | 要保留的用户行为 | 当前关键入口 | 验收重点 |
 | --- | --- | --- | --- |
-| F01 | FastAiApi 账号登录、恢复、退出，New API/SubAPI 分平台，登录平台固定、路线可切换 | `apps/codex-plus-manager/src/fastaiapi/`；Tauri `src/fastaiapi_commands.rs`；core `fastaiapi_platform.rs`、`fastaiapi_session.rs`、`fastaiapi_credentials.rs`、`fastaiapi_secret_store.rs` | 平台凭据不串用；切路线保留正确状态；退出/重启不复活历史会话；系统凭据失败有明确提示 |
+| F01 | FastAiApi 账号登录、恢复、退出，TuMeiAPI / FastAiAPI 双内置渠道，登录平台固定、路线可切换 | `apps/codex-plus-manager/src/fastaiapi/`；Tauri `src/fastaiapi_commands.rs`；core `fastaiapi_platform.rs`、`fastaiapi_session.rs`、`fastaiapi_credentials.rs`、`fastaiapi_secret_store.rs` | 平台凭据不串用；切路线保留正确状态；退出/重启不复活历史会话；系统凭据失败有明确提示 |
 | F02 | 自动接入供应商、选择 Key/模型、文字/图片/视频分组与模型说明、人民币价格含阶梯定价 | 前端 `KeySelector.tsx`、`ModelPicker.tsx`、`ModelDialog.tsx`、`GroupDescription.tsx`、`onboarding.ts`；core `fastaiapi.rs`、`fastaiapi_subapi.rs`、`fastaiapi_pricing.rs` | 使用正确平台与 Key 分组；不覆盖未知现有配置；保留供应商切换保护、回滚及备份；不虚构价格 |
 | F03 | 充值、订单恢复、支付标识、兑换码、订阅与客服入口 | 前端 `NewApiRecharge.tsx`、`SubApiRecharge.tsx`、`SubApiSubscriptions.tsx`、`paymentState.ts`、`ContactQr.tsx` | 金额输入可见、支付状态/恢复正确、平台接口隔离；离线回归不真实下单 |
 | F04 | 平台反馈、二维码、私有管理入口及服务端隔离 | 前端 `Feedback.tsx`；`services/` 及已有反向代理配置 | 保留客服和反馈；私有管理接口不意外公开；不随桌面同步自动部署服务器 |

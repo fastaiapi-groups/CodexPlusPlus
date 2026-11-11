@@ -77,6 +77,7 @@ fn update_account_route(platform: Platform, origin: &str) -> Result<(), String> 
     let profile = settings.relay_profiles[index].clone();
     let models = profile.model_list.lines().map(str::to_owned).collect();
     settings.relay_profiles[index] = account_profile(
+        platform,
         profile.clone(),
         profile.id.clone(),
         profile.api_key.clone(),
@@ -143,6 +144,7 @@ pub async fn fastaiapi_configure(
         .cloned()
         .unwrap_or_default();
     let profile = account_profile(
+        platform,
         existing,
         profile_id.clone(),
         key,
@@ -165,7 +167,7 @@ pub async fn fastaiapi_configure(
     std::fs::write(account_selection_path(platform), profile_id)
         .map_err(|_| "模型已应用，但平台选择未保存，请重新应用以保存")?;
     install_media_skill()?;
-    Ok(json!({"model": model, "message": "已配置 FastAiApi，可启动 Codex"}))
+    Ok(json!({"model":model,"message":format!("已配置 {}，可启动 Codex", platform.name())}))
 }
 
 #[tauri::command]
@@ -178,6 +180,7 @@ pub async fn fastaiapi_media_configure(
 }
 
 fn account_profile(
+    platform: Platform,
     existing: RelayProfile,
     profile_id: String,
     key: String,
@@ -205,14 +208,14 @@ fn account_profile(
     }
     Ok(RelayProfile {
         id: profile_id,
-        name: "FastAiApi".into(),
+        name: platform.name().into(),
         model,
         base_url: format!("{origin}/v1"),
         upstream_base_url: format!("{origin}/v1"),
         api_key: key.clone(),
         api_keys: vec![RelayApiKey {
             id: "account".into(),
-            name: "FastAiApi".into(),
+            name: platform.name().into(),
             api_key: key,
         }],
         active_api_key_id: "account".into(),
@@ -315,8 +318,14 @@ mod tests {
             .is_none()
         );
         assert_eq!(
-            account_configuration(&profiles, "fastaiapi-official", "fastaiapi-newapi-7", Platform::NewApi)
-                .unwrap().id,
+            account_configuration(
+                &profiles,
+                "fastaiapi-official",
+                "fastaiapi-newapi-7",
+                Platform::NewApi
+            )
+            .unwrap()
+            .id,
             "fastaiapi-newapi-7"
         );
     }
@@ -330,6 +339,7 @@ mod tests {
             ..Default::default()
         };
         let updated = account_profile(
+            Platform::NewApi,
             existing,
             "fastaiapi-test".into(),
             "test-only".into(),
@@ -339,6 +349,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.base_url, "http://8.137.194.180:90/v1");
+        assert_eq!(updated.name, "TuMeiAPI");
+        assert_eq!(updated.api_keys[0].name, "TuMeiAPI");
         assert_eq!(updated.context_window, "200000");
         assert_eq!(updated.auto_compact_limit, "160000");
         assert!(updated.model_windows.contains("200000"));
@@ -358,6 +370,7 @@ mod tests {
     fn selected_route_replaces_template_endpoint() {
         let existing = RelayProfile { config_contents: "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://old.invalid/v1\"\n".into(), ..Default::default() };
         let updated = account_profile(
+            Platform::NewApi,
             existing,
             "fastaiapi-newapi-1-1".into(),
             "test-only".into(),
@@ -446,6 +459,8 @@ const MEDIA_FILES: &[(&str, &[u8])] = &[
     ),
     (
         "scripts/test_managed_media.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/test_managed_media.py"),
+        include_bytes!(
+            "../../../../integrations/fastaiapi/media-api/scripts/test_managed_media.py"
+        ),
     ),
 ];

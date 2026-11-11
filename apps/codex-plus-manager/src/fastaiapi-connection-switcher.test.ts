@@ -35,7 +35,7 @@ function harness() {
     if (id === "../NativeAuthControls") return {NativeAuthControl: () => null};
     if (id === "./ServiceRoutes") return {
       usePlatformInvoke: () => async (...args: unknown[]) => { commands.push(args); return read(); },
-      useServiceRoutes: () => ({routes: {platform: "subapi"}, locked, setLocked: (next: boolean) => { locked = next; locks.push(next); }}),
+      useServiceRoutes: () => ({routes: {platform: "subapi", platforms: [{id: "subapi", name: "FastAiAPI"}]}, locked, setLocked: (next: boolean) => { locked = next; locks.push(next); }}),
     };
     if (id.endsWith(".css")) return {};
     throw new Error(id);
@@ -44,7 +44,7 @@ function harness() {
     cursor = 0;
     return elements(exports.ConnectionSwitcher({mode: "official", disabled: false, onSwitch: async (...args: unknown[]) => { switches.push(args); return apply(); }}));
   };
-  const click = () => render().find(node => node.type === "button" && node.props.children === "FastAiApi")!.props.onClick();
+  const click = () => render().find(node => node.type === "button" && node.props.children === "FastAiAPI")!.props.onClick();
   return {render, click, locks, commands, switches, setApply: (next: typeof apply) => { apply = next; }, setRead: (next: typeof read) => { read = next; }};
 }
 

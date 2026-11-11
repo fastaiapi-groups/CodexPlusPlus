@@ -1,4 +1,5 @@
 //! 面板选择与分发。平台身份随请求传递，切换页面不改变已应用的模型或媒体连接。
+use crate::settings::{RelayMode, RelayProfile};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -33,6 +34,8 @@ pub enum Platform {
     SubApi,
 }
 impl Platform {
+    pub const BUILT_INS: [Self; 2] = [Self::NewApi, Self::SubApi];
+
     pub fn parse(id: &str) -> Result<Self, String> {
         match id {
             "newapi" => Ok(Self::NewApi),
@@ -48,14 +51,20 @@ impl Platform {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::NewApi => "New API",
-            Self::SubApi => "SubAPI",
+            Self::NewApi => "TuMeiAPI",
+            Self::SubApi => "FastAiAPI",
         }
     }
     pub fn origins(self) -> &'static [&'static str] {
         match self {
             Self::NewApi => &crate::fastaiapi::ORIGINS,
             Self::SubApi => &["https://fastaiapi.cloud"],
+        }
+    }
+    fn primary_origin(self) -> &'static str {
+        match self {
+            Self::NewApi => self.origins()[crate::fastaiapi::DEFAULT_ROUTE],
+            Self::SubApi => self.origins()[0],
         }
     }
     pub fn profile_prefix(self) -> String {
@@ -68,6 +77,86 @@ impl Platform {
         format!("com.fastaiapi.codexplusplus.{}.{kind}", self.id())
     }
 }
+/// 识别账号面板生成的供应商，旧版共用的 fastaiapi-<key> ID 需结合原始服务地址。
+fn managed_profile_platform(profile: &RelayProfile) -> Option<Platform> {
+    if profile.relay_mode != RelayMode::PureApi {
+        return None;
+    }
+    for platform in Platform::BUILT_INS {
+        if profile
+            .id
+            .strip_prefix(&platform.profile_prefix())
+            .is_some_and(is_managed_key_suffix)
+        {
+            return Some(platform);
+        }
+    }
+    let suffix = profile.id.strip_prefix("fastaiapi-")?;
+    if !is_managed_key_suffix(suffix) {
+        return None;
+    }
+    let endpoint = if profile.upstream_base_url.is_empty() {
+        crate::relay_config::relay_profile_base_url(profile)
+    } else {
+        profile.upstream_base_url.clone()
+    };
+    let url = reqwest::Url::parse(endpoint.trim()).ok()?;
+    let origin = url.origin().ascii_serialization();
+    Platform::BUILT_INS
+        .into_iter()
+        .find(|platform| platform.origins().contains(&origin.as_str()))
+}
+
+fn is_managed_key_suffix(suffix: &str) -> bool {
+    suffix
+        .split('-')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_builtin_name(name: &str) -> bool {
+    Platform::BUILT_INS
+        .into_iter()
+        .any(|platform| name.trim().eq_ignore_ascii_case(platform.name()))
+}
+
+/// 只迁移旧的内置品牌标签，保留自定义名称、地址、Key 和供应商 ID。
+pub(crate) fn normalize_managed_profile_brand(profile: &mut RelayProfile) {
+    let Some(platform) = managed_profile_platform(profile) else {
+        return;
+    };
+    let name = platform.name();
+    if is_builtin_name(&profile.name) {
+        profile.name = name.into();
+    }
+    for key in &mut profile.api_keys {
+        if key.id == "account" && is_builtin_name(&key.name) {
+            key.name = name.into();
+        }
+    }
+    let Ok(mut config) = profile.config_contents.parse::<toml_edit::DocumentMut>() else {
+        return;
+    };
+    let provider = config
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .unwrap_or("custom")
+        .to_owned();
+    let Some(label) = config
+        .get_mut("model_providers")
+        .and_then(|providers| providers.get_mut(&provider))
+        .and_then(|entry| entry.get_mut("name"))
+    else {
+        return;
+    };
+    if label
+        .as_str()
+        .is_some_and(|old| old != name && is_builtin_name(old))
+    {
+        *label = toml_edit::value(name);
+        profile.config_contents = config.to_string();
+    }
+}
+
 fn selection_path() -> std::path::PathBuf {
     crate::paths::default_app_state_dir().join("account-platform")
 }
@@ -139,10 +228,10 @@ pub async fn account(
     Ok(result)
 }
 async fn routes(platform: Platform) -> Result<Value, String> {
-    Ok(
-        json!({"platform":platform.id(), "platforms":[{"id":"newapi","name":"New API"},{"id":"subapi","name":"SubAPI"}],
-        "selected":route(platform).await, "items":platform.origins().iter().enumerate().map(|(id,origin)|json!({"id":id,"name":format!("路线{}",id+1),"origin":origin})).collect::<Vec<_>>()}),
-    )
+    let platforms = Platform::BUILT_INS
+        .map(|item| json!({"id":item.id(),"name":item.name(),"origin":item.primary_origin()}));
+    Ok(json!({"platform":platform.id(), "platforms":platforms,
+        "selected":route(platform).await, "items":platform.origins().iter().enumerate().map(|(id,origin)|json!({"id":id,"name":format!("路线{}",id+1),"origin":origin})).collect::<Vec<_>>()}))
 }
 pub async fn key_and_models(
     platform: Platform,
@@ -180,6 +269,65 @@ mod tests {
         lock.record(Platform::SubApi, "login", &json!({"requires_2fa":true}));
         assert!(lock.check(Platform::NewApi).is_ok());
     }
+    #[tokio::test]
+    async fn routes_expose_only_the_two_builtin_channel_names() {
+        let view = routes(Platform::SubApi).await.unwrap();
+        assert_eq!(
+            view["platforms"],
+            json!([
+                {"id":"newapi","name":"TuMeiAPI","origin":"https://tumeiapi.com"},
+                {"id":"subapi","name":"FastAiAPI","origin":"https://fastaiapi.cloud"}
+            ])
+        );
+        assert_eq!(view["items"][0]["origin"], "https://fastaiapi.cloud");
+    }
+
+    #[test]
+    fn managed_profile_brand_migrates_both_generations_without_touching_user_labels() {
+        use crate::settings::RelayApiKey;
+        for (id, host, expected) in [
+            ("fastaiapi-newapi-7", "tumeiapi.com", "TuMeiAPI"),
+            ("fastaiapi-8", "fastaiapi.cloud", "FastAiAPI"),
+            ("fastaiapi-subapi-9", "fastaiapi.cloud", "FastAiAPI"),
+        ] {
+            let mut profile = RelayProfile {
+                id: id.into(),
+                name: "FastAiApi".into(),
+                upstream_base_url: format!("https://{host}/v1"),
+                relay_mode: RelayMode::PureApi,
+                config_contents: "model_provider = \"custom\"\n[model_providers.custom]\nname = \"FastAiApi\"\n[model_providers.other]\nname = \"Keep\"\n".into(),
+                api_keys: vec![RelayApiKey { id: "account".into(), name: "FastAiApi".into(), api_key: "fixture".into() }],
+                ..Default::default()
+            };
+            normalize_managed_profile_brand(&mut profile);
+            assert_eq!(profile.id, id);
+            assert_eq!(profile.upstream_base_url, format!("https://{host}/v1"));
+            assert_eq!(profile.name, expected);
+            assert_eq!(profile.api_keys[0].name, expected);
+            assert_eq!(profile.api_keys[0].api_key, "fixture");
+            let config = profile
+                .config_contents
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            assert_eq!(
+                config["model_providers"]["custom"]["name"].as_str(),
+                Some(expected)
+            );
+            assert_eq!(
+                config["model_providers"]["other"]["name"].as_str(),
+                Some("Keep")
+            );
+
+            profile.name = "手工命名".into();
+            normalize_managed_profile_brand(&mut profile);
+            assert_eq!(profile.name, "手工命名");
+            profile.id = "user-import".into();
+            profile.name = "FastAiApi".into();
+            normalize_managed_profile_brand(&mut profile);
+            assert_eq!(profile.name, "FastAiApi");
+        }
+    }
+
     #[test]
     fn platform_identity_is_separate_from_routes() {
         assert_ne!(

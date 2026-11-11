@@ -34,7 +34,7 @@ export function connectionTarget<T extends Profile>(
   }
   const saved = profiles.find(profile => profile.id === savedProfileId);
   if (!saved || !saved.id.startsWith(`fastaiapi-${platform}-`) || connectionMode(saved) !== "fastai") {
-    throw new Error("当前平台没有已保存的 FastAiApi 连接，请先登录并完成模型配置。");
+    throw new Error("当前平台没有已保存的连接，请先登录并完成模型配置。");
   }
   return saved;
 }

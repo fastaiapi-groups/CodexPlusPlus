@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) const DEFAULT_ROUTE: usize = 1;
 pub const ORIGINS: [&str; 3] = [
     "http://8.137.194.180:90",
     "https://tumeiapi.com",
@@ -51,7 +52,7 @@ pub(crate) fn saved_route(state_dir: &std::path::Path) -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|i| *i < ORIGINS.len())
-        .unwrap_or(0)
+        .unwrap_or(DEFAULT_ROUTE)
 }
 
 fn state() -> &'static tokio::sync::Mutex<State> {
@@ -1272,6 +1273,14 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn new_accounts_default_to_tumeiapi_but_keep_saved_routes() {
+        let state = tempfile::tempdir().unwrap();
+        assert_eq!(ORIGINS[saved_route(state.path())], "https://tumeiapi.com");
+        std::fs::write(state.path().join("newapi-route"), "0").unwrap();
+        assert_eq!(saved_route(state.path()), 0);
+    }
+
     #[test]
     fn reusable_key_must_be_active_and_match_the_requested_group() {
         assert!(active_key_in_group(

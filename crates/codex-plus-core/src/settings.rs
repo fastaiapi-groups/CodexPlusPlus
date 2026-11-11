@@ -3807,6 +3807,7 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     for profile in &mut settings.relay_profiles {
         let mut normalized = profile.clone();
         if crate::relay_config::normalize_relay_profile_for_storage(&mut normalized).is_ok() {
+            crate::fastaiapi_platform::normalize_managed_profile_brand(&mut normalized);
             *profile = normalized;
         }
     }

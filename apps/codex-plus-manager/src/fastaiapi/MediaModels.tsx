@@ -19,6 +19,7 @@ export function MediaModels({keyId, models, textModel, textPicker}: {keyId: numb
   const invoke = usePlatformInvoke();
   const api = <T,>(action: string, body?: object) => invoke<T>("fastaiapi_account", {action, body});
   const {routes, setLocked} = useServiceRoutes();
+  const platformName = routes.platforms.find(platform => platform.id === routes.platform)?.name;
   const [status, setStatus] = useState<Status | null>(null), [busy, setBusy] = useState("");
   const [message, setMessage] = useState(""), [manual, setManual] = useState(false), [key, setKey] = useState("");
   const [registered, setRegistered] = useState(false);
@@ -69,7 +70,7 @@ export function MediaModels({keyId, models, textModel, textPicker}: {keyId: numb
       <button disabled={Boolean(busy)} onClick={() => setTest("image")}><Image size={14}/>图片测试</button>
       <MediaSetupGuideButton/>
     </div>
-    <p>Key 保存在系统凭据库。生成和测试使用当前 FastAiApi 路线并按平台计费。</p>
+    <p>Key 保存在系统凭据库。生成和测试使用当前 {platformName} 路线并按平台计费。</p>
     {manual && <form className="fast-media-manual" onSubmit={event => { event.preventDefault(); void work("manual", () => connect(key)); }}>
       <label>当前路线的 API Key<input type="password" autoComplete="off" required value={key} onChange={event=>setKey(event.target.value)} placeholder="输入完整 Key"/></label>
       <button type="submit" disabled={Boolean(busy) || !key.trim()}>保存并连接</button>
