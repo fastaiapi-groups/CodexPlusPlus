@@ -1,0 +1,13 @@
+.fast-connection-switcher{margin-bottom:18px;padding:20px 24px;border:1px solid #8195ab30;border-radius:16px;background:#8195ab08;color:inherit}
+.fast-connection-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.fast-connection-switcher h2{margin:0;font-size:16px;font-weight:600}
+.fast-connection-switcher p{margin:8px 0 0;font-size:12px;line-height:1.6;color:#9eacba}
+.fast-connection-options{display:flex;gap:8px;flex-wrap:wrap}
+.fast-connection-options button{padding:10px 14px;border:1px solid #8195ab40;border-radius:10px;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer}
+.fast-connection-options button[aria-pressed=true]{background:#5ed3bd18;border-color:#5ed3bd90;color:#67d8c2}
+.fast-connection-options button:disabled{opacity:.5;cursor:default}
+.fast-connection-options button:focus-visible{outline:2px solid #64dece;outline-offset:3px}
+.fast-official-login{min-width:0;margin:16px 0 0;padding:12px 0 0;border:0;border-top:1px solid #8195ab30}
+.fast-connection-switcher p[role=alert]{color:#e5aa9b}
+.fast-connection-switcher p[role=status]{color:#67d8c2}
+@media(max-width:600px){.fast-connection-switcher{padding:18px}.fast-connection-options{width:100%}.fast-connection-options button{flex:1}}

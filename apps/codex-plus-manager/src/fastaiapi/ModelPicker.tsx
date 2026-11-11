@@ -7,7 +7,7 @@ export function ModelPicker({keyId, models, value, busy, onApply, onReload}: {
 }) {
   const [open, setOpen] = useState(false);
   return <div className="fast-models">
-    <div className="fast-row"><span><small>默认模型</small><strong>{value || "使用已有配置"}</strong></span><button onClick={() => setOpen(true)}>切换模型 ▾</button></div>
+    <div className="fast-row"><span><small>默认模型</small><strong>{value || "使用已有配置"}</strong></span><button disabled={busy} onClick={() => setOpen(true)}>切换模型 ▾</button></div>
     {open && <ModelDialog keyId={keyId} models={models} value={value} busy={busy} onApply={onApply} onReload={onReload} onClose={() => setOpen(false)}/>}
   </div>;
 }

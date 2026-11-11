@@ -21,8 +21,8 @@ type User = { email: string; username?: string; balance: number; currency?: stri
 type Key = { id: number; name: string; status: string; group?: string };
 
 
-const AccountView = createContext<ReactNode>(null);
-export default function Account() { return useContext(AccountView); }
+const AccountView = createContext<((officialMode: boolean) => ReactNode) | null>(null);
+export default function Account({officialMode = false}: {officialMode?: boolean}) { return useContext(AccountView)?.(officialMode) ?? null; }
 
 // 根入口只包一层；登录状态和账户卡片共享生命周期，不修改上游 App 的路由。
 export function FastAiApiGate({children}: {children: ReactNode}) {
@@ -127,7 +127,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     if (current.key_id === id) setModel(current.model ?? "");
     if (!list.length) setNotice("该 Key 没有可用的对话模型，请选择对话分组 Key。");
   });
-  const card = <section className={`fast-account${user ? " is-connected" : ""}`} aria-label="FastAiApi 账户">
+  const card = (officialMode = false) => <section className={`fast-account${user ? " is-connected" : ""}`} aria-label="FastAiApi 账户">
     <header className="fast-account-head"><div className="fast-brand"><img src={logo} alt="FastAiApi"/><div><div className="fast-brand-title"><h2>FastAiApi <small className="fast-platform-badge">{platformName}</small></h2>{user && <span className="fast-connected"><i/>已连接</span>}</div><p>{user ? user.email : "登录账号，连接模型，开始工作。"}</p></div></div>{user && <div className="fast-wallet"><div><span className="fast-wallet-label">可用 API 额度 <button className="fast-icon-button" title="刷新余额" aria-label="刷新余额" disabled={busy} onClick={() => void work(refresh)}><RefreshCw size={14}/></button></span><strong>{Number.isFinite(user.balance) ? `${user.currency === "CNY" ? "¥" : user.currency === "USD" ? "$" : ""}${user.balance.toFixed(2)}` : "暂不可用"}<small>{user.currency === "CNY" ? "人民币" : user.currency === "USD" ? "美元" : user.currency}</small></strong></div><button className="fast-primary" disabled={busy} onClick={() => void work(async () => { setRecharge(true); })}><Plus size={16}/>账户充值</button></div>}</header>
     {(error || routeWarning) && <p role="alert" className="fast-error">{error || routeWarning}</p>}{notice && <p role="status" className="fast-notice">{notice}</p>}
     {!user ? <form onSubmit={e => { e.preventDefault(); void login(); }}>
@@ -141,9 +141,9 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       <p className="fast-muted">勾选后，账号密码仅保存在 macOS 系统钥匙串。取消勾选即可清除；未勾选不保存密码。</p>
     </form> : <>
       <div className="fast-service-grid"><div className="fast-endpoint"><span>模型服务</span><strong>{origin}<span>/v1</span></strong><small>已连接你的 {platformName} 账户</small></div>
-      <ModelPicker keyId={keyId} models={models.filter(m => modelKind(m) === "text")} value={model} busy={busy || !keyId} onReload={() => void selectKey(keyId)} onApply={async next => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); }}/>
-      </div>{routes.platform === "subapi" && <SubApiSubscriptions/>}<MediaModels keyId={keyId} models={models} textModel={model}/><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
-      <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
+      <ModelPicker keyId={keyId} models={models.filter(m => modelKind(m) === "text")} value={model} busy={busy || !keyId || officialMode} onReload={() => void selectKey(keyId)} onApply={async next => { await invoke("fastaiapi_configure", {keyId, model: next}); setModel(next); setNotice("默认模型已更新，重启 Codex 生效。"); }}/>
+      </div>{officialMode && <p className="fast-muted">当前 Codex 使用官方账号，以上保留你的 FastAiApi 模型配置。</p>}{routes.platform === "subapi" && <SubApiSubscriptions/>}<MediaModels keyId={keyId} models={models} textModel={model}/><details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
+      <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy || officialMode} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
       {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
       <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setModel(""); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
@@ -152,5 +152,5 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
   </section>;
   if (restoring) return <div className="fast-gate fast-loading" role="status">正在恢复 FastAiApi 登录状态…</div>;
   if (user) return <AccountView.Provider value={card}>{children}</AccountView.Provider>;
-  return <main className="fast-gate"><RouteSelector login/><div className="fast-intro"><small>CODEX · 开始工作 · 高效神器</small><div className="fast-wordmark"><img src={logo} alt=""/><h1>FastAi<span>Api</span></h1></div><p>登录账号，连接模型，开始工作。</p><ol><li>登录或注册</li><li>自动配置密钥</li><li>启动 Codex</li></ol><small>文字 · 图片 · 视频</small></div>{card}</main>;
+  return <main className="fast-gate"><RouteSelector login/><div className="fast-intro"><small>CODEX · 开始工作 · 高效神器</small><div className="fast-wordmark"><img src={logo} alt=""/><h1>FastAi<span>Api</span></h1></div><p>登录账号，连接模型，开始工作。</p><ol><li>登录或注册</li><li>自动配置密钥</li><li>启动 Codex</li></ol><small>文字 · 图片 · 视频</small></div>{card()}</main>;
 }

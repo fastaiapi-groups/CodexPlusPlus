@@ -26,7 +26,7 @@ pub async fn fastaiapi_account(
             &saved_id,
             platform,
         );
-        return Ok(profile.map(|p| json!({"model": p.model, "key_id": p.id.strip_prefix(&prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
+        return Ok(profile.map(|p| json!({"profile_id": p.id, "model": p.model, "key_id": p.id.strip_prefix(&prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
     }
     if action == "select_route" {
         let mut result = panels::account(platform, &action, "", body.unwrap_or(json!({}))).await?;
@@ -313,6 +313,11 @@ mod tests {
                 Platform::SubApi
             )
             .is_none()
+        );
+        assert_eq!(
+            account_configuration(&profiles, "fastaiapi-official", "fastaiapi-newapi-7", Platform::NewApi)
+                .unwrap().id,
+            "fastaiapi-newapi-7"
         );
     }
     #[test]

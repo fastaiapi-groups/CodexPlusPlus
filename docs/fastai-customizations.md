@@ -40,3 +40,5 @@
 - 官方 release/Pages 工作流限定官方仓库；自有签名更新和安装包构建流程独立保留。
 
 - New API/SubAPI 的 remembered-login 读取须在阻塞线程内运行并设置 6 秒超时；超时释放平台请求调用方，不能因钥匙串授权无响应让整个登录恢复无限等待。不得清空凭据或绕过系统授权。
+
+- 概览 `fastaiapi/ConnectionSwitcher.tsx` 提供 FastAiApi / ChatGPT-Codex 官方账号切换，选择逻辑位于 `connection-mode.ts`。通过既有 `switchRelayProfile` 事务保存当前配置、恢复目标配置及回滚失败。官方连接使用独立 `fastaiapi-official` 存档，FastAiApi 按当前平台的 `configuration.profile_id` 恢复原 Key/模型，不重建 Key。官方模式下平台模型应用与自动配置按钮禁用，媒体服务仍使用平台账号。原生登录账号选择复用 `NativeAuthControl`，切换后由用户重启 Codex 生效。

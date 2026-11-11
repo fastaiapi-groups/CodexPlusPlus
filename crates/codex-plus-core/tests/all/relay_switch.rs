@@ -651,6 +651,72 @@ fn official_oauth_survives_aggregate_round_trip() {
     );
 }
 
+// 概览快捷切换复用同一供应商事务，往返时分别保存 API 与官方配置。
+#[test]
+fn fastai_official_round_trip_preserves_both_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let official_config = "model = \"official-model\"\nmodel_reasoning_effort = \"high\"\n";
+    let official_auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-official-token","refresh_token":"synthetic-refresh"}}"#;
+    std::fs::write(home.join("config.toml"), official_config).unwrap();
+    std::fs::write(home.join("auth.json"), official_auth).unwrap();
+    let official = RelayProfile {
+        id: "fastaiapi-official".into(),
+        relay_mode: RelayMode::Official,
+        use_common_config: false,
+        ..RelayProfile::default()
+    };
+    let mut fastai = pure_profile(
+        "fastaiapi-newapi-17",
+        "https://platform.example/v1",
+        "synthetic-api-key",
+    );
+    fastai
+        .config_contents
+        .insert_str(0, "model = \"platform-model\"\n");
+    let settings = BackendSettings {
+        active_relay_id: official.id.clone(),
+        relay_profiles: vec![official, fastai],
+        ..BackendSettings::default()
+    };
+    store.save(&settings).unwrap();
+    for target in [
+        "fastaiapi-newapi-17",
+        "fastaiapi-official",
+        "fastaiapi-newapi-17",
+        "fastaiapi-official",
+    ] {
+        let mut next = store.load().unwrap();
+        let previous = next.active_relay_id.clone();
+        next.active_relay_id = target.into();
+        switch_current_relay_profile(&store, &home, next, &previous).unwrap();
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap())
+                .unwrap();
+        if target == "fastaiapi-official" {
+            assert!(config.contains("official-model"));
+            assert!(!config.contains("platform.example"));
+            assert!(auth.get("OPENAI_API_KEY").is_none());
+            assert_eq!(auth["tokens"]["access_token"], "synthetic-official-token");
+        } else {
+            assert!(config.contains("platform-model"));
+            assert!(config.contains("https://platform.example/v1"));
+            assert_eq!(auth["OPENAI_API_KEY"], "synthetic-api-key");
+        }
+    }
+    let saved = store.load().unwrap();
+    assert_eq!(saved.relay_profiles.len(), 2);
+    assert_eq!(saved.relay_profiles[1].model, "platform-model");
+    assert!(
+        saved.relay_profiles[0]
+            .config_contents
+            .contains("model_reasoning_effort")
+    );
+}
+
 fn aggregate_profile(id: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),
