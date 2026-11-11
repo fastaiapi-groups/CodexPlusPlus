@@ -417,10 +417,7 @@ async fn finish_login(s: &mut State, raw: Value, registration: bool) -> Result<V
     view["session_persistent"] = json!(persistent);
     view["password_remembered"] = json!(remembered);
     view["warning"] = json!(warning);
-    view["media_setup"] = match setup_media(s).await {
-        Ok(value) => value,
-        Err(error) => json!({"configured":false,"warning":error}),
-    };
+
     Ok(view)
 }
 fn order_view(raw: &Value) -> Value {
@@ -602,6 +599,24 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             )
             .await?;
             Ok(json!({}))
+        }
+        "group_model_catalogs" => {
+            let groups =
+                group_rows(&request(&mut s, "GET", "/api/v1/groups/available", Value::Null).await?);
+            let plaza = request(&mut s, "GET", "/api/v1/model-plaza", Value::Null)
+                .await
+                .unwrap_or_default();
+            let catalogs = groups
+                .iter()
+                .filter_map(|group| {
+                    let id = group["id"].as_str()?;
+                    let catalog = pricing_view(&plaza, &json!(id.parse::<i64>().ok()?));
+                    catalog["group"]
+                        .is_string()
+                        .then(|| (id.to_owned(), catalog))
+                })
+                .collect::<serde_json::Map<String, Value>>();
+            Ok(json!({"groups":groups,"catalogs":catalogs}))
         }
         "group_model_pricing" => {
             let group_id = body["group_id"]

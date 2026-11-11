@@ -18,7 +18,7 @@ import { KeySelector } from "./KeySelector";
 import { createGroupCache, type AccountGroup } from "./groupCache";
 import { configureAccount } from "./onboarding";
 
-type User = { email: string; username?: string; balance: number; currency?: string; session_persistent?: boolean; password_remembered?: boolean; media_setup?: {warning?: string} };
+type User = { email: string; username?: string; balance: number; currency?: string; session_persistent?: boolean; password_remembered?: boolean };
 type Key = { id: number; name: string; status: string; group?: string };
 
 
@@ -118,7 +118,6 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     setUser(u); setAuthenticated(true); setPassword(""); setConfirm(""); void loadGroups().catch(() => {});
     await configure(await loadKeys());
     if (u.warning) setError(u.warning);
-    if (u.media_setup?.warning) setError(`媒体环境配置需要处理：${u.media_setup.warning}`);
     if (remember && !u.password_remembered) setError("登录成功，但系统凭据库未保存账号密码。请允许访问系统凭据库后重新登录保存。");
     if (!u.session_persistent) setNotice("模型服务已配置。系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
   });
@@ -143,7 +142,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       <div className="fast-endpoint"><span>模型服务</span><strong>{origin}<span>/v1</span></strong><small>已连接你的 {platformName} 账户</small></div>
       {officialMode && <p className="fast-muted">当前 Codex 使用官方账号，下方保留你的 {platformName} 模型配置。</p>}
       {routes.platform === "subapi" && <SubApiSubscriptions/>}
-      <MediaModels keyId={keyId} models={models} textModel={model} textPicker={
+      <MediaModels models={models} textModel={model} textPicker={
         <ModelPicker keyId={defaultKeyId || keyId}
           models={(!defaultKeyId || defaultKeyId === keyId ? models : []).filter(m => modelKind(m) === "text")}
           value={model} busy={busy || officialMode} onApply={async ({model: next, keyId: selectedKey}) => {
@@ -157,7 +156,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       <details className="fast-advanced"><summary>高级配置 <span>API Key 与自动连接</span></summary><KeySelector keys={keys} value={keyId} busy={busy} onChange={id => void selectKey(id)}/>
       <div className="fast-row fast-key-actions"><button onClick={() => setKeyDialog(true)}><Plus size={15}/>创建专用 API Key</button><div className="fast-key-retry"><button disabled={busy || officialMode} title="重新读取账户 Key，复用或创建专用 Key，并重新写入模型连接配置" onClick={() => void work(async () => configure(await loadKeys()))}><RefreshCw size={14}/>重试自动配置</button><small>连接配置失败时使用；会复用或创建专用 Key。</small></div></div></details>
       {keyDialog && <KeyDialog groups={groups} loading={groupsLoading} loadError={groupsError} onRetry={() => void loadGroups().catch(() => {})} onClose={() => setKeyDialog(false)} onCreate={async id => {await api("create_key", {name: "Codex++ FastAiApi", group_id: id}); await loadKeys(); setNotice("已创建专用 Key，请选择它并应用模型配置。");}}/>}
-      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片、视频与音频技能</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setDefaultKeyId(0); setModel(""); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
+      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频工具</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); groupCache.current = createGroupCache(() => api<AccountGroup[]>("groups")); setGroups([]); setGroupsError(""); setGroupsLoading(false); setKeyDialog(false); setUser(null); setAuthenticated(false); await restoreLogin(); setKeys([]); setModels([]); setKeyId(0); setDefaultKeyId(0); setModel(""); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
     {!user && <div className="fast-login-help">{busy && <p role="status">正在连接平台并配置，请留意系统凭据授权提示。</p>}<MediaSetupGuideButton/></div>}

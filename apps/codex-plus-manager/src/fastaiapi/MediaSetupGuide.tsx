@@ -26,7 +26,7 @@ export function MediaSetupGuide() {
     {system === "linux" ? <p>Linux 可按技能中的 references/setup.md 使用独立版媒体工具。</p> : <>
       <SetupIllustration system={system}/>
       <ol className="fast-setup-steps">
-        <li><KeyRound size={18}/><div><h4>连接媒体工具</h4><p>选择当前平台的 HTTPS 路线，在概览点「连接媒体工具」。已有媒体 Key 会复用，也可在「手动配置」保存自己的 Key。</p></div></li>
+        <li><KeyRound size={18}/><div><h4>连接媒体工具</h4><p>登录平台并选择 HTTPS 路线，打开概览会自动接入。出现连接问题时，在概览点击「检查连接」。</p></div></li>
         <li><LockKeyhole size={18}/><div><h4>检查系统凭据</h4><p>{system === "macos"
           ? "若系统提示访问钥匙串，核对请求来自你正在使用的 Codex++。如果读取超时，检查登录钥匙串是否已解锁，再重新连接。"
           : "如果读取失败，在开始菜单打开「凭据管理器」，检查当前 Windows 用户的凭据访问权限，再重新连接。"} </p></div></li>

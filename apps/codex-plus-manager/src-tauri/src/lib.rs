@@ -287,7 +287,6 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            fastaiapi_commands::install_media_skill().map_err(std::io::Error::other)?;
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {

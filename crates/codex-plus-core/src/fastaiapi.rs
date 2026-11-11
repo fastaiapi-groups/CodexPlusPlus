@@ -855,10 +855,6 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         let mut view = user_view(&current_user, &status);
         view["session_persistent"] = json!(persistent);
         view["password_remembered"] = json!(remembered);
-        view["media_setup"] = match setup_default_media(&mut s).await {
-            Ok(value) => value,
-            Err(error) => json!({"configured":false,"warning":error}),
-        };
         return Ok(view);
     }
     if s.session.user_id <= 0 {
@@ -978,30 +974,78 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 })
                 .ok_or("Key 已创建，请刷新列表后选择".into())
         }
-        "group_model_pricing" => {
-            let group = body["group_id"].as_str().ok_or("请选择模型分组")?;
-            let groups = data(request(&mut s, "GET", "/api/user/self/groups", Value::Null).await?);
-            if groups.get(group).is_none() {
-                return Err("该分组不可用".into());
-            }
-            let mut url = reqwest::Url::parse("https://placeholder/api/user/models").unwrap();
-            url.query_pairs_mut().append_pair("group", group);
-            let path = format!("{}?{}", url.path(), url.query().unwrap());
-            let listed = request(&mut s, "GET", &path, Value::Null)
-                .await
-                .ok()
-                .map(data);
-            let pricing = request(&mut s, "GET", "/api/pricing", Value::Null).await;
-            let status = if pricing.is_ok() {
-                data(
-                    request(&mut s, "GET", "/api/status", Value::Null)
-                        .await
-                        .unwrap_or_default(),
-                )
+        "group_model_pricing" | "group_model_catalogs" => {
+            let raw_groups =
+                data(request(&mut s, "GET", "/api/user/self/groups", Value::Null).await?);
+            let groups = group_rows(&raw_groups);
+            let requested = if action == "group_model_pricing" {
+                let group = body["group_id"].as_str().ok_or("请选择模型分组")?;
+                if raw_groups.get(group).is_none() {
+                    return Err("该分组不可用".into());
+                }
+                Some(group)
             } else {
-                Value::Null
+                None
             };
-            group_model_catalog(group, listed.as_ref(), pricing, &status)
+            use futures_util::{StreamExt, stream};
+            let origin = ORIGINS[s.route];
+            let session = s.session.clone();
+            let mut pricing_session = session.clone();
+            let mut status_session = session.clone();
+            let group_ids: Vec<String> = groups
+                .iter()
+                .filter_map(|group| group["id"].as_str())
+                .filter(|group| requested.is_none_or(|requested| requested == *group))
+                .map(str::to_owned)
+                .collect();
+            let scoped = stream::iter(group_ids)
+                .map(move |group| {
+                    let session = session.clone();
+                    async move {
+                        let models = listed_group_models(origin, session, &group).await;
+                        (group, models)
+                    }
+                })
+                .buffer_unordered(6)
+                .collect::<Vec<_>>();
+            let (pricing, status, scoped) = tokio::join!(
+                send(
+                    origin,
+                    &mut pricing_session,
+                    "GET",
+                    "/api/pricing",
+                    Value::Null,
+                    None
+                ),
+                send(
+                    origin,
+                    &mut status_session,
+                    "GET",
+                    "/api/status",
+                    Value::Null,
+                    None
+                ),
+                scoped,
+            );
+            let status = status.map(data).unwrap_or_default();
+            let pricing = pricing.as_ref().map_err(String::as_str);
+            if let Some(group) = requested {
+                return group_model_catalog(
+                    group,
+                    scoped.first().and_then(|(_, ids)| ids.as_ref()),
+                    pricing,
+                    &status,
+                );
+            }
+            let catalogs = scoped
+                .into_iter()
+                .filter_map(|(group, ids)| {
+                    group_model_catalog(&group, ids.as_ref(), pricing, &status)
+                        .ok()
+                        .map(|catalog| (group, catalog))
+                })
+                .collect::<serde_json::Map<String, Value>>();
+            Ok(json!({"groups":groups,"catalogs":catalogs}))
         }
         "model_pricing" | "media_pricing" => {
             let media_id = if action == "media_pricing" {
@@ -1115,21 +1159,35 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
     }
 }
 
+async fn listed_group_models(origin: &str, mut session: Session, group: &str) -> Option<Value> {
+    let mut url = reqwest::Url::parse("https://placeholder/api/user/models").unwrap();
+    url.query_pairs_mut().append_pair("group", group);
+    let path = format!("{}?{}", url.path(), url.query().unwrap());
+    send(origin, &mut session, "GET", &path, Value::Null, None)
+        .await
+        .ok()
+        .map(data)
+}
+
 fn group_model_catalog(
     group: &str,
     listed: Option<&Value>,
-    pricing: Result<Value, String>,
+    pricing: Result<&Value, &str>,
     status: &Value,
 ) -> Result<Value, String> {
+    let listed = listed.filter(|ids| ids.is_array());
     let mut catalog = match pricing {
-        Ok(pricing) => model_pricing(&pricing, group, status),
-        Err(error) if listed.is_some_and(Value::is_array) => {
-            json!({"group":group, "models":[], "pricing_warning":format!("价格暂时无法获取。{error}")})
+        Ok(pricing) if pricing["data"].is_array() => model_pricing(pricing, group, status),
+        _ if listed.is_some() => {
+            let reason = pricing.err().unwrap_or("平台目录格式无效");
+            json!({"group":group, "models":[], "pricing_warning":format!("价格暂时无法获取。{reason}")})
         }
-        Err(error) => return Err(error),
+        _ => return Err(pricing.err().unwrap_or("平台目录格式无效").into()),
     };
-    if let Some(list) = listed.filter(|ids| ids.is_array()) {
+    if let Some(list) = listed {
         catalog["model_ids"] = list.clone();
+    } else if catalog["models"].as_array().is_none_or(Vec::is_empty) {
+        return Err("分组模型目录暂不可用".into());
     }
     Ok(catalog)
 }
@@ -1302,11 +1360,22 @@ mod tests {
     }
 
     #[test]
+    fn group_directory_distinguishes_empty_scoped_models_from_missing_data() {
+        let pricing = json!({"data":[{"model_name":"gpt-image-2.5","enable_groups":["images"]}]});
+        let empty = json!([]);
+        let scoped =
+            group_model_catalog("images", Some(&empty), Ok(&pricing), &Value::Null).unwrap();
+        assert_eq!(scoped["model_ids"], empty);
+        let published = group_model_catalog("images", None, Ok(&pricing), &Value::Null).unwrap();
+        assert_eq!(published["models"][0]["model"], "gpt-image-2.5");
+        assert!(group_model_catalog("other", None, Ok(&pricing), &Value::Null).is_err());
+    }
+
+    #[test]
     fn group_model_discovery_survives_unavailable_pricing() {
         let ids = json!(["gpt-image-2", "gpt-5.6-sol"]);
         let result =
-            group_model_catalog("default", Some(&ids), Err("HTTP 401".into()), &Value::Null)
-                .unwrap();
+            group_model_catalog("default", Some(&ids), Err("HTTP 401"), &Value::Null).unwrap();
         assert_eq!(result["model_ids"], ids);
         assert_eq!(result["models"], json!([]));
         assert!(
@@ -1315,7 +1384,7 @@ mod tests {
                 .unwrap()
                 .contains("HTTP 401")
         );
-        assert!(group_model_catalog("other", None, Err("HTTP 401".into()), &Value::Null).is_err());
+        assert!(group_model_catalog("other", None, Err("HTTP 401"), &Value::Null).is_err());
     }
 
     #[test]

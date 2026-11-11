@@ -28,3 +28,7 @@ export function supportsModel(platform: string, kind: ModelKind, id: string) {
   return modelKind(id) === kind
     && (platform !== "subapi" || kind !== "video" || ["minimax-h3", "grok-imagine-video-1.5"].includes(id));
 }
+
+export function selectableGroupModels(platform: string, kind: ModelKind, ids: string[], current: string[] = []) {
+  return [...new Set([...current, ...ids])].filter(id => supportsModel(platform, kind, id));
+}

@@ -3,8 +3,7 @@ import { ApiGuide } from "./fastaiapi/ApiGuide";
 import { Manual } from "./fastaiapi/Manual";
 import { showAccountRoute, showAccountTool } from "./fastaiapi/navigation";
 import FastAiApiAccount from "./fastaiapi/Account";
-import { ConnectionSwitcher } from "./fastaiapi/ConnectionSwitcher";
-import { connectionMode, connectionTarget, OFFICIAL_PROFILE_ID, type ConnectionMode } from "./fastaiapi/connection-mode";
+import { connectionMode } from "./fastaiapi/connection-mode";
 import { RouteSelector, useServiceRoutes } from "./fastaiapi/ServiceRoutes";
 import {
   closestCenter,
@@ -6542,30 +6541,6 @@ function OverviewScreen({
     if (!profileId || profileId === normalized.activeRelayId) return;
     void actions.switchRelayProfile(syncLegacyRelayFields({ ...normalized, activeRelayId: profileId }), normalized.activeRelayId);
   };
-  const switchAccountConnection = async (mode: ConnectionMode, platform: string, savedProfileId?: string) => {
-    const latest = await invoke<SettingsResult>("load_settings");
-    if (!isSuccessStatus(latest.status)) throw new Error(latest.message || "无法读取当前连接配置，请稍后重试。");
-    const current = normalizeSettings(latest.settings);
-    const target = connectionTarget(current.relayProfiles, current.activeRelayId, mode, platform, savedProfileId, () => ({
-      ...createRelayProfile(current),
-      id: OFFICIAL_PROFILE_ID,
-      name: "ChatGPT / Codex 官方账号",
-      baseUrl: "",
-      upstreamBaseUrl: "",
-      configContents: "",
-      authContents: "",
-      useCommonConfig: false,
-    }));
-    const profiles = current.relayProfiles.some(profile => profile.id === target.id)
-      ? current.relayProfiles
-      : [...current.relayProfiles, target];
-    return actions.switchRelayProfile(syncLegacyRelayFields({
-      ...current,
-      relayProfilesEnabled: true,
-      relayProfiles: profiles,
-      activeRelayId: target.id,
-    }), current.activeRelayId);
-  };
   const gatewayManaged = activeProfile?.id === CODEX_GATEWAY_RELAY_ID;
   // Codex 的状态栏：经网关 / 直连哪家供应商，操作是网关管理或切换供应商。
   const codexStatus: DashboardStatus = gatewayManaged
@@ -6633,10 +6608,9 @@ function OverviewScreen({
   );
   return (
     <>
-      {activeTool === "codex" ? <>
-        <ConnectionSwitcher mode={connectionMode(activeProfile)} activeName={activeProfile?.name} disabled={actions.relaySwitching} onSwitch={switchAccountConnection}/>
+      {activeTool === "codex" ? (
         <FastAiApiAccount officialMode={connectionMode(activeProfile) === "official"}/>
-      </> : null}
+      ) : null}
       {activeTool === "codex" ? (
         // 三个 Agent 的概览同一套仪表板；Codex 另在下面放健康检查。
         <AgentDashboard

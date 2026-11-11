@@ -166,7 +166,6 @@ pub async fn fastaiapi_configure(
     }
     std::fs::write(account_selection_path(platform), profile_id)
         .map_err(|_| "模型已应用，但平台选择未保存，请重新应用以保存")?;
-    install_media_skill()?;
     Ok(json!({"model":model,"message":format!("已配置 {}，可启动 Codex", platform.name())}))
 }
 
@@ -175,7 +174,6 @@ pub async fn fastaiapi_media_configure(
     key_id: i64,
     platform: Option<String>,
 ) -> Result<Value, String> {
-    install_media_skill()?;
     panels::configure_media(panels::resolve(platform.as_deref())?, key_id).await
 }
 
@@ -224,54 +222,6 @@ fn account_profile(
         config_contents: config.to_string(),
         ..existing
     })
-}
-
-pub fn install_media_skill() -> Result<(), String> {
-    let root =
-        codex_plus_core::relay_config::default_codex_home_dir().join("skills/fastaiapi-media");
-    install_media_skill_at(&root)
-}
-
-fn install_media_skill_at(root: &std::path::Path) -> Result<(), String> {
-    use std::hash::Hasher;
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    for (name, bytes) in MEDIA_FILES {
-        hash.write(name.as_bytes());
-        hash.write(bytes);
-    }
-    let version = format!("{:016x}", hash.finish());
-    let marker = root.join(".codex-plus-bundle");
-    if std::fs::read_to_string(&marker).ok().as_deref() == Some(&version)
-        && MEDIA_FILES
-            .iter()
-            .all(|(name, _)| root.join(name).is_file())
-    {
-        return Ok(());
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "系统时间无效")?
-        .as_nanos();
-    let backup = root.with_file_name(format!("fastaiapi-media-backup-{stamp}"));
-    for (name, bytes) in MEDIA_FILES {
-        let path = root.join(name);
-        if path.is_file() {
-            let existing = std::fs::read(&path).map_err(|_| "无法读取旧媒体技能")?;
-            if existing == *bytes {
-                continue;
-            }
-            let previous = backup.join(name);
-            std::fs::create_dir_all(previous.parent().unwrap())
-                .map_err(|_| "无法备份旧媒体技能")?;
-            std::fs::write(previous, existing).map_err(|_| "无法备份旧媒体技能")?;
-        }
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法创建媒体技能目录")?;
-        let pending = path.with_extension("bundle-pending");
-        std::fs::write(&pending, bytes).map_err(|_| "无法写入媒体技能")?;
-        std::fs::rename(pending, path).map_err(|_| "无法更新媒体技能")?;
-    }
-    std::fs::write(marker, version).map_err(|_| "无法记录媒体技能版本")?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -384,83 +334,4 @@ mod tests {
             "https://tumeiapi.com/v1"
         );
     }
-    #[test]
-    fn bundled_skill_installs_complete_and_preserves_user_changes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("fastaiapi-media");
-        install_media_skill_at(&root).unwrap();
-        assert!(root.join("scripts/media_api.py").is_file());
-        assert!(root.join("SKILL.md").is_file());
-        std::fs::write(root.join("SKILL.md"), "user edit").unwrap();
-        install_media_skill_at(&root).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("SKILL.md")).unwrap(),
-            "user edit"
-        );
-    }
 }
-
-const MEDIA_FILES: &[(&str, &[u8])] = &[
-    (
-        "SKILL.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/SKILL.md"),
-    ),
-    (
-        "references/grok.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/grok.md"),
-    ),
-    (
-        "references/h3-base.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/h3-base.md"),
-    ),
-    (
-        "references/h3-reference.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/h3-reference.md"),
-    ),
-    (
-        "references/h3.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/h3.md"),
-    ),
-    (
-        "references/images.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/images.md"),
-    ),
-    (
-        "references/setup.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/setup.md"),
-    ),
-    (
-        "references/sources.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/sources.md"),
-    ),
-    (
-        "references/workflow.md",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/references/workflow.md"),
-    ),
-    (
-        "scripts/common.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/common.py"),
-    ),
-    (
-        "scripts/grok.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/grok.py"),
-    ),
-    (
-        "scripts/h3.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/h3.py"),
-    ),
-    (
-        "scripts/media_api.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/media_api.py"),
-    ),
-    (
-        "scripts/test_media_api.py",
-        include_bytes!("../../../../integrations/fastaiapi/media-api/scripts/test_media_api.py"),
-    ),
-    (
-        "scripts/test_managed_media.py",
-        include_bytes!(
-            "../../../../integrations/fastaiapi/media-api/scripts/test_managed_media.py"
-        ),
-    ),
-];

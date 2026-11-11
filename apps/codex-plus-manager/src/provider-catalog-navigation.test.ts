@@ -33,3 +33,13 @@ test("目录页搜索词由外层保存，返回目录页时不丢", () => {
   assert.match(usage, /query=\{providerCatalogQuery\}/);
   assert.match(usage, /onQueryChange=\{setProviderCatalogQuery\}/);
 });
+
+test("Codex 概览只保留供应商下拉入口", () => {
+  const overview = app.match(/^function OverviewScreen\([\s\S]*?(?=^function )/m)?.[0];
+  assert.ok(overview);
+  const selector = overview.slice(0, overview.indexOf("const codexStats"));
+  assert.match(selector, /ariaLabel=\{t\("切换供应商"\)\}/);
+  assert.match(selector, /onChange=\{\(next\) => switchFromOverview\(next\)\}/);
+  assert.doesNotMatch(overview, /<ConnectionSwitcher\b/);
+  assert.match(app, /<NativeAuthControl\s*\/>/);
+});

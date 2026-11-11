@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGroupCache } from './fastaiapi/groupCache.ts';
-import { initialGroup, keyGroup, supportsModel } from './fastaiapi/modelGroups.ts';
+import { initialGroup, keyGroup, selectableGroupModels, supportsModel } from './fastaiapi/modelGroups.ts';
 test('group cache coalesces requests and retains results for the login session', async () => {
   let calls = 0;
   const cached = createGroupCache(async () => { calls++; return [{id:'default',name:'default'}]; });
@@ -33,4 +33,12 @@ test('a mixed group shows only the model type being selected', () => {
   assert.deepEqual(ids.filter(id => supportsModel('newapi', 'image', id)), ['gpt-image-2']);
   assert.deepEqual(ids.filter(id => supportsModel('newapi', 'video', id)), ['minimax-h3', 'veo-3']);
   assert.deepEqual(ids.filter(id => supportsModel('subapi', 'video', id)), ['minimax-h3']);
+});
+
+test('groups with no selectable models are empty for the chosen type', () => {
+  const videoOnly = ['minimax-h3-x', 'veo-3'];
+  assert.deepEqual(selectableGroupModels('newapi', 'image', videoOnly), []);
+  assert.deepEqual(selectableGroupModels('newapi', 'video', videoOnly), videoOnly);
+  assert.deepEqual(selectableGroupModels('subapi', 'video', videoOnly), []);
+  assert.deepEqual(selectableGroupModels('newapi', 'image', ['gpt-image-2.5'], ['gpt-image-2.5', 'gpt-5.6-sol']), ['gpt-image-2.5']);
 });

@@ -5,6 +5,8 @@ use codex_plus_core::{
 };
 use serde_json::{Value, json};
 
+static CONNECT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// 仅注册媒体工具；模型路由和 Codex 的登录配置由原有切换逻辑维护。
 #[tauri::command]
 pub async fn fastaiapi_media_tool(
@@ -22,7 +24,8 @@ pub async fn fastaiapi_media_tool(
             let status = registration()?;
             Ok(json!({"registered":status.registered && !status.disabled,"message":status.message}))
         }
-        "connect" => {
+        "connect" | "ensure" => {
+            let _guard = CONNECT_LOCK.lock().await;
             let status = registration()?;
             if status.status == "conflict" {
                 return Err(status.message);
@@ -31,6 +34,17 @@ pub async fn fastaiapi_media_tool(
             panels::ensure_current(platform).await?;
             let origin = panels::origin(platform).await;
             media::validate_media_origin(platform, origin).map_err(|error| error.to_string())?;
+            if action == "ensure" {
+                if status.disabled {
+                    return Err("媒体工具已停用，可在 MCP 与 Skills 中重新启用。".into());
+                }
+                if status.registered
+                    && media::native_enabled()
+                    && media::has_saved_route(platform, origin)
+                {
+                    return Ok(json!({"registered":true}));
+                }
+            }
             media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
             if let Some(key) = api_key {
                 panels::account(platform, "media_manual", "", json!({"api_key":key})).await?;

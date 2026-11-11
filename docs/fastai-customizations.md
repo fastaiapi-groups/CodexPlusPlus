@@ -12,7 +12,7 @@
 | F02 | 自动接入供应商、选择 Key/模型、文字/图片/视频分组与模型说明、人民币价格含阶梯定价 | 前端 `KeySelector.tsx`、`ModelPicker.tsx`、`ModelDialog.tsx`、`GroupDescription.tsx`、`onboarding.ts`；core `fastaiapi.rs`、`fastaiapi_subapi.rs`、`fastaiapi_pricing.rs` | 使用正确平台与 Key 分组；不覆盖未知现有配置；保留供应商切换保护、回滚及备份；不虚构价格 |
 | F03 | 充值、订单恢复、支付标识、兑换码、订阅与客服入口 | 前端 `NewApiRecharge.tsx`、`SubApiRecharge.tsx`、`SubApiSubscriptions.tsx`、`paymentState.ts`、`ContactQr.tsx` | 金额输入可见、支付状态/恢复正确、平台接口隔离；离线回归不真实下单 |
 | F04 | 平台反馈、二维码、私有管理入口及服务端隔离 | 前端 `Feedback.tsx`；`services/` 及已有反向代理配置 | 保留客服和反馈；私有管理接口不意外公开；不随桌面同步自动部署服务器 |
-| F05 | 媒体技能安装、图片/视频默认分组与模型按平台、路线和类型保存、显式型号覆盖、托管 H3/Grok/公共协议 | `integrations/fastaiapi/media-api/`；前端 `MediaModels.tsx`、`MediaTestDialog.tsx`；core `fastaiapi_media_env.rs` | 重启/切路线保存正确默认；原任务沿用回执；不重复提交；跨域下载不携带 Key；安装技能与仓库产物一致 |
+| F05 | Rust 媒体工具自动接入、图片/视频默认分组与模型按平台、路线和类型保存、显式型号覆盖、托管 H3/Grok/公共协议 | `integrations/fastaiapi/media-api/`；前端 `MediaModels.tsx`、`MediaTestDialog.tsx`；core `fastaiapi_media_env.rs` | 重启/切路线保存正确默认；原任务沿用回执；不重复提交；跨域下载不携带 Key；独立旧技能与已有回执继续可用 |
 | F06 | 系统环境变量/凭据检查和修复、失败回滚、配置引导、手册与内嵌 Codex 指南 | core `fastaiapi_media_env.rs`、`fastaiapi_secret_store.rs`；前端 `MediaSetupGuide.tsx`、`Manual.tsx`、`ApiGuide.tsx` | 超时/拒绝可恢复且不泄露凭据；不把旧平台 Key 当有效连接；真实平台支持边界如实展示 |
 | F07 | 自有安装包、签名更新源、公钥、下载与升级后的账号/状态延续 | `assets/update/fastaiapi-release-public-key.txt`；`.github/workflows/fastaiapi-client-build.yml`；`scripts/package-fastaiapi-macos.mjs`；`scripts/installer/windows/`；core 更新模块 | 不切回官方更新源/公钥；不误发官方 release；版本一致；升级状态兼容；签名私钥不进入仓库 |
 | F08 | 模型级窗口/压缩阈值、catalog 指针与旧 per-profile 单值兼容 | core `settings.rs`、`relay_config.rs`、`model_catalog.rs`；前端模型列表；`docs/model-window-overrides.md` | `model_list` 窗口后缀、手工窗口、导入及外部 catalog 兼容；旧配置无需迁移即可继续使用 |
@@ -41,12 +41,12 @@
 
 - New API/SubAPI 的 remembered-login 读取须在阻塞线程内运行并设置 6 秒超时；超时释放平台请求调用方，不能因钥匙串授权无响应让整个登录恢复无限等待。不得清空凭据或绕过系统授权。
 
-- 概览 `fastaiapi/ConnectionSwitcher.tsx` 提供 FastAiApi / ChatGPT-Codex 官方账号切换，选择逻辑位于 `connection-mode.ts`。通过既有 `switchRelayProfile` 事务保存当前配置、恢复目标配置及回滚失败。官方连接使用独立 `fastaiapi-official` 存档，FastAiApi 按当前平台的 `configuration.profile_id` 恢复原 Key/模型，不重建 Key。官方模式下平台模型应用与自动配置按钮禁用，媒体服务仍使用平台账号。原生登录账号选择复用 `NativeAuthControl`，切换后由用户重启 Codex 生效。
+- 概览统一通过「切换供应商」选择 TuMeiAPI、FastAiAPI 或官方登录配置。沿用 `switchRelayProfile` 事务保存和恢复配置，管理供应商中的 `NativeAuthControl` 负责原生登录账号选择。官方模式下概览禁用平台文字模型应用和自动配置，媒体服务仍使用平台账号。
 
 
-- 内置媒体工具实现集中在 `crates/codex-plus-core/src/fastaiapi_media/`，管理器通过独立 `fastaiapi_media_commands.rs` 注册，启动时通过 `--fastaiapi-media-mcp` 分发。继续复用现有凭据库及托管 MCP 上下文，注册只写命令、状态目录与超时，不写媒体 Key。新连接默认使用系统凭据，旧连接在用户显式接入后停止导出环境变量；既有用户变量与恢复项留待跨平台迁移验收后处理。
+- 内置媒体工具实现集中在 `crates/codex-plus-core/src/fastaiapi_media/`，管理器通过独立 `fastaiapi_media_commands.rs` 注册，启动时通过 `--fastaiapi-media-mcp` 分发。继续复用现有凭据库及托管 MCP 上下文，注册只写命令、状态目录与超时，不写媒体 Key。新连接默认使用系统凭据，旧连接在概览自动接入后停止导出环境变量；既有用户变量与恢复项留待跨平台迁移验收后处理。
 - Rust MCP 当前覆盖生图、编辑、视频提交、查询、下载和旧视频回执恢复。新任务使用当前已连接的 HTTPS 路线，已有视频继续使用回执绑定的平台、原路线和原 Key。进程中断或响应不明确时按同一 UUID 查询，禁止自动重发。旧独立 Python 技能与音频功能保留。
 
-- 三种默认模型共用概览分组弹窗。显式选择分组时复用已有有效 Key，缺少时自动创建。确认后验证分组 Key 的模型权限，再保存分组与模型。Rust 媒体工具按任务类型读取对应系统凭据，已提交的视频任务沿用原回执的凭据引用。
+- 三种默认模型共用概览分组弹窗，按平台目录只展示提供对应可选模型的分组。显式选择分组时复用已有有效 Key，缺少时自动创建。确认后验证分组 Key 的模型权限，再保存分组与模型。Rust 媒体工具按任务类型读取对应系统凭据，已提交的视频任务沿用原回执的凭据引用。
 
 - 自有 macOS 分发包要求 Developer ID 签名及 Apple 公证。Windows 签名构建验证主程序和安装器的 Authenticode 与时间戳。签名入口和拦截排查见 [客户端签名](client-code-signing.md)。

@@ -31,3 +31,15 @@ test("SubAPI numeric recommended group is used when creating dedicated key",asyn
   });
   assert.equal(created,"2");
 });
+
+test("the media fixture connects automatically after account login", async () => {
+  const {invoke}=createAccountFixture();
+  const media=(action:string)=>invoke<{registered:boolean}>("fastaiapi_media_tool",{action,platform:"newapi"});
+  assert.equal((await media("status")).registered,false);
+  await invoke("fastaiapi_account",{action:"login",platform:"newapi",body:{email:"test@example.test"}});
+  assert.equal((await media("ensure")).registered,true);
+  assert.equal((await media("status")).registered,true);
+  const catalog=await invoke<{catalogs:Record<string,{model_ids:string[]}>}>("fastaiapi_account",{action:"group_model_catalogs",platform:"newapi"});
+  assert.ok(catalog.catalogs.default.model_ids.includes("gpt-image-2"));
+  assert.deepEqual(catalog.catalogs["text-only"].model_ids,["gpt-newapi-test"]);
+});
