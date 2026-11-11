@@ -29,6 +29,8 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
   const dialog = useRef<HTMLDialogElement>(null);
   const [query, setQuery] = useState(""), [choice, setChoice] = useState<{group: string; model: string} | null>(null);
   const [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const [preparing, setPreparing] = useState(false);
+  const [keyError, setKeyError] = useState("");
   const [account, setAccount] = useState<AccountCatalog | null>(null), [groupError, setGroupError] = useState("");
   const [browsedGroup, setBrowsedGroup] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<GroupCatalog | null>(null), [revision, setRevision] = useState(0);
@@ -102,6 +104,10 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
   const selected = choice?.group === activeGroup ? choice?.model : isCurrent && !choice ? value : "";
   const loading = !account || (activeGroup != null && activeGroup !== legacyGroup && !groupCatalog);
   const label = {text: "文字", image: "图片", video: "视频"}[kind];
+  const keyName = kind === "text" ? "Codex++ FastAiApi" : "Codex++ FastAiApi Media";
+  const ensureKey = (group: string, dedicated = false) => api<ModelGroupKey>("ensure_group_key", {
+    group_id: group, name: keyName, dedicated,
+  });
   const apply = async () => {
     if (activeGroup === null || !selected || !list.includes(selected)) return;
     setSaving(true);
@@ -113,7 +119,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
       } else {
         const fresh = await api<{items: ModelGroupKey[]}>("keys");
         const candidates = fresh.items.filter(key => key.status === "active" && keyGroup(key, platform) === activeGroup);
-        const name = kind === "text" ? "Codex++ FastAiApi" : "Codex++ FastAiApi Media";
+        if (!candidates.length) candidates.push(await ensureKey(activeGroup));
         const preferred = candidates.find(key => key.id === keyId);
         const ordered = preferred ? [preferred, ...candidates.filter(key => key !== preferred)] : candidates;
         let key: ModelGroupKey | undefined;
@@ -124,11 +130,10 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
             break;
           }
         }
-        if (!key && candidates.some(candidate => candidate.name === name)) {
+        if (!key && candidates.some(candidate => candidate.name === keyName)) {
           throw new Error("此分组的专用 Key 未开放所选模型，请在平台检查模型权限。");
         }
-        // 确认后才创建；重试先查现有 Key。
-        key ??= await api<ModelGroupKey>("create_key", {group_id: activeGroup, name});
+        key ??= await ensureKey(activeGroup, true);
         await onApply({model: selected, groupId: activeGroup, keyId: key.id});
       }
       onClose();
@@ -139,15 +144,32 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
       setLocked(false);
     }
   };
-  const browse = (group: string) => {
+  const browse = async (group: string) => {
+    if (busy || saving || preparing) return;
     setBrowsedGroup(group);
     setChoice(null);
     setQuery("");
     setError("");
+    setKeyError("");
+    if (group === legacyGroup || account?.keys.some(key => key.status === "active" && keyGroup(key, platform) === group)) return;
+    setPreparing(true);
+    setLocked(true);
+    try {
+      const key = await ensureKey(group);
+      setAccount(current => current && {
+        ...current, keys: [...current.keys.filter(existing => existing.id !== key.id), key],
+      });
+    } catch (cause) {
+      setKeyError(String(cause));
+    } finally {
+      setPreparing(false);
+      setLocked(false);
+    }
   };
+  const working = saving || preparing;
   const groupButton = (id: string, name: string, description?: string | null, rate?: number) =>
-    <button type="button" key={id} className="fast-model-group" aria-pressed={activeGroup === id} disabled={saving}
-      onClick={() => browse(id)} title={description || name}>
+    <button type="button" key={id} className="fast-model-group" aria-pressed={activeGroup === id} disabled={busy || working}
+      onClick={() => void browse(id)} title={description || name}>
       <span><strong>{name}</strong>
         {(currentGroup?.id ?? (showLegacy ? legacyGroup : null)) === id
           ? <small className="fast-model-group-default">当前默认</small>
@@ -157,39 +179,53 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
     </button>;
   return createPortal(
     <dialog ref={dialog} className="fast-payment-dialog fast-key-dialog fast-model-dialog" aria-labelledby="fast-model-title"
-      onCancel={event => {event.preventDefault(); if (!saving) onClose();}}
-      onClick={event => {if (event.target === event.currentTarget && !saving) onClose();}}>
+      onCancel={event => {event.preventDefault(); if (!working) onClose();}}
+      onClick={event => {if (event.target === event.currentTarget && !working) onClose();}}>
       <div className="fast-dialog-content">
         <header className="fast-dialog-head">
           <div><h2 id="fast-model-title">选择默认{label}模型</h2>
             <p className="fast-model-current">当前默认 · {currentGroup?.name || (value ? "现有连接" : "未设置")}<strong>{value || "未设置"}</strong></p>
           </div>
-          <button type="button" className="fast-dialog-close" aria-label="关闭模型选择" disabled={saving} onClick={onClose}><X size={20}/></button>
+          <button type="button" className="fast-dialog-close" aria-label="关闭模型选择" disabled={busy || working} onClick={onClose}><X size={20}/></button>
         </header>
         <div className="fast-model-columns">
           <aside className="fast-model-groups" aria-label="模型分组">
             <h3>模型分组</h3>
+            <label className="fast-model-compact-group">
+              <span>模型分组</span>
+              <select value={activeGroup ?? ""} disabled={busy || working || !groups.length}
+                onChange={event => void browse(event.target.value)}>
+                {!showLegacy && activeGroup == null && <option value="">暂无可用分组</option>}
+                {showLegacy && <option value={legacyGroup}>现有连接{!currentGroup ? "（当前默认）" : ""}</option>}
+                {orderedGroups.map(group => <option key={group.id} value={group.id}>
+                  {group.name}{group.id === defaultGroup ? "（当前默认）" : ""}
+                </option>)}
+              </select>
+            </label>
             <div className="fast-model-group-scroll">
               {showLegacy && groupButton(legacyGroup, "现有连接")}
               {orderedGroups.map(group => groupButton(group.id, group.name, group.description, group.rate_multiplier))}
-              {groupError && <p role="status">{groupError}</p>}
+
               {!groups.length && !showLegacy && !groupError && <p>{account ? "暂无可用分组" : "正在加载分组…"}</p>}
             </div>
+            {groupError && <p className="fast-model-hint" role="status">{groupError}</p>}
           </aside>
           <section className="fast-model-results" aria-label={`${label}模型`}>
             <div className="fast-group-caption">
               <span>{groups.find(group => group.id === activeGroup)?.name || (showLegacy ? "现有连接" : label + "模型")} · {list.length} 个
                 {kind === "text" && pricing ? ` · ${pricing.currency === "CNY" ? "人民币" : "美元"} / 百万 tokens` : ""}</span>
-              <button type="button" disabled={busy || saving || !account} onClick={() => setRevision(n => n + 1)}><RefreshCw size={13}/>刷新列表</button>
+              {activeGroup && !activeKeys.length && !keyError && <button type="button" disabled={busy || working}
+                onClick={() => void browse(activeGroup)}>准备 Key</button>}
+              <button type="button" disabled={busy || working || !account} onClick={() => setRevision(n => n + 1)}><RefreshCw size={13}/>刷新列表</button>
             </div>
             <label className="fast-group-search"><Search size={16}/><input aria-label="搜索模型" placeholder="搜索模型名称…" value={query} onChange={event => setQuery(event.target.value)}/></label>
-            {groupCatalog?.warning && <p className="fast-model-hint" role="status">{groupCatalog.warning}</p>}
+            {groupCatalog?.warning && <p className="fast-model-hint fast-model-warning" role="status">{groupCatalog.warning}</p>}
             <div className="fast-group-list" role="radiogroup" aria-label="可用模型">
               {filtered.map(model => {
                 const price = pricing?.models.find(row => row.model === model);
                 const note = model.endsWith("-sol") ? "推理强" : model.endsWith("-luna") ? "性价比高" : "";
                 return <label key={model} className={selected === model ? "selected" : ""}>
-                  <input type="radio" name="default-model" checked={selected === model} disabled={busy || saving}
+                  <input type="radio" name="default-model" checked={selected === model} disabled={busy || working}
                     onChange={() => activeGroup !== null && setChoice({group: activeGroup, model})}/>
                   <span className="fast-model-card-content">
                     <span className="fast-model-card-name">{model}</span>
@@ -210,13 +246,19 @@ export function ModelDialog({keyId, models, value, groupId, busy, applyHint, onA
             </div>
           </section>
         </div>
-        {error && <p className="fast-payment-error" role="alert">{error}</p>}
-        {applyHint && <p className="fast-model-hint">{applyHint}</p>}
-        <p className="fast-model-hint">{pricing?.rate_multiplier != null && <>价格已计入分组倍率 {pricing.rate_multiplier}×。 </>}
-          {kind === "text" ? "切换后重启 Codex 生效。" : "默认分组与模型用于后续媒体任务。"}
-        </p>
-        <button type="button" className="fast-pay-primary" disabled={busy || saving || !selected || !list.includes(selected)}
-          onClick={() => void apply()}>{saving ? "正在应用…" : "设为默认分组和模型"}</button>
+        <footer className="fast-model-footer">
+          {(error || keyError) && <div className="fast-payment-error" role="alert">
+            {error || keyError}
+            {keyError && activeGroup !== null && <button type="button" disabled={working}
+              onClick={() => void browse(activeGroup)}>重试准备 Key</button>}
+          </div>}
+          {applyHint && <p className="fast-model-hint">{applyHint}</p>}
+          <p className="fast-model-hint">{pricing?.rate_multiplier != null && <>价格已计入分组倍率 {pricing.rate_multiplier}×。 </>}
+            {kind === "text" ? "切换后重启 Codex 生效。" : "默认分组与模型用于后续媒体任务。"}
+          </p>
+          <button type="button" className="fast-pay-primary" disabled={busy || working || Boolean(keyError) || !selected || !list.includes(selected)}
+            onClick={() => void apply()}>{preparing ? "正在准备分组 Key…" : saving ? "正在应用…" : "设为默认分组和模型"}</button>
+        </footer>
       </div>
     </dialog>, document.body
   );

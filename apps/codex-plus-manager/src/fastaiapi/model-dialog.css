@@ -1,50 +1,81 @@
 .fast-payment-dialog.fast-model-dialog {
-  width: 840px;
+  width: 860px;
+  height: min(700px, calc(100dvh - 32px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 32px);
+  background: #17191d;
+  border-color: #30343a;
+  color: #edf0f3;
+  color-scheme: dark;
+}
+.fast-model-dialog .fast-dialog-content {
+  height: 100%;
+  max-height: none;
+  padding: clamp(14px, 3vw, 28px);
+  gap: clamp(10px, 2vw, 18px);
+}
+.fast-model-dialog .fast-dialog-head {
+  align-items: flex-start;
+}
+.fast-model-dialog .fast-dialog-head > div {
+  min-width: 0;
+}
+.fast-model-dialog .fast-dialog-head h2 {
+  margin-top: 0;
+  font-size: clamp(18px, 3vw, 24px);
+}
+.fast-model-dialog .fast-dialog-close {
+  flex: none;
 }
 .fast-model-dialog .fast-model-current {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 .fast-model-columns {
   display: grid;
-  grid-template-columns: minmax(105px, 28%) minmax(0, 1fr);
-  gap: 16px;
-  height: min(440px, 52vh);
-  min-height: 160px;
+  grid-template-columns: minmax(134px, 27%) minmax(0, 1fr);
+  gap: clamp(10px, 2vw, 18px);
+  flex: 1;
+  min-height: 0;
 }
 .fast-model-groups, .fast-model-results {
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  gap: 10px;
+  gap: 8px;
 }
 .fast-model-groups {
-  padding-right: 12px;
-  border-right: 1px solid #e2e7ee;
+  padding-right: 10px;
+  border-right: 1px solid #343942;
 }
 .fast-model-groups h3 {
   margin: 0;
   font-size: 12px;
-  color: #687889;
 }
 .fast-model-group-scroll {
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   gap: 5px;
   padding: 3px;
 }
-.fast-model-group-scroll p, .fast-model-results .fast-group-list > p {
-  color: #687889;
-  font-size: 12px;
-  overflow-wrap: anywhere;
+.fast-model-compact-group {
+  display: none;
 }
 .fast-model-dialog .fast-model-group {
+  flex: none;
+  min-width: 0;
   justify-content: space-between;
   text-align: left;
   background: transparent;
   border-color: transparent;
-  padding: 10px 8px;
+  color: #d2d9e0;
+  padding: 9px 8px;
+}
+.fast-model-group > span {
+  min-width: 0;
 }
 .fast-model-group strong, .fast-model-group small {
   display: block;
@@ -52,77 +83,72 @@
 }
 .fast-model-group small {
   margin-top: 3px;
-  color: #687889;
 }
 .fast-model-group svg {
   flex: none;
-}
-.fast-model-dialog .fast-model-group[aria-pressed="true"] {
-  border-color: #b9e3d9;
-  background: #edf9f5;
-  color: #134a40;
-}
-.fast-model-group small.fast-model-group-default {
-  color: #147e6b;
-}
-.fast-model-dialog .fast-model-results .fast-group-list {
-  grid-template-columns: minmax(0, 1fr);
-  min-height: 0;
-}
-.fast-model-dialog .fast-model-results .fast-group-list > label {
-  min-height: 72px;
-  padding: 12px 36px 12px 14px;
-}
-.fast-model-dialog .fast-model-results .fast-model-selected-check {
-  top: 13px;
-}
-@media (max-width: 560px) {
-  .fast-model-columns { gap: 8px; }
-  .fast-model-groups { padding-right: 6px; }
-}
-
-.fast-payment-dialog.fast-model-dialog {
-  background: #17191d;
-  border-color: #30343a;
-  color: #edf0f3;
-  color-scheme: dark;
-}
-.fast-model-dialog .fast-model-current,
-.fast-model-dialog .fast-model-hint,
-.fast-model-groups h3,
-.fast-model-group small,
-.fast-model-group-scroll p,
-.fast-model-results .fast-group-list > p {
-  color: #a1aab5;
-}
-.fast-model-dialog .fast-model-current strong,
-.fast-model-dialog .fast-model-card-name,
-.fast-model-dialog .fast-group-search input {
-  color: #edf0f3;
-}
-.fast-model-dialog .fast-model-groups,
-.fast-model-dialog .fast-group-search,
-.fast-model-dialog .fast-group-list > label {
-  border-color: #343942;
-}
-.fast-model-dialog .fast-group-list > label {
-  background: #1e2228;
-}
-.fast-model-dialog .fast-group-list > label.selected {
-  background: #172a26;
-  border-color: #3f7b6d;
 }
 .fast-model-dialog .fast-model-group[aria-pressed="true"] {
   background: #262b30;
   border-color: #383f47;
   color: #f1f4f7;
 }
-.fast-model-dialog .fast-model-group small.fast-model-group-default,
+.fast-model-dialog .fast-model-group-default,
 .fast-model-dialog .fast-group-list label svg {
   color: #72d7be;
 }
-.fast-model-dialog .fast-model-group:not([aria-pressed="true"]) {
-  color: #d2d9e0;
+.fast-model-dialog .fast-model-current,
+.fast-model-dialog .fast-model-hint,
+.fast-model-groups h3,
+.fast-model-group small:not(.fast-model-group-default),
+.fast-model-group-scroll p,
+.fast-model-results .fast-group-list > p {
+  color: #a1aab5;
+  overflow-wrap: anywhere;
+}
+.fast-model-dialog .fast-model-current strong,
+.fast-model-dialog .fast-model-card-name,
+.fast-model-dialog .fast-group-search input {
+  color: #edf0f3;
+}
+.fast-model-dialog .fast-group-caption {
+  gap: 6px 10px;
+}
+.fast-model-dialog .fast-group-caption > span {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fast-model-dialog .fast-group-caption button {
+  flex: none;
+}
+.fast-model-dialog .fast-group-search,
+.fast-model-dialog .fast-group-list > label {
+  border-color: #343942;
+}
+.fast-model-dialog .fast-model-warning {
+  max-height: 4em;
+  overflow: auto;
+}
+.fast-model-dialog .fast-model-results .fast-group-list {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.fast-model-dialog .fast-model-results .fast-group-list > label {
+  min-height: 62px;
+  padding: 12px 32px 12px 12px;
+  background: #1e2228;
+}
+.fast-model-dialog .fast-model-card-name {
+  padding-right: 0;
+}
+.fast-model-dialog .fast-model-results .fast-group-list > label.selected {
+  background: #172a26;
+  border-color: #3f7b6d;
+}
+.fast-model-dialog .fast-model-results .fast-model-selected-check {
+  top: 13px;
+  right: 10px;
 }
 .fast-model-dialog button:hover:not(:disabled),
 .fast-model-dialog .fast-group-caption button,
@@ -130,6 +156,22 @@
   background: #272c32;
   border-color: #3b424b;
   color: #dce3eb;
+}
+.fast-model-footer {
+  display: grid;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+}
+.fast-model-footer .fast-payment-error {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 90px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.fast-model-footer .fast-payment-error button {
+  margin-inline-start: 8px;
 }
 .fast-model-dialog .fast-pay-primary {
   background: #a0e4d4;
@@ -146,4 +188,44 @@
 }
 .fast-model-dialog .fast-model-price-row {
   border-color: #3c4749;
+}
+
+@media (max-width: 520px) {
+  .fast-model-columns {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+  }
+  .fast-model-groups {
+    padding: 0;
+    border: 0;
+  }
+  .fast-model-groups h3, .fast-model-group-scroll {
+    display: none;
+  }
+  .fast-model-dialog .fast-model-compact-group {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 0 0 0 10px;
+    border-color: #343942;
+    font-size: 12px;
+  }
+  .fast-model-compact-group select {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 6px;
+    border: 0;
+    border-radius: inherit;
+    background: #272c32;
+    color: #edf0f3;
+    font: inherit;
+    text-overflow: ellipsis;
+  }
+}
+@media (max-height: 460px) {
+  .fast-model-dialog .fast-dialog-content {
+    min-height: 420px;
+  }
 }

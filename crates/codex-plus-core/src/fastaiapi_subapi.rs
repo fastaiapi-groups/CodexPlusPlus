@@ -304,6 +304,10 @@ async fn models(origin: &str, key: &str) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 async fn create_key(s: &mut State, body: &Value) -> Result<Value, String> {
+    group_key(s, body, false).await
+}
+
+async fn group_key(s: &mut State, body: &Value, reuse: bool) -> Result<Value, String> {
     let id = body["group_id"]
         .as_str()
         .and_then(|id| id.parse::<i64>().ok())
@@ -316,12 +320,22 @@ async fn create_key(s: &mut State, body: &Value) -> Result<Value, String> {
     {
         return Err("当前账号无权使用该分组".into());
     }
+    let name = body["name"].as_str().unwrap_or("Codex++ FastAiApi");
+    if reuse
+        && let Some(key) = keys(s).await?.into_iter().find(|key| {
+            key["status"] == "active"
+                && key["group_id"] == id
+                && (body["dedicated"] != true || key["name"] == name)
+        })
+    {
+        return Ok(key);
+    }
     Ok(key_view(
         &request(
             s,
             "POST",
             "/api/v1/keys",
-            json!({"name":body["name"].as_str().unwrap_or("Codex++ FastAiApi"),"group_id":id}),
+            json!({"name":name,"group_id":id}),
         )
         .await?,
     ))
@@ -540,6 +554,7 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             &request(&mut s, "GET", "/api/v1/groups/available", Value::Null).await?
         ))),
         "create_key" => create_key(&mut s, &body).await,
+        "ensure_group_key" => group_key(&mut s, &body, true).await,
         "subscriptions" => request(&mut s, "GET", "/api/v1/subscriptions", Value::Null).await,
         "checkout_info" => {
             request(&mut s, "GET", "/api/v1/payment/checkout-info", Value::Null).await
@@ -835,6 +850,57 @@ mod tests {
         assert_eq!(value["id"], 7);
         assert!(value.get("key").is_none());
     }
+    #[tokio::test]
+    async fn group_key_is_created_once_and_reused_across_picker_types() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/groups/available"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"code":0,"data":[{"id":2,"name":"default"}]})),
+            )
+            .mount(&server)
+            .await;
+        let listed_key = json!({"id":7,"key":"fixture-secret","name":"Dedicated","status":"active","group_id":2});
+        let created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let for_list = created.clone();
+        let key_for_list = listed_key.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/v1/keys"))
+            .respond_with(move |_: &wiremock::Request| {
+                let items = if for_list.load(std::sync::atomic::Ordering::SeqCst) {
+                    vec![key_for_list.clone()]
+                } else {
+                    vec![
+                        json!({"id":1,"status":"inactive","group_id":2}),
+                        json!({"id":3,"status":"active","group_id":3}),
+                    ]
+                };
+                ResponseTemplate::new(200).set_body_json(json!({"code":0,"data":{"items":items}}))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/keys"))
+            .respond_with(move |_: &wiremock::Request| {
+                created.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"code":0,"data":listed_key}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut s = test_state(&server);
+        let image = group_key(&mut s, &json!({"group_id":"2","name":"Dedicated"}), true)
+            .await
+            .unwrap();
+        let text = group_key(&mut s, &json!({"group_id":"2","name":"Text"}), true)
+            .await
+            .unwrap();
+        assert_eq!(image["id"], 7);
+        assert_eq!(text, image);
+        assert!(text.get("key").is_none());
+    }
+
     #[tokio::test]
     async fn model_discovery_uses_model_key_without_account_jwt() {
         let server = MockServer::start().await;

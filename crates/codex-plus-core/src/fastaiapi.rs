@@ -273,6 +273,15 @@ fn key_view(raw: &Value) -> Value {
         "expired_time":raw["expired_time"],"unlimited_quota":raw["unlimited_quota"],"remain_quota":raw["remain_quota"]})
 }
 
+fn active_key_in_group(key: &Value, group: &str) -> bool {
+    key["status"] == "active"
+        && key["group"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("default")
+            == group
+}
+
 async fn keys(s: &mut State) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     for page in 1..=100 {
@@ -933,7 +942,7 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         "groups" => Ok(json!(group_rows(&data(
             request(&mut s, "GET", "/api/user/self/groups", Value::Null).await?
         )))),
-        "create_key" => {
+        "create_key" | "ensure_group_key" => {
             let group = body["group_id"].as_str().ok_or("请选择模型分组")?;
             let groups = data(request(&mut s, "GET", "/api/user/self/groups", Value::Null).await?);
             if groups.get(group).is_none() {
@@ -941,6 +950,14 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
             }
             let before = keys(&mut s).await?;
             let name = body["name"].as_str().unwrap_or("Codex++ FastAiApi");
+            if action == "ensure_group_key"
+                && let Some(key) = before.iter().find(|key| {
+                    active_key_in_group(key, group)
+                        && (body["dedicated"] != true || key["name"] == name)
+                })
+            {
+                return Ok(key.clone());
+            }
             request(
                 &mut s,
                 "POST",
@@ -953,7 +970,11 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 .await?
                 .into_iter()
                 .rev()
-                .find(|k| k["name"] == name && !before.iter().any(|b| b["id"] == k["id"]))
+                .find(|k| {
+                    k["name"] == name
+                        && active_key_in_group(k, group)
+                        && !before.iter().any(|b| b["id"] == k["id"])
+                })
                 .ok_or("Key 已创建，请刷新列表后选择".into())
         }
         "group_model_pricing" => {
@@ -1251,6 +1272,26 @@ pub fn qr_image(text: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reusable_key_must_be_active_and_match_the_requested_group() {
+        assert!(active_key_in_group(
+            &json!({"status":"active","group":""}),
+            "default"
+        ));
+        assert!(active_key_in_group(
+            &json!({"status":"active","group":"video"}),
+            "video"
+        ));
+        assert!(!active_key_in_group(
+            &json!({"status":"inactive","group":"video"}),
+            "video"
+        ));
+        assert!(!active_key_in_group(
+            &json!({"status":"active","group":"default"}),
+            "video"
+        ));
+    }
+
     #[test]
     fn group_model_discovery_survives_unavailable_pricing() {
         let ids = json!(["gpt-image-2", "gpt-5.6-sol"]);
