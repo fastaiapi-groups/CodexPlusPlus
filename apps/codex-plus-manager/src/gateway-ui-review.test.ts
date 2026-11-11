@@ -251,7 +251,7 @@ test("用量与请求日志并成一页：两个页签各是一条路由，统�
 
 test("FastAiApi 启动落在账号概览，更新入口保持进入设置", () => {
   const app = read("App.tsx");
-  const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialSetupOpen"));
+  const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialSettingsFocus"));
   assert.match(body, /return "overview";\r?\n\}/);
   assert.doesNotMatch(body, /return "hub"/);
   assert.match(body, /params.get\("showUpdate"\) === "1"[\s\S]*return "settings"/);

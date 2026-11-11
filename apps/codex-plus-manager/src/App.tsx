@@ -164,8 +164,6 @@ import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
-import { OnboardingSetup } from "./OnboardingSetup";
-import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldShowSetup } from "./onboarding-setup-model";
 import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
@@ -1792,12 +1790,10 @@ export function App() {
   /** 被拓展顶替、但用户点了「查看内置页面」的路由。 */
   const [builtinPagesShown, setBuiltinPagesShown] = useState<Set<string>>(() => new Set());
   const [tourOpen, setTourOpen] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
-  // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
+  // 使用模式（只管理 Codex / 全部功能）：没选过时弹出问卷。
   const agentFocus = useAgentFocus();
   // 问卷等设置文件读回来再决定弹不弹（#2936）：本地存储为空不等于没选过，设置文件里可能记着。
   const [agentFocusOpen, setAgentFocusOpen] = useState(false);
-  // 判定期间入门清单也先不出，免得它先闪一下再被问卷盖住。
   const [agentFocusChecking, setAgentFocusChecking] = useState(needAgentFocusPrompt);
   useEffect(() => {
     if (!agentFocusChecking) return;
@@ -1820,7 +1816,6 @@ export function App() {
     if (!agentFocus) {
       // 第一次问时点「稍后设置」：按全部功能记下（和没选时的显示一样），之后启动不再追问，设置里随时可改（#2936）。
       saveAgentFocus("all");
-      setSetupOpen(false);
     }
   }, [agentFocus]);
   // 本地存储丢了使用模式、设置文件里还记着时补回来，问卷不再每次启动都弹（#2902）。
@@ -1835,10 +1830,6 @@ export function App() {
       backupAgentFocus(agentFocus);
     }
   }, [settingsLoaded, savedAgentFocus, agentFocus]);
-  const closeSetup = (completed: boolean) => {
-    try { window.localStorage.setItem(SETUP_STORAGE_KEY, serializeSetupState(completed ? "completed" : "dismissed")); } catch { /* 本次窗口内仍可关闭。 */ }
-    setSetupOpen(false);
-  };
   const closeTour = useCallback(() => {
     // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
     try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
@@ -3580,10 +3571,8 @@ export function App() {
       return !saved.relayProfilesEnabled;
     },
     commit: (next) => {
-      const firstChoice = agentFocus === null;
       saveAgentFocus(next);
       setAgentFocusOpen(false);
-      if (firstChoice) setSetupOpen(true);
     },
   });
 
@@ -5169,39 +5158,9 @@ export function App() {
             ? tf("{0} 接入", [agentName(soloAgent)])
             : routeTitle(navAliasRoute[route] ?? route);
 
-  // 入门清单放在侧栏底部（参照 Cursor 的 Getting Started 卡片）：平时收成一张进度卡，点开在上方展开清单。
-  const setupCard = setupOpen && !agentFocusOpen && !agentFocusChecking ? (
-          <OnboardingSetup
-            focus={agentFocus}
-            codexInstalled={overview ? overview.codex_app.status === "found" : null}
-            codexRunning={codexAppRunning}
-            launchPending={launchPending}
-            codexEnhancementsEnabled={hasCodexEnhancements(settings)}
-            notify={actions.showMessage}
-            onChangeMode={() => setAgentFocusOpen(true)}
-            onDismiss={closeSetup}
-            onTour={() => setTourOpen(true)}
-            onNavigate={(target, agent) => { if (agent) void switchTool(agent, target); else void navigate(target); }}
-            onCheckCodex={async () => {
-              const currentApp = await run(() => call<OverviewResult>("load_overview"));
-              const currentSettings = await run(() => call<SettingsResult>("load_settings"));
-              if (!currentApp || !currentSettings || !isSuccessStatus(currentApp.status) || !isSuccessStatus(currentSettings.status)) return false;
-              setOverview(currentApp);
-              const fresh = normalizeSettings(currentSettings.settings);
-              const previous = normalizeSettings(settingsRef.current?.settings ?? currentSettings.settings);
-              setSettings(currentSettings);
-              setSettingsForm((current) => rebaseSettingsEdits(normalizeSettings(current), previous, fresh));
-              return currentApp.codex_app.status === "found" && hasCodexEnhancements(currentSettings);
-            }}
-            onLaunch={() => codexAppRunning ? restart() : launch()}
-            defaultExpanded={false}
-          />
-        ) : null;
-
   return (
     <div className={`shell ${theme}`}>
       <AppSidebar
-        setupCard={setupCard}
         tools={shownTools}
         soloAgent={soloAgent}
         focus={agentFocus}
@@ -5566,7 +5525,7 @@ export function App() {
               <div className="sectioned-body">
                 <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
                 <GlobalSettingsScreen
-                  onOpenTour={() => setSetupOpen(true)}
+                  onOpenTour={() => { void navigate(lastMainRoute.current); setTourOpen(true); }}
                   agentFocus={agentFocus}
                   onOpenAgentFocus={() => setAgentFocusOpen(true)}
                   dirty={settingsDirty}
@@ -11975,7 +11934,7 @@ function GlobalSettingsScreen({
             <CxRow detail={agentFocus === "codex" ? t("只管理 Codex") : agentFocus === "enhance" ? t("只用增强功能") : t("全部功能")} title={t("使用模式")} tooltip={agentFocusDescription(agentFocus)}>
               <button className="cx-secondary" onClick={onOpenAgentFocus} type="button">{t("修改")}</button>
             </CxRow>
-            <CxRow detail={t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")} title={t("新手引导")}>
+            <CxRow detail={t("查看各个功能入口的导览。")} title={t("新手引导")}>
               <button className="cx-secondary" onClick={onOpenTour} type="button">{t("重新打开引导")}</button>
             </CxRow>
           </CxCard>
@@ -17482,10 +17441,7 @@ function AppSidebar({
   settingsSections = ["app-settings-general"],
   onOpenSettings,
   onExitSettings,
-  setupCard = null,
 }: {
-  /** 入门清单（没完成、没关掉时）：放在侧栏底部，替代网关状态卡。 */
-  setupCard?: ReactNode;
   /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
   extensionPages?: ManagerExtensionPage[];
   activeExtensionKey?: string | null;
@@ -17829,8 +17785,7 @@ function AppSidebar({
         ) : null}
       </nav>
 
-      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则是网关状态；有新版本时换成更新提示。 */}
-      {setupCard}
+      {/* 底部状态卡显示网关状态，有新版本时优先显示更新提示。 */}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
           <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : pendingUpdateProgress !== null ? tf("正在下载新版本 {0}", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>
@@ -17838,7 +17793,7 @@ function AppSidebar({
             {pendingUpdateReady ? t("点击安装") : pendingUpdateProgress !== null ? (pendingUpdateProgress >= 0 ? `${Math.round(pendingUpdateProgress)}%` : t("下载中…")) : t("查看更新")}
           </span>
         </button>
-      ) : enhanceOnly || setupCard ? null : (
+      ) : enhanceOnly ? null : (
         <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
           <span className="cx-side-card-title">
             <i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />
@@ -20531,17 +20486,6 @@ function loadInitialRoute(): Route {
     return "settings";
   }
   return "overview";
-}
-
-/** 新用户自动显示入门清单；看过旧导览的用户可从设置主动重开。 */
-function initialSetupOpen(): boolean {
-  if (typeof window === "undefined") return false;
-  if (new URLSearchParams(window.location.search).has("previewRoute")) return false;
-  try {
-    return shouldShowSetup(window.localStorage.getItem(SETUP_STORAGE_KEY), window.localStorage.getItem(TOUR_STORAGE_KEY));
-  } catch {
-    return true;
-  }
 }
 
 /** 「关于」已经并进「设置」：启动时要看更新，就滚到版本与更新。 */

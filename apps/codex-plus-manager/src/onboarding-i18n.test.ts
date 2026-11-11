@@ -81,6 +81,6 @@ test("App 的模式影响说明、事务保存提示和重新打开引导说明�
     ts.forEachChild(node, visit);
   };
   visit(tree);
-  assert.ok(keys.plain.has("完成配置、验证连接并开始使用，也可以查看各个入口的导览。"));
+  assert.ok(keys.plain.has("查看各个功能入口的导览。"));
   checkKeys(keys);
 });

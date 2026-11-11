@@ -65,6 +65,11 @@ function RouteDialog({routes, onSelect, onClose}: {routes: Routes; onSelect: (id
   useEffect(() => {void test();}, []);
   return createPortal(<dialog ref={dialog} className="fast-route-dialog" aria-labelledby="fast-route-title" onCancel={e => {e.preventDefault(); if(!switching) onClose();}} onClick={e => {if(e.target === e.currentTarget && !switching) onClose();}}><header><h2 id="fast-route-title">选择服务路线</h2><button aria-label="关闭路线选择" disabled={switching} onClick={onClose}><X/></button></header><div className="fast-route-body"><div className="fast-route-list">{routes.items.map(route => {
     const probe = probes.find(p => p.id === route.id), selected = route.id === routes.selected;
-    return <button key={route.id} type="button" aria-pressed={selected} disabled={switching} className={selected ? "is-selected" : ""} onClick={async () => {setSwitching(true); setError(""); try {await onSelect(route.id); onClose();} catch(e) {setError(String(e));} finally {setSwitching(false);}}}><Globe size={27}/><span className="fast-route-name"><strong>{route.name}</strong></span><span className={`fast-route-latency${probe?.error ? " is-error" : ""}`}><Signal size={19}/>{testing ? "测试中…" : probe?.latency_ms != null ? `${probe.latency_ms} 毫秒` : probe?.error ? "暂不可用" : "待测试"}</span><span className="fast-route-check">{selected && <Check size={25}/>}</span></button>;
+    return <button key={route.id} type="button" aria-pressed={selected} disabled={switching} className={selected ? "is-selected" : ""} onClick={async () => {setSwitching(true); setError(""); try {await onSelect(route.id); onClose();} catch(e) {setError(String(e));} finally {setSwitching(false);}}}>
+      <Globe size={27}/>
+      <span className="fast-route-name"><strong>{route.name}</strong><span className="fast-route-origin">{route.origin}</span></span>
+      <span className={`fast-route-latency${probe?.error ? " is-error" : ""}`}><Signal size={19}/>{testing ? "测试中…" : probe?.latency_ms != null ? `${probe.latency_ms} 毫秒` : probe?.error ? "暂不可用" : "待测试"}</span>
+      <span className="fast-route-check">{selected && <Check size={25}/>}</span>
+    </button>;
   })}</div>{error && <p role="alert">{error}</p>}<footer><button type="button" disabled={testing || switching} onClick={() => void test()}><RefreshCw size={17} className={testing ? "is-spinning" : ""}/>{testing ? "测试中…" : "测试"}</button></footer></div></dialog>, document.body);
 }

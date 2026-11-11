@@ -28,6 +28,7 @@
 .fast-route-list>button.is-selected>svg{color:#71ddca;background:#5ed3bd10;border-color:#5ed3bd18}
 .fast-route-name{min-width:0;flex:1}
 .fast-route-name strong{font-size:14px;line-height:22px;font-weight:600}
+.fast-route-origin{display:block;color:#a2afbd;font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .fast-route-latency{display:inline-flex;align-items:center;gap:6px;flex:none;margin-left:auto;color:#68cebb;font-size:12px;line-height:20px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .fast-route-latency svg{width:14px;height:14px;stroke-width:1.7}
 .fast-route-latency.is-error{color:#b59e8e;font-size:12px}

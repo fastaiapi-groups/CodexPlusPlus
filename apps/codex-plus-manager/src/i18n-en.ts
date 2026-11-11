@@ -357,7 +357,7 @@ export const EN_PLAIN: Record<string, string> = {
   "重试保存": "Retry saving",
   "只管理 Codex：隐藏其他 Agent 的界面，已有网关连接保持不变。": "Codex only: other agents are hidden. Existing gateway connections stay connected.",
   "只用增强功能：隐藏供应商、网关和用量，关闭旧版供应商配置切换。已有网关连接仍会运行并管理对应配置。": "Enhancements only: hide providers, the gateway and usage, and turn off legacy provider switching. Existing gateway connections keep running and managing their configurations.",
-  "完成配置、验证连接并开始使用，也可以查看各个入口的导览。": "Set up, verify your connection and get started, or take a tour of the interface.",
+  "查看各个功能入口的导览。": "Take a tour of the main features.",
   "配置读取失败，请重试。": "Could not load the configuration. Please retry.",
   "配置读取超时，请重试。": "Loading the configuration timed out. Please retry.",
   "检查增强配置": "Check enhancement setup",
