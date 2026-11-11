@@ -141,6 +141,7 @@ run("codesign", ["--force", "--deep", "--sign", signingId, stagingBundle]);
 // 一并结束会让开着的 Claude 会话里 codex-plus-cu / codex-plus-browser 断开、只能手动 /mcp 重连。
 // 这些进程继续跑旧二进制没有问题（替换 bundle 不影响已经在跑的进程），新会话会用上新二进制。
 const CLIENT_OWNED_FLAGS = [
+  "--fastaiapi-media-mcp",
   "--codex-plus-cu-mcp",
   "--codex-plus-browser-mcp",
   "--codex-plus-agent-mcp",

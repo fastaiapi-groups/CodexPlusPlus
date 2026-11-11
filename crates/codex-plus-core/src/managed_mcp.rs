@@ -30,6 +30,8 @@ pub struct ManagedMcp {
     pub lock_file: &'static str,
     /// Codex home 下的备份目录名。
     pub backup_dir: &'static str,
+    /// 单次工具调用超时。已保存的用户设置优先。
+    pub tool_timeout_sec: Option<u32>,
     /// 本服务改名前用过的 `(条目 id, 启动标志)`。接入时把仍归本工具所有的旧条目移除，
     /// 免得 Codex 里同时挂着新旧两份；归属不符的同名条目不动。
     pub legacy: &'static [(&'static str, &'static str)],
@@ -223,6 +225,11 @@ pub fn upsert_managed_context(
     // 写长超时让慢启动也能等到 ready，不再触发那条重连路径。用户自己改过就尊重原值。
     if server.get("startup_timeout_sec").is_none() {
         set_value_preserving_decor(server, "startup_timeout_sec", Value::from(120.0_f64));
+    }
+    if let Some(seconds) = spec.tool_timeout_sec
+        && server.get("tool_timeout_sec").is_none()
+    {
+        set_value_preserving_decor(server, "tool_timeout_sec", Value::from(f64::from(seconds)));
     }
     Ok(document.to_string())
 }

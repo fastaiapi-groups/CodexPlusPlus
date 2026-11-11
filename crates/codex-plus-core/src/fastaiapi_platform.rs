@@ -72,7 +72,10 @@ fn selection_path() -> std::path::PathBuf {
     crate::paths::default_app_state_dir().join("account-platform")
 }
 pub fn selected() -> Platform {
-    std::fs::read_to_string(selection_path())
+    selected_in(&crate::paths::default_app_state_dir())
+}
+pub(crate) fn selected_in(state_dir: &std::path::Path) -> Platform {
+    std::fs::read_to_string(state_dir.join("account-platform"))
         .ok()
         .and_then(|s| Platform::parse(s.trim()).ok())
         .unwrap_or(Platform::NewApi)

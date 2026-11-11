@@ -12,6 +12,13 @@ fn main() {
         return;
     }
     // MCP 是独立 stdio 进程，必须在 GUI、单实例锁和启动日志之前处理。
+    if args.get(1).is_some_and(|arg| arg == codex_plus_core::fastaiapi_media::MCP_FLAG) {
+        if let Err(error) = codex_plus_core::fastaiapi_media::run(&args[2..]) {
+            eprintln!("FastAiApi 媒体 MCP 退出：{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-cu-mcp") {
         if let Err(error) = codex_plus_manager_lib::run_computer_use_mcp() {
             eprintln!("Computer Use MCP 退出：{error:#}");

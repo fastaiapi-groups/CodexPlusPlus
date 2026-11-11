@@ -9,7 +9,19 @@ description: 通过 FastAiApi 生成、编辑或批量制作图片及参考图�
 `<skill>` 指本目录，`<project>` 指产物目录；路径含空格时加引号。
 Windows 用 `py -3` 或可用的 Python 3.10+ 命令，macOS/Linux 用 `python3`。
 
-## Codex++ 内置模式（优先于下述独立包配置）
+## Codex++ 内置媒体工具
+
+若当前 Codex 会话提供 `fastaiapi_media` MCP，优先使用它。连接入口在 Codex++ 概览「媒体创作与连接 → 连接媒体工具」，选择 HTTPS 路线后重新打开 Codex 会话。工具从本机系统凭据库读取当前平台的媒体 Key。
+
+- 检查连接用 `connection_status`，查询可用模型用 `list_models`。只在用户明确要求生成时调用付费工具。
+- 生图用 `generate_image`，省略模型或尺寸时使用界面默认模型与 1024×1024。参考图放在用户指定的项目目录内。
+- 生视频用 `submit_video`，H3 需要参考图，提交前参考 [H3](references/h3.md) 优化提示词。提交后保存 UUID 和平台任务 ID，用 `video_status` 查原任务，成功后用 `download_video`。
+- 用 `list_runs` 查找当前项目的原任务。提交不明确时保留同一个 UUID，核实平台任务 ID 后用 `recover_video` 恢复。旧版已提交的视频可把项目中的 schema 2 回执路径传给 `recover_video`。
+- 成品位于项目的 `outputs/fastaiapi-<UUID>/`。工具缺失时提示连接媒体工具，托管模式下不要让用户把 Key 写进命令、环境变量或对话。
+
+## 旧版与独立 Python 技能
+
+以下内容适用于明确使用旧版/独立技能的场景。音频仍可使用独立工具。
 
 本包以用户提供的 fastaiapi-media-fixed-20261104.zip 为基础。Codex++ 先选择 New API 或 SubAPI 平台，登录后自动复用或创建对应可用分组 Key（New API 优先 default），并配置 FASTAIAPI_API_KEY、FASTAIAPI_GROK_API_KEY、FASTAIAPI_H3_API_KEY 与 FASTAIAPI_BASE_URL。New API 路线为 http://8.137.194.180:90、https://tumeiapi.com 或 https://newapi.fastaiapi.cloud，SubAPI 入口为 https://fastaiapi.cloud；有 connection.json 时，三种 provider 均使用当前路线，忽略旧项目/全局凭据，避免串站。没有托管连接时，独立包仍按下表分流。
 

@@ -40,6 +40,7 @@ pub const SPEC: ManagedMcp = ManagedMcp {
     comment: "Managed by Codex++: dsh plugins MCP",
     lock_file: ".codex-plus-dsh-mcp.lock",
     backup_dir: ".codex-plus-dsh-mcp-backups",
+    tool_timeout_sec: None,
     legacy: &[],
 };
 

@@ -32,6 +32,7 @@ pub const SPEC: ManagedMcp = ManagedMcp {
     comment: "Managed by Codex++: extension creator MCP",
     lock_file: ".codex-plus-extension-mcp.lock",
     backup_dir: ".codex-plus-extension-mcp-backups",
+    tool_timeout_sec: None,
     legacy: &[(LEGACY_SERVER_ID, LEGACY_MCP_FLAG)],
 };
 

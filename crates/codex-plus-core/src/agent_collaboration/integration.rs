@@ -17,6 +17,7 @@ pub const SPEC: ManagedMcp = ManagedMcp {
     comment: "Managed by Codex++: agent collaboration MCP",
     lock_file: ".codex-plus-agent-mcp.lock",
     backup_dir: ".codex-plus-agent-mcp-backups",
+    tool_timeout_sec: None,
     legacy: &[],
 };
 

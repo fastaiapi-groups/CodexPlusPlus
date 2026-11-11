@@ -46,15 +46,18 @@ fn load_session_from(route: usize, mut load: impl FnMut(&str) -> Option<Vec<u8>>
     .unwrap_or_default()
 }
 
+pub(crate) fn saved_route(state_dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(state_dir.join("newapi-route"))
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|i| *i < ORIGINS.len())
+        .unwrap_or(0)
+}
+
 fn state() -> &'static tokio::sync::Mutex<State> {
     STATE.get_or_init(|| {
-        let route = std::fs::read_to_string(route_path())
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|i| *i < ORIGINS.len())
-            .unwrap_or(0);
         tokio::sync::Mutex::new(State {
-            route,
+            route: saved_route(&crate::paths::default_app_state_dir()),
             session_loaded: false,
             session: Session::default(),
         })
@@ -339,6 +342,10 @@ pub(crate) fn registration_username(email: &str) -> Result<String, String> {
 }
 
 async fn setup_default_media(s: &mut State) -> Result<Value, String> {
+    if crate::fastaiapi_media_env::use_native_on_save() {
+        crate::fastaiapi_media::validate_media_origin(crate::fastaiapi_platform::Platform::NewApi, ORIGINS[s.route])
+            .map_err(|error| error.to_string())?;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -421,6 +428,9 @@ pub(crate) async fn media_status_for(
     platform: crate::fastaiapi_platform::Platform,
     origin: &str,
 ) -> Result<Value, String> {
+    if crate::fastaiapi_media::native_enabled() {
+        return Ok(crate::fastaiapi_media::status_for(platform, origin).await);
+    }
     let Some(secret) = crate::fastaiapi_media_env::load_for(platform) else {
         return Ok(
             json!({"state":"missing","message":"尚未配置媒体 Key，可一键配置 default 分组连接。"}),
@@ -495,22 +505,27 @@ pub(crate) async fn media_test_for(
     if !matches!(kind, "text" | "image") {
         return Err("请选择文本或图片测试".into());
     }
-    let secret = crate::fastaiapi_media_env::load_for(platform).ok_or("请先配置媒体 Key")?;
-    let saved = secret["api_key"].as_str().ok_or("媒体 Key 缺失")?;
-    let fallback = crate::fastaiapi_media_env::credential_fallback(platform, origin);
-    let key = if fallback {
-        saved.to_owned()
+    let key = if crate::fastaiapi_media::native_enabled() {
+        crate::fastaiapi_media::current_key(platform, origin).await.map_err(|error| error.to_string())?
     } else {
-        crate::fastaiapi_media_env::user_value("FASTAIAPI_API_KEY")
-            .ok_or("环境变量缺失，请点击一键修复")?
+        let secret = crate::fastaiapi_media_env::load_for(platform).ok_or("请先配置媒体 Key")?;
+        let saved = secret["api_key"].as_str().ok_or("媒体 Key 缺失")?;
+        let fallback = crate::fastaiapi_media_env::credential_fallback(platform, origin);
+        let key = if fallback {
+            saved.to_owned()
+        } else {
+            crate::fastaiapi_media_env::user_value("FASTAIAPI_API_KEY")
+                .ok_or("环境变量缺失，请点击一键修复")?
+        };
+        if !crate::fastaiapi_media_env::is_active(platform)
+            || secret["origin"] != origin
+            || saved != key
+            || (!fallback && !crate::fastaiapi_media_env::matches(&key, origin))
+        {
+            return Err("环境变量已变更，请先一键修复，再测试。".into());
+        }
+        key
     };
-    if !crate::fastaiapi_media_env::is_active(platform)
-        || secret["origin"] != origin
-        || saved != key
-        || (!fallback && !crate::fastaiapi_media_env::matches(&key, origin))
-    {
-        return Err("环境变量已变更，请先一键修复，再测试。".into());
-    }
     let raw = data(
         send(
             origin,
@@ -826,6 +841,10 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
         "media_setup" => setup_default_media(&mut s).await,
         "media_status" => media_status(&mut s).await,
         "media_manual" => {
+            if crate::fastaiapi_media_env::use_native_on_save() {
+                crate::fastaiapi_media::validate_media_origin(crate::fastaiapi_platform::Platform::NewApi, ORIGINS[s.route])
+                    .map_err(|error| error.to_string())?;
+            }
             let key = body["api_key"]
                 .as_str()
                 .unwrap_or("")

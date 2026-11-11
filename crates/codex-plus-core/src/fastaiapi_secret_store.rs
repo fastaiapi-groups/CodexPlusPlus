@@ -5,12 +5,16 @@ pub(crate) fn account() -> String {
 }
 
 pub(crate) fn load(service: &str) -> Option<Vec<u8>> {
+    load_in_account(service, &account())
+}
+
+pub(crate) fn load_in_account(service: &str, account: &str) -> Option<Vec<u8>> {
     #[cfg(target_os = "macos")]
-    { security_framework::passwords::get_generic_password(service, &account()).ok() }
+    { security_framework::passwords::get_generic_password(service, account).ok() }
     #[cfg(windows)]
-    { windows_store::load(service, &account()) }
+    { windows_store::load(service, account) }
     #[cfg(not(any(target_os = "macos", windows)))]
-    { let _ = service; None }
+    { let _ = (service, account); None }
 }
 
 // 钥匙串可能等待系统授权；不能阻塞运行时线程并无限占用平台锁。

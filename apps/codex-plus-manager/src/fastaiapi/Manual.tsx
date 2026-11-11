@@ -15,7 +15,7 @@ const guides = [
   {
     title: "用 Codex 生图、生视频", icon: ImagePlay,
     description: "在 Codex 对话中调用内置 fastaiapi-media 技能，用自然语言描述画面即可。",
-    steps: ["先在概览的「媒体创作与环境配置」检查连接。缺少 Key 或提示失效时，点击「一键配置／修复」；也可手动配置并做文本、图片测试。", "在 Codex 中输入下方案例。图片默认 1024×1024；视频初始默认 minimax-h3，需要参考图。可在概览选择图片和视频默认模型，也可在对话中明确指定；可上传参考图或使用刚生成的图片。", "视频生成需要等待。让 Codex 查询原任务并下载结果；中断后继续原任务，避免重复提交。环境变量权限不足时按提示处理，修复后新开对话重试；必要时重启 Codex。"],
+    steps: ["先在概览的「媒体创作与连接」选择 HTTPS 路线并点击「连接媒体工具」，然后重新打开 Codex 会话。", "在 Codex 中输入下方案例。图片默认 1024×1024；视频初始默认 minimax-h3，需要参考图。可在概览选择图片和视频默认模型，也可在对话中明确指定；可上传参考图或使用刚生成的图片。", "视频生成需要等待。让 Codex 查询原任务并下载结果；中断后继续原任务，避免重复提交。凭据读取失败时检查系统授权后重新连接。"],
     examples: [
       {label: "生图案例", text: "使用 $fastaiapi-media，生成一张 1024×1024 的图片：一只青绿色陶瓷小机器人站在浅灰色摄影棚里，柔和光线，正面全身构图，画面中不要文字。只生成 1 张，保存到当前项目的 outputs 文件夹，并展示结果。"},
       {label: "参考图生视频案例", text: "使用 $fastaiapi-media，以我上传的这张小机器人图片为参考，用 minimax-h3 生成 1 段 5 秒、16:9 的视频：保持机器人的外观和背景一致，固定镜头，小机器人缓慢抬起右手挥手一次，再放下。请先检查参考图并优化提示词，提交后保存任务 ID，持续查询原任务直到完成，下载到当前项目的 outputs 文件夹并展示结果。"},
@@ -37,7 +37,7 @@ const faqs = [
   ["如何充值，付款后余额没更新怎么办？", "在概览点击账户充值，按当前 new-api 站点配置选择额度和支付方式，完成扫码或收银台付款后刷新余额；也支持兑换码。以订单实际状态为准；若已付款仍未到账，请提供订单号，不要重复付款。"],
   ["余额和模型价格如何理解？", "概览显示平台返回的 API 额度。不同分组的计价方式和倍率可能不同，请点击分组问号查看说明，并以平台当前价格和使用记录为准。"],
   ["为什么模型列表为空或调用失败？", "检查 Key 是否有效、分组是否支持该模型，以及账户余额和网络。可刷新模型列表。反馈时提供模型名、时间和错误截图，不要发送完整 Key。"],
-  ["图片和视频功能需要额外配置吗？", "本应用已内置创作技能。登录后自动复用或创建 default 分组 Key，配置系统环境变量。概览可手动配置、分别测试文本和图片，Key 失效时一键修复。视频默认 minimax-h3，其他型号需明确指定；缺少模型权限需在平台开通。"],
+  ["图片和视频功能需要额外配置吗？", "在概览连接内置媒体工具，Key 保存在系统凭据库。连接后在 Codex 对话中调用，也可手动配置 Key 或分别测试文本和图片。视频默认 minimax-h3，其他型号需明确指定；缺少模型权限需在平台开通。"],
   ["记住账号密码安全吗？", "勾选后使用系统凭据库保存；macOS 可能要求允许钥匙串访问。取消勾选会清除已记住的登录信息。不要把密码或 Key 发到群里。"],
   ["窗口太小或弹窗内容太多怎么办？", "页面和弹窗支持滚动，列表过长时可在弹窗内滚动。分组问号打开详情，关闭详情后会回到原分组选择。"],
 ];
@@ -50,6 +50,6 @@ export function Manual() {
       <ol>{steps.map(step => <li key={step}>{step}</li>)}</ol>{examples.map(example => <PromptExample key={example.label} {...example}/>)}
       {index === 1 && <small>生成会真实调用当前平台并按平台计费。模型需由当前 Key 的分组开放；你在概览手动选择或在对话中明确指定的型号优先。</small>}
     </article>)}</div>
-    <details className="fast-manual-permissions"><summary>环境变量配置失败？查看系统权限与手动配置图文指引</summary><MediaSetupGuide/></details>
+    <details className="fast-manual-permissions"><summary>媒体连接失败？查看凭据授权与配置图文指引</summary><MediaSetupGuide/></details>
     <input className="fast-manual-search" aria-label="搜索常见问题" placeholder="搜索登录、模型、充值…" value={query} onChange={e => setQuery(e.target.value)}/><div className="fast-faqs">{matches.map(([question, answer]) => <details key={question}><summary>{question}</summary><p>{answer}</p></details>)}{!matches.length && <p>没有找到相关问题，可在反馈页面联系我们。</p>}</div><div className="fast-support-contacts"><h3>加入交流群</h3><article><h4>QQ 群</h4><p>群号：48878665 · 扫码或搜索加入</p><ContactQr src={qqGroup} name="FastAiApi QQ 群" crop={{viewBox: "170 710 940 940", width: 1284, height: 2289}}/><button onClick={async () => {try {await navigator.clipboard.writeText("48878665"); setCopied(true);} catch {setCopied(false);}}}>{copied ? "已复制群号" : "复制群号"}</button></article><article><h4>微信群</h4><p>FastAiApi 中转图片视频交流群</p><ContactQr src={wechatGroup} name="FastAiApi 微信群" crop={{viewBox: "100 500 880 880", width: 1080, height: 1596}}/><small>二维码有效期至 2026 年 10 月 31 日；过期可通过 QQ 群获取新二维码。</small></article></div></section>;
 }

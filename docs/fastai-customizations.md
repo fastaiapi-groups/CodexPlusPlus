@@ -42,3 +42,7 @@
 - New API/SubAPI 的 remembered-login 读取须在阻塞线程内运行并设置 6 秒超时；超时释放平台请求调用方，不能因钥匙串授权无响应让整个登录恢复无限等待。不得清空凭据或绕过系统授权。
 
 - 概览 `fastaiapi/ConnectionSwitcher.tsx` 提供 FastAiApi / ChatGPT-Codex 官方账号切换，选择逻辑位于 `connection-mode.ts`。通过既有 `switchRelayProfile` 事务保存当前配置、恢复目标配置及回滚失败。官方连接使用独立 `fastaiapi-official` 存档，FastAiApi 按当前平台的 `configuration.profile_id` 恢复原 Key/模型，不重建 Key。官方模式下平台模型应用与自动配置按钮禁用，媒体服务仍使用平台账号。原生登录账号选择复用 `NativeAuthControl`，切换后由用户重启 Codex 生效。
+
+
+- 内置媒体工具实现集中在 `crates/codex-plus-core/src/fastaiapi_media/`，管理器通过独立 `fastaiapi_media_commands.rs` 注册，启动时通过 `--fastaiapi-media-mcp` 分发。继续复用现有凭据库及托管 MCP 上下文，注册只写命令、状态目录与超时，不写媒体 Key。新连接默认使用系统凭据，旧连接在用户显式接入后停止导出环境变量；既有用户变量与恢复项留待跨平台迁移验收后处理。
+- Rust MCP 当前覆盖生图、编辑、视频提交、查询、下载和旧视频回执恢复。新任务使用当前已连接的 HTTPS 路线，已有视频继续使用回执绑定的平台、原路线和原 Key。进程中断或响应不明确时按同一 UUID 查询，禁止自动重发。旧独立 Python 技能与音频功能保留。

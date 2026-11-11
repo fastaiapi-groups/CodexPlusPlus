@@ -17,8 +17,8 @@ pub fn descriptor_path() -> std::path::PathBuf {
 pub fn load(_route: usize) -> Option<Value> {
     load_for(Platform::NewApi)
 }
-pub fn load_for(platform: Platform) -> Option<Value> {
-    let names = if platform == Platform::NewApi {
+pub(crate) fn credential_services(platform: Platform) -> Vec<String> {
+    if platform == Platform::NewApi {
         vec![
             platform.service("media"),
             "com.fastaiapi.codexplusplus.newapi.1.media".into(),
@@ -26,8 +26,10 @@ pub fn load_for(platform: Platform) -> Option<Value> {
         ]
     } else {
         vec![platform.service("media")]
-    };
-    names.into_iter().find_map(|name| {
+    }
+}
+pub fn load_for(platform: Platform) -> Option<Value> {
+    credential_services(platform).into_iter().find_map(|name| {
         crate::fastaiapi_secret_store::load(&name).and_then(|v| serde_json::from_slice(&v).ok())
     })
 }
@@ -192,6 +194,10 @@ pub fn environment_warning(platform: Platform, origin: &str) -> Option<String> {
 pub fn store(route: usize, key: &str) -> Result<Value, String> {
     store_for(Platform::NewApi, crate::fastaiapi::ORIGINS[route], key)
 }
+/// 新连接默认走系统凭据库；已有旧连接由用户显式接入新工具时迁移。
+pub(crate) fn use_native_on_save() -> bool {
+    crate::fastaiapi_media::native_enabled() || !descriptor_path().exists()
+}
 pub fn store_for(platform: Platform, origin: &str, key: &str) -> Result<Value, String> {
     if !platform.origins().contains(&origin) {
         return Err("媒体路线无效".into());
@@ -202,6 +208,11 @@ pub fn store_for(platform: Platform, origin: &str, key: &str) -> Result<Value, S
                 .into(),
         );
     }
+    let native = use_native_on_save();
+    if native {
+        crate::fastaiapi_media::validate_media_origin(platform, origin).map_err(|error| error.to_string())?;
+        crate::fastaiapi_media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
+    }
     let same_key = load_for(platform).is_some_and(|value| value["api_key"] == key);
     if !crate::fastaiapi_secret_store::save(
         &platform.service("media"),
@@ -210,6 +221,13 @@ pub fn store_for(platform: Platform, origin: &str, key: &str) -> Result<Value, S
             .as_bytes(),
     ) {
         return Err("系统凭据库权限不足，无法保存媒体 Key；请在系统凭据库授权后重试（macOS 钥匙串／Windows 凭据管理器）。".into());
+    }
+    if native {
+        write_descriptor_for(platform, origin, false, None)?;
+        if !same_key {
+            set_pricing_key_id(platform, None)?;
+        }
+        return Ok(json!({"configured":true,"transport":"mcp","origin":origin}));
     }
     // 先标记凭据库模式，防止写入一半或进程中断后使用继承的旧 Key。
     write_descriptor_for(
@@ -494,6 +512,9 @@ fn install_login_restore() -> Result<(), String> {
     .map_err(|_| "无法保存登录环境恢复项，请检查用户目录权限。".into())
 }
 pub fn restore() -> Result<(), String> {
+    if crate::fastaiapi_media::native_enabled() {
+        return Ok(());
+    }
     let descriptor: Value =
         serde_json::from_slice(&std::fs::read(descriptor_path()).map_err(|_| "尚未配置媒体连接")?)
             .map_err(|_| "媒体连接配置无效")?;
