@@ -36,7 +36,7 @@
 - App 的 `routeVisible` 统一叠加定制过滤，`visibleActiveTool`/`shownTools` 保留 Codex 发行范围；新版侧栏 general 注册账号概览、教程、反馈、手册，路线选择在新版页头。
 - 主窗口仍经过 `FastAiApiGate`，上游悬浮预览、托盘和启动错误边界保留；Tauri 的五个平台命令、技能安装、媒体环境 CLI 入口必须同时存在。
 - 后台下载及安装都重新核验自有签名清单；缓存必须匹配签名摘要，不能只凭 `.complete` 文件或同尺寸复用。公钥、官网域名及防降级序号保持有效。
-- 本地 relaunch 默认保留原图标（更新图标需显式 `--refresh-icon`）；自有 Windows ICO 仅将最大尺寸目录项前置，图像数据不变；macOS 托盘按自有图标的亮色前景生成模板，不能恢复成仅识别官方橙色的算法。
+- 侧栏、关于页等应用内入口统一使用 `fastaiapi/logo.svg` 的青色品牌图标。macOS Dock 图标来自 `icons/icon-macos.png`，本地构建更新图标需显式传 `--refresh-icon`。Windows ICO 的最大尺寸目录项在首位；macOS 托盘使用 `icons/icon.png` 的亮色前景生成模板。
 - 官方 release/Pages 工作流限定官方仓库；自有签名更新和安装包构建流程独立保留。
 
 - New API/SubAPI 的 remembered-login 读取须在阻塞线程内运行并设置 6 秒超时；超时释放平台请求调用方，不能因钥匙串授权无响应让整个登录恢复无限等待。不得清空凭据或绕过系统授权。

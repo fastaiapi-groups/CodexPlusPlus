@@ -126,7 +126,7 @@ export function agentIcon(agent: string): string | undefined {
   return AGENT_ICONS[agent === "codex" ? "codexApp" : agent];
 }
 
-export const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
+export const APP_LOGO_URL = new URL("./fastaiapi/logo.svg", import.meta.url).href;
 
 export function avatarOf(name: string): string {
   return providerAvatarText(name, "P");

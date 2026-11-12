@@ -144,7 +144,7 @@ import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { MyPublishedPanel } from "./MyPublishedPanel";
-import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
+import { AgentIcon, APP_LOGO_URL, SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
@@ -1423,9 +1423,6 @@ type StartupResult = CommandResult<{
 /** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 type ToolId = string;
 
-/** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
-const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
-const FASTAI_LOGO_URL = new URL("./fastaiapi/logo.svg", import.meta.url).href;
 
 type Route = "apiGuide" | "feedback" | "manual" | "home" | "overview" | "relay" | "multiLaunch" | "claude" | "claudePatch" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
 type Theme = "dark" | "light";
@@ -17703,7 +17700,7 @@ function AppSidebar({
                   title={`${title}｜${access.label}`}
                   type="button"
                 >
-                  {tool.id === "codex" ? <img alt="" className="cx-side-icon" src={FASTAI_LOGO_URL} /> : <AgentGlyph agent={tool.id} className="cx-side-icon" />}
+                  {tool.id === "codex" ? <img alt="" className="cx-side-icon" src={APP_LOGO_URL} /> : <AgentGlyph agent={tool.id} className="cx-side-icon" />}
                   <span className="cx-side-label">{displayName}</span>
                   {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
