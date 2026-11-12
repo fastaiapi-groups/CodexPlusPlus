@@ -36,17 +36,11 @@ New API 退出时将当前会话替换为空会话记录，阻止旧路线的遗
 
 ## 图片与视频
 
-概览按 default Key 权限分别展示文字、图片和视频模型，只有文字模型可写入 Codex 默认配置。
+Codex++ 内置 Rust 媒体 MCP，覆盖生图、编辑、视频提交、查询、下载和旧回执恢复。选择默认分组和模型时复用或创建 Key，并通过系统凭据库保存。文本测试使用 `/v1/responses`，图片测试使用 `/v1/images/generations`，两者都按当前线路和模型计费。
 
-内置技能以用户提供的 `fastaiapi-media-fixed-20261104.zip` 为基础，安装到 `skills/fastaiapi-media`，保留图片、Grok、H3 的提示词与异步任务工作流，并增加 Codex++ 托管连接与音频生成。新版本会备份被替换的旧文件；同版本安装保留用户编辑。
+旧版独立 Python 技能保留在 `media-api/`，供独立使用和音频生成。桌面端不再自动安装它。已经升级的实例仍可能在 `skills/fastaiapi-media/connection.json` 保存连接描述；此文件用于定位现有媒体绑定，里面没有完整 Key。
 
-登录成功后自动复用可用的 default 分组 Key；没有时创建专用 Key。系统环境变量为 `FASTAIAPI_API_KEY`、`FASTAIAPI_GROK_API_KEY`、`FASTAIAPI_H3_API_KEY` 及 `FASTAIAPI_BASE_URL`，三种 provider 使用同一后台和 Key，来源跟随路线。媒体 Key 同时保存在系统凭据库；技能的 `connection.json` 只记录来源及凭据命名空间，不含密钥。macOS 使用用户级 launchctl 环境和不含 Key 的登录恢复项，Windows 使用当前用户环境注册表；不修改其他服务的 OPENAI_*。权限不足显示明确提示。
-
-概览支持手动输入 Key、检查连接、独立文本与图片测试。每分钟检查环境变量与当前 Key；丢失、改动、失效时显示一键修复入口。修复复用有效 default Key，避免无谓创建。已运行的 Codex/终端需要重启才能继承新环境；不会为测试自动重启用户 Codex。
-
-视频默认 `minimax-h3`，只有用户明确指定时才换模型。H3 缺少参考图时先补齐素材，未开放该型号时明确提示，不自动改用 -f 或 -x。图片支持 base64 与 URL 响应，保存原响应后可恢复下载，避免付费提交后因下载失败而重发。音频补充 `/v1/audio/speech` 的 WAV 生成入口；实际可用性取决于后台模型和渠道。
-
-New API 托管 H3 使用当前公共视频协议 `prompt`、`seconds`、`size`、`reference_images`（可选 `reference_audios`）；默认480p，可显式选择768p或1080p。独立包和 SubAPI 保留原有 content/720p 协议，不能混用验证结果。New API 已于2026-11-07完成真实文本、图片及5秒H3视频生成、下载和解码检查。完整验收及待处理项见 `docs/verification/2026-11-07-app-media/report.md`。
+运行中的视频任务使用原回执绑定的平台、路线和 Key。中断后继续查询或下载原任务。New API 的公共视频协议与 FastAiAPI 的专用适配器各自按平台接口处理。
 
 ## 网页开发
 

@@ -9,7 +9,6 @@ import { SubApiRecharge } from "./SubApiRecharge";
 import { NewApiRecharge } from "./NewApiRecharge";
 import { ServiceRouteProvider, RouteSelector, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { MediaModels } from "./MediaModels";
-import { MediaSetupGuideButton } from "./MediaSetupGuide";
 import "./gate.css";
 import { ModelPicker } from "./ModelPicker";
 import { createModelDirectory, loadModelDirectory, type GroupCatalogs } from "./modelDirectory";
@@ -124,7 +123,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频工具</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); setUser(null); setAuthenticated(false); setConfiguration({}); await restoreLogin(); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
-    {!user && <div className="fast-login-help">{busy && <p role="status">正在登录平台，请留意系统凭据授权提示。</p>}<MediaSetupGuideButton/></div>}
+    {!user && busy && <p className="fast-muted" role="status">正在登录平台，请留意系统凭据授权提示。</p>}
   </section>;
   if (restoring) return <div className="fast-gate fast-loading" role="status">正在恢复 {platformName} 登录状态…</div>;
   if (user) return <ModelDirectoryContext.Provider value={directory}><AccountView.Provider value={card}>{children}</AccountView.Provider></ModelDirectoryContext.Provider>;

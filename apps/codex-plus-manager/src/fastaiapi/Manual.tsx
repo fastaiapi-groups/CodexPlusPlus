@@ -2,7 +2,6 @@ import { useState } from "react";
 import "./support.css";
 import { ContactQr } from "./ContactQr";
 import { Code2, Copy, ImagePlay, Check } from "lucide-react";
-import { MediaSetupGuide } from "./MediaSetupGuide";
 const qqGroup = new URL("./icons/qq-group.jpg", import.meta.url).href;
 const wechatGroup = new URL("./icons/wechat-group.jpg", import.meta.url).href;
 const guides = [
@@ -50,6 +49,5 @@ export function Manual() {
       <ol>{steps.map(step => <li key={step}>{step}</li>)}</ol>{examples.map(example => <PromptExample key={example.label} {...example}/>)}
       {index === 1 && <small>生成会真实调用当前平台并按平台计费。模型需由当前 Key 的分组开放；你在概览手动选择或在对话中明确指定的型号优先。</small>}
     </article>)}</div>
-    <details className="fast-manual-permissions"><summary>媒体连接失败？查看凭据授权与配置图文指引</summary><MediaSetupGuide/></details>
     <input className="fast-manual-search" aria-label="搜索常见问题" placeholder="搜索登录、模型、充值…" value={query} onChange={e => setQuery(e.target.value)}/><div className="fast-faqs">{matches.map(([question, answer]) => <details key={question}><summary>{question}</summary><p>{answer}</p></details>)}{!matches.length && <p>没有找到相关问题，可在反馈页面联系我们。</p>}</div><div className="fast-support-contacts"><h3>加入交流群</h3><article><h4>QQ 群</h4><p>群号：48878665 · 扫码或搜索加入</p><ContactQr src={qqGroup} name="FastAiApi QQ 群" crop={{viewBox: "170 710 940 940", width: 1284, height: 2289}}/><button onClick={async () => {try {await navigator.clipboard.writeText("48878665"); setCopied(true);} catch {setCopied(false);}}}>{copied ? "已复制群号" : "复制群号"}</button></article><article><h4>微信群</h4><p>FastAiApi 中转图片视频交流群</p><ContactQr src={wechatGroup} name="FastAiApi 微信群" crop={{viewBox: "100 500 880 880", width: 1080, height: 1596}}/><small>二维码有效期至 2026 年 10 月 31 日；过期可通过 QQ 群获取新二维码。</small></article></div></section>;
 }

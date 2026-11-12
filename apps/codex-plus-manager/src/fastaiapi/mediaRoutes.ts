@@ -6,7 +6,7 @@ export function mediaRouteUrls(origin: string) {
     generateImage: new URL("/v1/images/generations", origin).href,
     editImage: new URL("/v1/images/edits", origin).href,
     submitVideo: new URL("/v1/videos", origin).href,
-    testText: new URL("/v1/chat/completions", origin).href,
+    testText: new URL("/v1/responses", origin).href,
   };
 }
 

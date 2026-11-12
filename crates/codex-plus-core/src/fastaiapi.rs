@@ -596,8 +596,9 @@ pub(crate) async fn media_test_for(
         )
     } else {
         (
-            "/v1/chat/completions",
-            json!({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":32,"stream":false}),
+            "/v1/responses",
+            json!({"model":model,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}],
+                "instructions":"","max_output_tokens":64,"store":false,"stream":false}),
         )
     };
     let value = send(
@@ -614,10 +615,24 @@ pub(crate) async fn media_test_for(
 fn test_result(kind: &str, model: &str, value: &Value) -> Result<Value, String> {
     let mut result = json!({"ok":true,"kind":kind,"model":model,"message":if kind=="text" {"文本生成测试成功"} else {"图片生成测试成功"}});
     if kind == "text" {
-        let content = value["choices"][0]["message"]["content"]
+        let content = value["output_text"]
             .as_str()
-            .filter(|text| !text.trim().is_empty())
-            .ok_or("文本测试未返回有效内容")?;
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                value["output"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| item["type"] == "message")
+                    .filter_map(|item| item["content"].as_array())
+                    .flatten()
+                    .filter(|part| part["type"] == "output_text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>()
+            });
+        if content.trim().is_empty() {
+            return Err("文本测试未返回有效内容".into());
+        }
         result["text"] = json!(content);
     } else {
         let item = value["data"]
@@ -1466,12 +1481,19 @@ mod tests {
             super::test_result(
                 "text",
                 "gpt-test",
-                &json!({"choices":[{"message":{"content":"OK"}}]})
+                &json!({"output":[
+                    {"type":"reasoning","content":[{"type":"summary_text","text":"ignore"}]},
+                    {"type":"message","content":[{"type":"output_text","text":"O"},{"type":"output_text","text":"K"}]}
+                ]})
             )
             .unwrap()["text"],
             "OK"
         );
-        assert!(super::test_result("text", "gpt-test", &json!({"choices":[]})).is_err());
+        assert_eq!(
+            super::test_result("text", "gpt-test", &json!({"output_text":"OK"})).unwrap()["text"],
+            "OK"
+        );
+        assert!(super::test_result("text", "gpt-test", &json!({"output":[]})).is_err());
         for url in [
             "javascript:alert(1)",
             "file:///private/test",

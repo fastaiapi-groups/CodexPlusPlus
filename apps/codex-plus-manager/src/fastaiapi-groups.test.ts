@@ -109,6 +109,7 @@ test('media help and submission addresses follow the selected route', () => {
     assert.equal(urls.generateImage, origin + '/v1/images/generations');
     assert.equal(urls.editImage, origin + '/v1/images/edits');
     assert.equal(urls.submitVideo, origin + '/v1/videos');
+    assert.equal(urls.testText, origin + '/v1/responses');
     assert.equal(withSelectedImageGuide('参数说明：https://fastaiapi.cloud/help/image-api/', urls.guide), '参数说明：' + urls.guide);
   }
 });
