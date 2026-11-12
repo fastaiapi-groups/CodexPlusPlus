@@ -1,4 +1,5 @@
 mod fastaiapi_commands;
+mod fastaiapi_guide;
 mod fastaiapi_media_commands;
 mod agent_collaboration_commands;
 mod extension_creator_commands;
@@ -346,6 +347,7 @@ pub fn run() {
             fastaiapi_commands::fastaiapi_media_configure,
             fastaiapi_media_commands::fastaiapi_media_tool,
             fastaiapi_media_commands::fastaiapi_video_test,
+            fastaiapi_guide::fastaiapi_guide,
             agent_collaboration_commands::agent_collaboration_request,
             dsh_plugin_commands::dsh_plugins_request,
             extension_community_commands::extension_community_request,
