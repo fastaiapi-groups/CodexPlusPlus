@@ -16,7 +16,9 @@ export function createAccountFixture() {
     const p=panels[platform],action=args.action;
     const groupId=platform==="newapi"?"default":"2";
     const textGroupId=platform==="newapi"?"text-only":"3";
-    const groups=[{id:groupId,name:"default",recommended:true,rate_multiplier:1},{id:textGroupId,name:"仅文字",rate_multiplier:1}];
+    const imageGroupId=platform==="newapi"?"image-studio":"4";
+    const groups=[{id:groupId,name:"default",recommended:true,rate_multiplier:1},{id:textGroupId,name:"仅文字",rate_multiplier:1},
+      {id:imageGroupId,name:"图片专用",rate_multiplier:1}];
     const accountKeys = [{id:p.keyId,name:"Codex++ FastAiApi",group:"default",group_id:platform==="subapi"?2:null,status:"active"}, ...extraKeys[platform]];
     if(authenticated && authenticated !== platform && action !== "routes")throw new Error("已登录当前平台，请退出登录后再选择平台。");
     calls.push({command,platform,action});
@@ -48,13 +50,14 @@ export function createAccountFixture() {
         else if(action==="keys")value={items:accountKeys};
         else if(action==="groups")value=groups;
         else if(action==="group_model_catalogs")value={groups,catalogs:{
-          [groupId]:{group:"default",currency:platform==="newapi"?"CNY":"USD",models:[{model:"gpt-image-2",time_pricing:false,unit_price:0.02,tiers:[]}],model_ids:[p.model,"gpt-image-2","minimax-h3"]},
+          [groupId]:{group:"default",currency:platform==="newapi"?"CNY":"USD",models:[{model:"gpt-image-2",description:"测试图片模型，支持参考图。",vendor_icon:"OpenAI",time_pricing:false,unit_price:0.02,tiers:[]}],model_ids:[p.model,"gpt-image-2","minimax-h3"]},
           [textGroupId]:{group:"仅文字",models:[{model:p.model,time_pricing:false,tiers:[{label:"标准价",input:1,output:2,cache:0.1}]}],model_ids:[p.model]},
+          [imageGroupId]:{group:"图片专用",currency:platform==="newapi"?"CNY":"USD",models:[{model:"gpt-image-2",description:"测试图片模型，支持参考图。",icon:"OpenAI",time_pricing:false,unit_price:0.2,tiers:[]}],model_ids:["gpt-image-2"]},
         }};
         else if(action==="apply_model_binding"){
           if(body.route!==p.route) throw new Error("路线已切换，请重新选择模型");
           const group=groups.find(group=>group.id===body.group_id);
-          const permitted=group?.id===groupId?[p.model,"gpt-image-2","minimax-h3"]:[p.model];
+          const permitted=group?.id===groupId?[p.model,"gpt-image-2","minimax-h3"]:group?.id===imageGroupId?["gpt-image-2"]:[p.model];
           if(!group||!permitted.includes(body.model)) throw new Error("该分组未开放所选模型");
           let key=accountKeys.find(key=>(platform==="subapi"?String(key.group_id):key.group)===group.id);
           if(!key){

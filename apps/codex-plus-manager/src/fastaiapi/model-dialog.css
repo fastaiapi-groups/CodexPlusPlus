@@ -150,7 +150,30 @@
   gap: 6px;
 }
 .fast-model-dialog .fast-model-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding-right: 0;
+}
+.fast-model-dialog .fast-model-card-name img,
+.fast-model-dialog .fast-model-card-name svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  object-fit: contain;
+}
+.fast-model-dialog .fast-model-card-name img.is-monochrome {
+  filter: brightness(0) invert(1);
+}
+.fast-model-card-description {
+  color: #a1aab5;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+.fast-model-unit-tiers {
+  display: grid;
+  gap: 4px;
 }
 .fast-model-dialog .fast-model-unit-price {
   display: flex;

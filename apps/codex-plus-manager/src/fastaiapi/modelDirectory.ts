@@ -1,7 +1,18 @@
 import type { AccountGroup } from "./groupCache.ts";
 import { keyGroup, type ModelGroupKey } from "./modelGroups.ts";
 
-type ModelPrice = {model: string; time_pricing: boolean; pricing_note?: string; unit_price?: number | null; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
+type ModelPrice = {
+  model: string;
+  description?: string | null;
+  icon?: string | null;
+  vendor_icon?: string | null;
+  time_pricing: boolean;
+  pricing_note?: string;
+  unit_price?: number | null;
+  billing_unit?: "image" | "call" | "token";
+  unit_tiers?: {label: string | null; price: number}[];
+  tiers: {label: string; input: number | null; output: number | null; cache: number | null}[];
+};
 export type ModelPricing = {group: string; rate_multiplier?: number | null; currency?: string; model_ids?: string[]; pricing_warning?: string; models: ModelPrice[]};
 export type GroupCatalogs = {groups: AccountGroup[]; catalogs: Record<string, ModelPricing>};
 type Directory = {groups: AccountGroup[]; catalogs: Map<string, ModelPricing>; keys: ModelGroupKey[]; warning: string};

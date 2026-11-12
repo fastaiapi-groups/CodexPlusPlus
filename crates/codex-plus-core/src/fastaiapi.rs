@@ -1193,7 +1193,12 @@ fn group_model_catalog(
 }
 
 fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
-    let rate = raw["group_ratio"][group].as_f64();
+    let rate = if group == "auto" {
+        None
+    } else {
+        raw["group_ratio"][group].as_f64()
+    };
+    let automatic_groups = raw["auto_groups"].as_array();
     let currency = if status["quota_display_type"] == "CNY" {
         "CNY"
     } else {
@@ -1204,7 +1209,8 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
     } else {
         1.0
     };
-    let models: Vec<Value> = raw["data"].as_array().into_iter().flatten().filter(|m| m["enable_groups"].as_array().is_some_and(|gs| gs.iter().any(|g| g == group || g == "all"))).map(|m| {
+    let models: Vec<Value> = raw["data"].as_array().into_iter().flatten().filter(|m| m["enable_groups"].as_array().is_some_and(|gs| gs.iter().any(|g| g == group || g == "all")
+        || (group == "auto" && automatic_groups.is_some_and(|groups| groups.iter().any(|g| gs.contains(g)))))).map(|m| {
         let input = rate.zip(m["model_ratio"].as_f64()).map(|(r,v)| r*v*2.0*fx);
         let token_billed = m["quota_type"] == 0 && m["billing_mode"].as_str().is_none_or(|v| v == "" || v == "token");
         let expression_billed = m["billing_mode"] == "tiered_expr";
@@ -1212,15 +1218,23 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
             rate.zip(m["billing_expr"].as_str()).and_then(|(rate, expression)|
                 crate::fastaiapi_pricing::expression_tiers(expression, rate * fx)
             ).unwrap_or_default()
-        } else if token_billed {
+        } else if token_billed && rate.is_some() {
             vec![json!({"label": "标准价", "input": input,
                 "output": input.zip(m["completion_ratio"].as_f64()).map(|(a,b)| a*b),
                 "cache": input.zip(m["cache_ratio"].as_f64()).map(|(a,b)| a*b)})]
         } else {vec![]};
-        let note = (expression_billed && tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。");
+        let note = if group == "auto" {
+            Some("自动分组按实际命中的分组计价。")
+        } else {
+            (expression_billed && tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。")
+        };
         let per_call = m["quota_type"] == 1 && m["billing_mode"].as_str().is_none_or(|value| matches!(value,""|"per_call"));
-        let unit_price = if per_call {rate.zip(m["model_price"].as_f64()).filter(|(_,price)|price.is_finite() && *price >= 0.0).map(|(rate,price)|price * rate * fx)} else {None};
-        json!({"model": m["model_name"], "time_pricing": false, "pricing_note": note, "tiers": tiers, "unit_price": unit_price, "billing_unit": if per_call {"call"} else {"token"}})
+        let model_price = m["group_model_prices"][group].as_f64().or_else(|| m["model_price"].as_f64());
+        let unit_price = if per_call {rate.zip(model_price).filter(|(_,price)|price.is_finite() && *price >= 0.0).map(|(rate,price)|price * rate * fx)} else {None};
+        let vendor_icon = m["vendor_id"].as_i64().and_then(|id| {
+            raw["vendors"].as_array()?.iter().find(|vendor| vendor["id"].as_i64() == Some(id))?["icon"].as_str()
+        });
+        json!({"model": m["model_name"], "description":m["description"], "icon":m["icon"], "vendor_icon":vendor_icon, "time_pricing": false, "pricing_note": note, "tiers": tiers, "unit_price": unit_price, "billing_unit": if per_call {"call"} else {"token"}})
     }).collect();
     json!({"group": group, "rate_multiplier": rate, "currency": currency, "models": models})
 }
@@ -1539,6 +1553,37 @@ mod tests {
         assert_eq!(view["models"][1]["tiers"], json!([]));
         assert!((view["models"][1]["unit_price"].as_f64().unwrap() - 0.28).abs() < 1e-9);
         assert_eq!(view["models"][1]["billing_unit"], "call");
+    }
+    #[test]
+    fn image_catalog_uses_exact_group_model_price_and_website_metadata() {
+        let pricing = json!({
+            "group_ratio":{"default":1,"transparent":2,"free":1,"auto":1},
+            "auto_groups":["default"],
+            "vendors":[{"id":3,"icon":"OpenAI"}],
+            "data":[
+                {"model_name":"gpt-image-2.5","vendor_id":3,"description":"支持参考图编辑","quota_type":1,
+                 "enable_groups":["default","transparent","free"],"model_price":0.02,
+                 "group_model_prices":{"transparent":0.2,"free":0}},
+                {"model_name":"gpt-image-2.5-flare","icon":"OpenAI.Color","quota_type":1,
+                 "enable_groups":["transparent"],"model_price":0.08,"group_model_prices":{"transparent":0.35}}
+            ]
+        });
+        let status = json!({"quota_display_type":"CNY","usd_exchange_rate":1});
+        let default = model_pricing(&pricing, "default", &status);
+        let transparent = model_pricing(&pricing, "transparent", &status);
+        assert_eq!(default["models"][0]["unit_price"], 0.02);
+        assert_eq!(transparent["models"][0]["unit_price"], 0.4);
+        assert_eq!(transparent["models"][1]["unit_price"], 0.7);
+        assert_eq!(transparent["models"][0]["description"], "支持参考图编辑");
+        assert_eq!(transparent["models"][0]["vendor_icon"], "OpenAI");
+        assert_eq!(transparent["models"][1]["icon"], "OpenAI.Color");
+        assert_eq!(
+            model_pricing(&pricing, "free", &status)["models"][0]["unit_price"],
+            0.0
+        );
+        let automatic = model_pricing(&pricing, "auto", &status);
+        assert_eq!(automatic["models"].as_array().unwrap().len(), 1);
+        assert!(automatic["models"][0]["unit_price"].is_null());
     }
     #[test]
     fn payment_and_response_validation() {

@@ -1,7 +1,9 @@
 import { usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Search, X, Check, RefreshCw, ChevronRight } from "lucide-react";
+import { Search, X, Check, RefreshCw, ChevronRight, Image, Video, MessageSquare } from "lucide-react";
+import { BRAND_ICON_URLS } from "../provider-brand-icons";
+import { brandIconIsColor, brandIconKey } from "../provider-brands";
 import type { AccountGroup } from "./groupCache";
 import { useModelDirectory } from "./ModelDirectoryContext";
 import { catalogModels } from "./modelDirectory";
@@ -60,6 +62,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const filtered = list.filter(model => model.toLowerCase().includes(query.trim().toLowerCase()));
   const selected = choice?.group === activeGroup ? choice?.model : isCurrent && !choice ? value : "";
   const label = {text: "文字", image: "图片", video: "视频"}[kind];
+  const KindIcon = {text: MessageSquare, image: Image, video: Video}[kind];
   const apply = async () => {
     if (activeGroup === null || !selected || !list.includes(selected)) return;
     setSaving(true);
@@ -141,16 +144,26 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
             <div className="fast-group-list" role="radiogroup" aria-label="可用模型">
               {filtered.map(model => {
                 const price = pricing?.models.find(row => row.model === model);
+                const brand = brandIconKey(price?.icon ?? "", price?.vendor_icon ?? "") ?? brandIconKey(model);
+                const icon = brand ? BRAND_ICON_URLS[brand] : undefined;
+                const unit = price?.billing_unit === "image" ? "每张" : "每次调用";
                 const note = model.endsWith("-sol") ? "推理强" : model.endsWith("-luna") ? "性价比高" : "";
                 return <label key={model} className={selected === model ? "selected" : ""}>
                   <input type="radio" name="default-model" checked={selected === model} disabled={busy || working}
                     onChange={() => activeGroup !== null && setChoice({group: activeGroup, model})}/>
                   <span className="fast-model-card-content">
-                    <span className="fast-model-card-name">{model}</span>
+                    <span className="fast-model-card-name">
+                      {icon && brand ? <img className={brandIconIsColor(brand) ? "" : "is-monochrome"} src={icon} alt=""/> : <KindIcon aria-hidden="true"/>}
+                      {model}
+                    </span>
+                    {price?.description && <span className="fast-model-card-description">{price.description}</span>}
                     {(note || (isCurrent && model === value)) && <span className="fast-model-card-tags">
                       {note && <em>{note}</em>}{isCurrent && model === value && <em className="is-current">当前默认</em>}
                     </span>}
-                    {price?.unit_price != null ? <span className="fast-model-unit-price"><b>{priceYuan(price.unit_price, pricing?.currency)}</b><small>每次调用</small></span>
+                    {price?.unit_price != null ? <span className="fast-model-unit-price"><b>{priceYuan(price.unit_price, pricing?.currency)}</b><small>{unit}</small></span>
+                      : price?.unit_tiers?.length ? <span className="fast-model-unit-tiers">{price.unit_tiers.map((tier, index) =>
+                        <span className="fast-model-unit-price" key={index}><b>{priceYuan(tier.price, pricing?.currency)}</b><small>{[tier.label, unit].filter(Boolean).join(" · ")}</small></span>
+                      )}</span>
                       : price?.tiers.length ? <span className="fast-model-price-table">
                         <span className="fast-model-price-row is-heading"><span>上下文</span><span>输入</span><span>输出</span><span>缓存读取</span></span>
                         {price.tiers.map((tier, index) => <span className="fast-model-price-row" key={index}><span>{tier.label}</span><b>{priceYuan(tier.input, pricing?.currency)}</b><b>{priceYuan(tier.output, pricing?.currency)}</b><b>{priceYuan(tier.cache, pricing?.currency)}</b></span>)}
@@ -166,7 +179,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
         </div>
         <footer className="fast-model-footer">
           {error && <div className="fast-payment-error" role="alert">{error}</div>}
-          <p className="fast-model-hint">{pricing?.rate_multiplier != null && <>价格已计入分组倍率 {pricing.rate_multiplier}×。 </>}
+          <p className="fast-model-hint">{pricing?.rate_multiplier != null && <>显示价格已计入适用倍率。 </>}
             {kind === "text" ? "切换后重启 Codex 生效。" : "默认分组与模型用于后续媒体任务。"}
           </p>
           <button type="button" className="fast-pay-primary" disabled={busy || working || loading || !selected || !list.includes(selected)}

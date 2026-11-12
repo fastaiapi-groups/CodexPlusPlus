@@ -708,7 +708,21 @@ fn pricing_view(plaza: &Value, group_id: &Value) -> Value {
         let p=&m["pricing"];
         let tier=|label:Value,p:&Value| json!({"label":label,"input":p["input_price"].as_f64().map(|v|v*rate*1_000_000.0),"output":p["output_price"].as_f64().map(|v|v*rate*1_000_000.0),"cache":p["cache_read_price"].as_f64().map(|v|v*rate*1_000_000.0)});
         let tiers=if p["billing_mode"]=="token" {if g["long_context_pricing_enabled"]==true && p["intervals"].as_array().is_some_and(|a|!a.is_empty()) {p["intervals"].as_array().unwrap().iter().map(|i|tier(i["tier_label"].as_str().map(|s|json!(s)).unwrap_or(json!("阶梯价")),i)).collect::<Vec<_>>()}else{vec![tier(json!("标准价"),p)]}}else{vec![]};
-        json!({"model":m["name"],"time_pricing":m.get("time_pricing").is_some_and(|v|v.is_object()),"tiers":tiers})
+        let mode = p["billing_mode"].as_str().unwrap_or("");
+        let media_rate = match mode {
+            "image" if g["image_rate_independent"] == true => g["image_rate_multiplier"].as_f64().unwrap_or(1.0),
+            _ => rate,
+        };
+        let request_price = |value: &Value| value.as_f64().filter(|price| price.is_finite() && *price >= 0.0).map(|price| price * media_rate);
+        let fixed = matches!(mode, "image" | "per_request");
+        let unit_tiers: Vec<Value> = p["intervals"].as_array().into_iter().flatten()
+            .filter_map(|interval| Some(json!({"label":interval["tier_label"], "price":request_price(&interval["per_request_price"])?})))
+            .collect();
+        let unit_price = (fixed && unit_tiers.is_empty()).then(|| request_price(&p["per_request_price"])).flatten();
+        json!({"model":m["name"],"description":m["description"],"vendor_icon":m["platform"],
+            "time_pricing":m.get("time_pricing").is_some_and(|v|v.is_object()),"tiers":tiers,
+            "unit_price":unit_price,"unit_tiers":if fixed {unit_tiers} else {vec![]},
+            "billing_unit":if mode == "image" {"image"} else if fixed {"call"} else {"token"}})
     }).collect();
     json!({"group":g["name"],"rate_multiplier":rate,"currency":"USD","models":models})
 }
@@ -730,6 +744,31 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path},
     };
+    #[test]
+    fn image_plaza_uses_group_model_price_and_independent_image_rate() {
+        let plaza = json!({"groups":[
+            {"id":2,"name":"default","rate_multiplier":1,"models":[
+                {"name":"gpt-image-2","platform":"openai","pricing":{"billing_mode":"image","per_request_price":0.02}}
+            ]},
+            {"id":3,"name":"studio","user_rate_multiplier":3,"image_rate_independent":true,"image_rate_multiplier":2,"models":[
+                {"name":"gpt-image-2","platform":"openai","pricing":{"billing_mode":"image","per_request_price":0.2,"intervals":[
+                    {"tier_label":"1K","per_request_price":0},{"tier_label":"4K","per_request_price":0.4}
+                ]}}
+            ]}
+        ]});
+        assert_eq!(
+            pricing_view(&plaza, &json!(2))["models"][0]["unit_price"],
+            0.02
+        );
+        let studio = pricing_view(&plaza, &json!(3));
+        assert!(studio["models"][0]["unit_price"].is_null());
+        assert_eq!(
+            studio["models"][0]["unit_tiers"],
+            json!([{"label":"1K","price":0.0},{"label":"4K","price":0.8}])
+        );
+        assert_eq!(studio["models"][0]["billing_unit"], "image");
+    }
+
     fn test_state(server: &MockServer) -> State {
         State {
             origin: server.uri(),
