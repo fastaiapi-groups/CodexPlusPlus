@@ -58,7 +58,7 @@ impl Platform {
     pub fn origins(self) -> &'static [&'static str] {
         match self {
             Self::NewApi => &crate::fastaiapi::ORIGINS,
-            Self::SubApi => &["https://fastaiapi.cloud"],
+            Self::SubApi => &crate::fastaiapi_subapi::ORIGINS,
         }
     }
     fn primary_origin(self) -> &'static str {
@@ -185,7 +185,7 @@ pub fn resolve(id: Option<&str>) -> Result<Platform, String> {
 pub async fn route(platform: Platform) -> usize {
     match platform {
         Platform::NewApi => crate::fastaiapi::selected_route().await,
-        Platform::SubApi => 0,
+        Platform::SubApi => crate::fastaiapi_subapi::selected_route().await,
     }
 }
 pub async fn origin(platform: Platform) -> &'static str {
@@ -318,6 +318,10 @@ mod tests {
             ])
         );
         assert_eq!(view["items"][0]["origin"], "https://fastaiapi.cloud");
+        assert_eq!(
+            view["items"][1],
+            json!({"id":1,"name":"路线2","origin":"http://8.137.194.180:88"})
+        );
     }
 
     #[test]
@@ -401,7 +405,10 @@ mod tests {
             crate::fastaiapi::profile_id(2, 1)
         );
         assert_eq!(Platform::NewApi.origins().len(), 3);
-        assert_eq!(Platform::SubApi.origins(), ["https://fastaiapi.cloud"]);
+        assert_eq!(
+            Platform::SubApi.origins(),
+            ["https://fastaiapi.cloud", "http://8.137.194.180:88"]
+        );
         assert!(Platform::parse("https://untrusted.example").is_err());
     }
 }

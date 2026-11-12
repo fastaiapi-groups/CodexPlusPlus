@@ -8,7 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 const PLATFORM: Platform = Platform::SubApi;
-const ORIGIN: &str = "https://fastaiapi.cloud";
+pub(crate) const ORIGINS: [&str; 2] = ["https://fastaiapi.cloud", "http://8.137.194.180:88"];
+const ORIGIN: &str = ORIGINS[0];
+const ROUTE_FILE: &str = "subapi-route";
 pub(crate) const LEGACY_SESSION: &str = "com.fastaiapi.codexplusplus.session";
 pub(crate) const LEGACY_REMEMBERED_LOGIN: &str = "com.fastaiapi.codexplusplus.remembered-login";
 #[derive(Default, Serialize, Deserialize)]
@@ -24,14 +26,28 @@ struct State {
     session: LoginSession,
 }
 static STATE: OnceLock<tokio::sync::Mutex<State>> = OnceLock::new();
+fn saved_route(state_dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(state_dir.join(ROUTE_FILE))
+        .ok()
+        .and_then(|route| route.trim().parse::<usize>().ok())
+        .filter(|route| *route < ORIGINS.len())
+        .unwrap_or(0)
+}
 fn state() -> &'static tokio::sync::Mutex<State> {
     STATE.get_or_init(|| {
         tokio::sync::Mutex::new(State {
-            origin: ORIGIN.into(),
+            origin: ORIGINS[saved_route(&crate::paths::default_app_state_dir())].into(),
             loaded: false,
             session: LoginSession::default(),
         })
     })
+}
+pub(crate) async fn selected_route() -> usize {
+    let s = state().lock().await;
+    ORIGINS
+        .iter()
+        .position(|origin| *origin == s.origin)
+        .unwrap_or(0)
 }
 fn error_message(status: u16, value: &Value) -> String {
     let reason = format!(
@@ -101,7 +117,7 @@ fn unpack(status: u16, value: Value) -> Result<Value, String> {
     Ok(data(value))
 }
 fn persist(s: &State) -> bool {
-    if s.origin != ORIGIN {
+    if !ORIGINS.contains(&s.origin.as_str()) {
         return false;
     }
     crate::fastaiapi_secret_store::save(
@@ -469,33 +485,38 @@ fn recharge_route(action: &str, id: &str) -> Result<(&'static str, String), Stri
 }
 
 pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, String> {
-    if action == "settings" || action == "test_routes" {
-        let start = Instant::now();
-        let result = async {
-            let (status, raw) =
-                send(ORIGIN, "", "GET", "/api/v1/settings/public", &Value::Null).await?;
-            unpack(status, raw)
-        }
-        .await;
-        if action == "test_routes" {
-            return Ok(
-                json!([{"id":0,"latency_ms":if result.is_ok(){Some(start.elapsed().as_millis() as u64)}else{None},"error":result.err()}]),
-            );
-        }
-        let raw = result?;
+    if action == "test_routes" {
+        let results = futures_util::future::join_all(ORIGINS.iter().enumerate().map(|(id, origin)| async move {
+            let start = Instant::now();
+            let result = tokio::time::timeout(Duration::from_secs(8), public_settings(origin))
+                .await
+                .map_err(|_| "连接超时或网络不可达".to_owned())
+                .and_then(|value| value);
+            json!({"id":id,"latency_ms":if result.is_ok(){Some(start.elapsed().as_millis() as u64)}else{None},"error":result.err()})
+        })).await;
+        return Ok(json!(results));
+    }
+    if action == "settings" {
+        let raw = public_settings(ORIGINS[selected_route().await]).await?;
         return Ok(
             json!({"registration_enabled":raw["registration_enabled"],"email_verify_enabled":raw["email_verify_enabled"],"invitation_code_enabled":raw["invitation_code_enabled"],
             "captcha_required":raw["turnstile_enabled"]==true || raw["captcha_enabled"]==true || raw["tencent_captcha_enabled"]==true || raw["aliyun_captcha_enabled"]==true}),
         );
     }
-    if action == "select_route" {
-        return if body["route"] == 0 {
-            Ok(json!({}))
-        } else {
-            Err("路线无效".into())
-        };
-    }
     let mut s = state().lock().await;
+    if action == "select_route" {
+        let route = body["route"]
+            .as_u64()
+            .and_then(|route| usize::try_from(route).ok())
+            .filter(|route| *route < ORIGINS.len())
+            .ok_or("路线无效")?;
+        let dir = crate::paths::default_app_state_dir();
+        std::fs::create_dir_all(&dir).map_err(|_| "无法保存路线")?;
+        crate::settings::atomic_write(&dir.join(ROUTE_FILE), route.to_string().as_bytes())
+            .map_err(|_| "无法保存路线")?;
+        s.origin = ORIGINS[route].into();
+        return Ok(json!({}));
+    }
     match action {
         "remembered_login" => {
             drop(s);
@@ -751,6 +772,15 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
         _ => Err("SubAPI 不支持该账户操作".into()),
     }
 }
+
+async fn public_settings(origin: &str) -> Result<Value, String> {
+    let (status, raw) = send(origin, "", "GET", "/api/v1/settings/public", &Value::Null).await?;
+    let settings = unpack(status, raw)?;
+    if !settings.is_object() {
+        return Err("未返回 FastAiAPI 服务状态".into());
+    }
+    Ok(settings)
+}
 fn pricing_view(plaza: &Value, group_id: &Value) -> Value {
     let group = plaza["groups"]
         .as_array()
@@ -802,6 +832,20 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path},
     };
+
+    #[test]
+    fn fastai_route_defaults_to_https_and_restores_the_saved_ip_route() {
+        let state = tempfile::tempdir().unwrap();
+        assert_eq!(ORIGINS[saved_route(state.path())], ORIGIN);
+        let path = state.path().join(ROUTE_FILE);
+        std::fs::write(&path, "1\n").unwrap();
+        assert_eq!(
+            ORIGINS[saved_route(state.path())],
+            "http://8.137.194.180:88"
+        );
+        std::fs::write(&path, "99").unwrap();
+        assert_eq!(ORIGINS[saved_route(state.path())], ORIGIN);
+    }
 
     #[tokio::test]
     async fn legacy_fastai_access_token_authenticates_the_new_subapi_panel() {
