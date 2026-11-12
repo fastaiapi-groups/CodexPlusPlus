@@ -3,6 +3,7 @@ mod connection;
 mod mcp;
 mod protocol;
 mod runs;
+mod video_models;
 
 use crate::managed_mcp::ManagedMcp;
 pub(crate) use connection::{current_key, status_for};
@@ -10,6 +11,33 @@ pub use connection::{
     enable_native, has_saved_route, native_enabled, validate_media_origin, verify_connection,
 };
 pub use mcp::run;
+pub use video_models::video_test_models;
+
+pub(crate) async fn test_image_data(
+    platform: crate::fastaiapi_platform::Platform,
+    origin: &str,
+    key: &str,
+    location: &str,
+) -> anyhow::Result<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let data = connection::download_for_route(
+        &connection::client()?,
+        platform,
+        origin,
+        key,
+        location,
+        18_000_000,
+    )
+    .await?;
+    let mime = match protocol::image_extension(&data)? {
+        "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
+        _ => "image/png",
+    };
+    Ok(format!("data:{mime};base64,{}", STANDARD.encode(data)))
+}
 
 /// 桌面测试复用 MCP 的提交、查询和下载回执。
 pub async fn video_test(

@@ -15,6 +15,9 @@ pub async fn fastaiapi_video_test(
     action: String,
     body: Value,
 ) -> Result<Value, String> {
+    if action == "capabilities" {
+        return Ok(json!(media::video_test_models(panels::selected())));
+    }
     let workspace = body["workspace"].as_str().map(PathBuf::from);
     let result = media::video_test(&paths::default_app_state_dir(), &action, body)
         .await

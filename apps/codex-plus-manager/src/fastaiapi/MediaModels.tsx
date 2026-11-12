@@ -18,7 +18,7 @@ type Status = {
   models_by_kind?: Partial<Record<"text" | "image" | "video", string[]>>;
 };
 
-export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: number; textModel?: string; textPicker: ReactNode}) {
+export function MediaModels({textModel, textPicker}: {textModel?: string; textPicker: ReactNode}) {
   const invoke = usePlatformInvoke();
   const api = <T,>(action: string, body?: object) => invoke<T>("fastaiapi_account", {action, body});
   const {routes, setLocked} = useServiceRoutes();
@@ -76,7 +76,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
   };
   const working = connecting || Boolean(busy);
   const setTestBusy = (value: boolean) => {setBusy(value ? "test" : "");setLocked(value);};
-  return <><section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>在 Codex 对话中调用生图和视频工具。默认模型可在下方选择。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
+  return <section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>在 Codex 对话中调用生图和视频工具。默认模型可在下方选择。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
     <div className={`fast-media-status ${status?.state === "ready" && registered ? "is-ready" : "needs-repair"}`} role="status">
       <strong>{connecting ? "正在连接" : registered && status?.state === "ready" ? "工具已连接" : "连接待检查"}</strong>
       <span>{status?.message || "正在检查媒体凭据与路线…"}</span>
@@ -103,19 +103,5 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
     {test === "video" && <VideoTestDialog models={modelsFor("video")} value={defaults.video} onClose={() => setTest(null)} onBusy={setTestBusy}/>}
     {(test === "text" || test === "image") && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={setTestBusy}/>}
     {message && <p role="status" className="fast-notice">{message}</p>}
-  </section>
-    <details className="fast-advanced">
-      <summary>高级配置 <span>API Key 自动管理</span></summary>
-      <p className="fast-muted">确认默认分组和模型时自动绑定。需要重新绑定时，在对应模型选择器再次确认。</p>
-      {([["对话", textKeyId], ["图片", boundKey("image")], ["视频", boundKey("video")]] as const).map(([label, id]) => {
-        if (!id || !directory) return null;
-        const key = directory.keys.find(key => key.id === id);
-        const groupId = key && keyGroup(key, routes.platform);
-        const group = directory.groups.find(group => group.id === groupId);
-        return <p key={label} className="fast-muted">{label} Key · {key
-          ? `${key.name} · ${group?.name ?? groupId ?? "未分组"} · ${key.status === "active" ? "有效" : "不可用"}`
-          : "状态暂不可用，请重新确认默认模型。"}</p>;
-      })}
-    </details>
-  </>;
+  </section>;
 }

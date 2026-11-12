@@ -7,6 +7,8 @@ export function createAccountFixture() {
   const connected = new Set<Panel>();
   const extraKeys: Record<Panel, {id: number; name: string; group: string; group_id: number | null; status: string}[]> = {newapi: [], subapi: []};
   const media = new Map<string, {model: string; groupId: string; keyId: number}>();
+  const videoTests = new Map<string, {model: string; state: string; job_id: string; progress: number; files: string[]}>();
+  let referenceNumber = 0;
   const configurations: Record<string,{key_id?:number;model?:string}> = {};
   const calls: {command:string;platform: string;action?: string}[]=[];
   const routes=(platform:Panel)=>({platform,platforms:[{id:"newapi",name:"TuMeiAPI",origin:"https://tumeiapi.com"},{id:"subapi",name:"FastAiAPI",origin:"https://fastaiapi.cloud"}],selected:panels[platform].route,items:(platform==="newapi"?["http://8.137.194.180:90","https://tumeiapi.com","https://newapi.fastaiapi.cloud"]:["https://fastaiapi.cloud"]).map((origin,id)=>({id,name:`路线${id+1}`,origin}))});
@@ -24,6 +26,7 @@ export function createAccountFixture() {
     calls.push({command,platform,action});
     let value:any;
     if(command==="open_external_url")value={preview:true};
+    else if(command==="plugin:dialog|open")value=args.options?.directory?"/fixture/project":`/fixture/project/reference-${++referenceNumber}.png`;
     else if(command==="fastaiapi_models")value=[p.model,"gpt-image-2","minimax-h3"];
     else if(command==="fastaiapi_configure"){configurations[platform]={key_id:args.keyId,model:args.model};value={preview:true};}
     else if(command==="fastaiapi_media_tool"){
@@ -32,6 +35,15 @@ export function createAccountFixture() {
         connected.add(platform);
       }
       value={registered:connected.has(platform)};
+    }
+    else if(command==="fastaiapi_video_test"){
+      if(action==="capabilities")value={"minimax-h3":[{id:null,seconds:[5,6,7,8,9,10,11,12,13,14,15],default_seconds:5,max_images:9}]};
+      else {
+        const id=args.body?.request_id;
+        if(action==="submit_video")videoTests.set(id,{model:args.body.model,state:"downloaded",job_id:`fixture-${id}`,progress:100,files:[]});
+        value=videoTests.get(id);
+        if(!value)throw new Error("没有此模拟视频任务");
+      }
     }
     else if(command==="fastaiapi_account"){
       const body=args.body||{};
@@ -76,7 +88,8 @@ export function createAccountFixture() {
             image_model:image?.model,video_model:video?.model,key_ids:{image:image?.keyId,video:video?.keyId},group_ids:{image:image?.groupId,video:video?.groupId}};
         }
         else if(action==="media_setup"||action==="media_manual")value={configured:true};
-        else if(action==="media_test")value={message:"测试场景通过（未发起生成）",model:body.kind==="image"?"gpt-image-2":p.model};
+        else if(action==="media_test")value={message:"测试场景通过（未发起生成）",model:body.kind==="image"?"gpt-image-2":p.model,
+          image:body.kind==="image"?"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBfoAAAAASUVORK5CYII=":undefined};
         else if(action==="orders")value={items:[{id:42,out_trade_no:"subapi-fixture-order",trade_no:"newapi-fixture-order",amount:10,money:10,pay_amount:10,currency:"USD",status:platform==="newapi"?"success":"COMPLETED",order_type:"balance"}]};
         else if(action==="checkout_info")value={methods:{alipay:{currency:"CNY",display_name:"支付宝",available:true,single_min:1,single_max:1000,fee_rate:0}},plans:[{id:1,name:"SubAPI 测试套餐",price:20,currency:"USD",validity_days:30}],balance_disabled:false,global_min:1,global_max:1000};
         else if(action==="topup_info")value={enable_online_topup:false,enable_redemption:false};

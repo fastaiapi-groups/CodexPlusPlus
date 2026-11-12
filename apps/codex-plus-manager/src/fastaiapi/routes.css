@@ -21,11 +21,11 @@
 .fast-route-dialog>header button svg{width:18px;height:18px}
 .fast-route-body{padding:0 24px 24px}
 .fast-route-list{display:grid;gap:10px}
-.fast-route-list>button{box-sizing:border-box;display:flex;align-items:center;gap:14px;width:100%;min-height:76px;margin:0;padding:16px;text-align:left;border:1px solid #ffffff12;border-radius:13px;background:#ffffff03;transition:background .15s,border-color .15s,box-shadow .15s}
-.fast-route-list>button>svg{box-sizing:content-box;flex:none;width:20px;height:20px;padding:10px;border:1px solid #ffffff0a;border-radius:11px;background:#ffffff04;color:#a2afbd;stroke-width:1.65}
-.fast-route-list>button:hover:not(:disabled){border-color:#ffffff2b;background:#ffffff07}
-.fast-route-list>button.is-selected{border-color:#5ed3bd90;background:#5ed3bd0b;box-shadow:inset 0 0 0 1px #5ed3bd0a}
-.fast-route-list>button.is-selected>svg{color:#71ddca;background:#5ed3bd10;border-color:#5ed3bd18}
+:is(.fast-route-list>button,.fast-route-option>button:first-child){box-sizing:border-box;display:flex;align-items:center;gap:14px;width:100%;min-height:76px;margin:0;padding:16px;text-align:left;border:1px solid #ffffff12;border-radius:13px;background:#ffffff03;transition:background .15s,border-color .15s,box-shadow .15s}
+:is(.fast-route-list>button,.fast-route-option>button:first-child)>svg{box-sizing:content-box;flex:none;width:20px;height:20px;padding:10px;border:1px solid #ffffff0a;border-radius:11px;background:#ffffff04;color:#a2afbd;stroke-width:1.65}
+:is(.fast-route-list>button,.fast-route-option>button:first-child):hover:not(:disabled){border-color:#ffffff2b;background:#ffffff07}
+:is(.fast-route-list>button,.fast-route-option>button:first-child).is-selected{border-color:#5ed3bd90;background:#5ed3bd0b;box-shadow:inset 0 0 0 1px #5ed3bd0a}
+:is(.fast-route-list>button,.fast-route-option>button:first-child).is-selected>svg{color:#71ddca;background:#5ed3bd10;border-color:#5ed3bd18}
 .fast-route-name{min-width:0;flex:1}
 .fast-route-name strong{font-size:14px;line-height:22px;font-weight:600}
 .fast-route-origin{display:block;color:#a2afbd;font-size:12px;line-height:18px;overflow-wrap:anywhere}
@@ -45,8 +45,8 @@
 .fast-route-dialog{max-height:calc(100dvh - 32px);border-radius:16px}
 .fast-route-dialog>header{padding:18px 18px 14px}
 .fast-route-body{padding:0 18px 18px}
-.fast-route-list>button{min-height:70px;padding:12px;gap:10px}
-.fast-route-list>button>svg{width:18px;height:18px;padding:8px}
+:is(.fast-route-list>button,.fast-route-option>button:first-child){min-height:70px;padding:12px;gap:10px}
+:is(.fast-route-list>button,.fast-route-option>button:first-child)>svg{width:18px;height:18px;padding:8px}
 .fast-route-name strong{font-size:13px}
 .fast-route-latency{font-size:11px;gap:4px}
 .fast-route-check{width:15px}
@@ -63,3 +63,10 @@
 .topbar-actions .codex-app-state{display:inline-flex;align-items:center}.topbar-actions .codex-app-state>*{color:#50cba6}.topbar-actions .codex-app-state>*:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
 .topbar-actions .fast-codex-launch{color:#61cdb9;border-color:#61cdb945;background:#61cdb90e;cursor:pointer}.topbar-actions .fast-codex-launch>svg{width:15px;height:15px}.topbar-actions .fast-codex-launch:hover:not(:disabled),.topbar-actions .fast-route-trigger.is-route:hover:not(:disabled){background:#61cdb91c;border-color:#61cdb965}.topbar-actions .fast-codex-launch:disabled{opacity:.5}
 .topbar-actions .codex-app-state>.bad{color:#f08d91}.topbar-actions .codex-app-state>.warn{color:#dbb879}
+
+.fast-route-option{position:relative}
+.fast-route-option>button:first-child{padding-right:52px}
+.fast-route-copy{position:absolute;top:50%;right:12px;transform:translateY(-50%);display:grid;place-items:center;width:30px;height:30px;border:1px solid #8195ab35;border-radius:8px;background:#8195ab0a}
+.fast-route-copy:hover{background:#8195ab26}
+.fast-route-copy-status{margin:12px 0 0;color:#68cebb;font-size:12px}
+@media(max-width:480px){.fast-route-option>button:first-child{padding-right:42px}.fast-route-copy{right:8px;width:27px;height:27px}}

@@ -9,6 +9,7 @@ use std::{
 };
 
 use super::connection::{Connection, https_url};
+use super::video_models;
 use crate::{fastaiapi::model_kind, fastaiapi_platform::Platform};
 
 const MAX_INLINE: usize = 10 * 1024 * 1024;
@@ -133,6 +134,23 @@ impl Generate {
         let grok = model == "grok-imagine-video-1.5";
         let h3 = model.starts_with("minimax-h3");
         let seconds = self.seconds.unwrap_or(if grok { 6 } else { 5 });
+        let modes = video_models::modes(platform, model);
+        if !modes.is_empty() {
+            let mode = self.mode.as_deref().or(grok.then_some("first-frame"));
+            let limits = modes
+                .iter()
+                .find(|limits| limits.id == mode)
+                .context("所选模型不支持此视频模式")?;
+            ensure!(
+                limits.seconds.contains(&seconds),
+                "所选模型或模式不支持此视频时长"
+            );
+            ensure!(
+                self.images.len() <= limits.max_images,
+                "所选模型或模式最多支持 {} 张图片",
+                limits.max_images
+            );
+        }
         let resolution =
             self.resolution
                 .as_deref()
@@ -147,19 +165,9 @@ impl Generate {
                 "Grok 只支持 720p，不能传参考视频"
             );
             let mode = self.mode.as_deref().unwrap_or("first-frame");
-            ensure!(
-                [6, 12, 18, 24, 30].contains(&seconds),
-                "Grok 时长支持 6、12、18、24、30 秒"
-            );
             match mode {
-                "first-frame" => ensure!(
-                    self.images.len() <= 1 && self.audios.is_empty(),
-                    "Grok 首帧模式最多一张图且不能传音频"
-                ),
-                "reference" => ensure!(
-                    seconds == 6 && self.images.len() <= 6 && self.audios.len() <= 3,
-                    "Grok 参考模式为 6 秒，最多六张图和三个音频"
-                ),
+                "first-frame" => ensure!(self.audios.is_empty(), "Grok 首帧模式不能传参考音频"),
+                "reference" => ensure!(self.audios.len() <= 3, "Grok 参考模式最多三个音频"),
                 _ => bail!("Grok 模式应为 first-frame 或 reference"),
             }
             let mut budget = MAX_GROK_INLINE;
@@ -190,10 +198,16 @@ impl Generate {
             platform == Platform::NewApi || model == "minimax-h3",
             "SubAPI 仅支持已适配的 H3 与 Grok 视频模型"
         );
-        ensure!(
-            !h3 || !self.images.is_empty(),
-            "MiniMax H3 至少需要一张参考图"
-        );
+        if platform == Platform::NewApi {
+            ensure!(
+                model != "minimax-h3-u17" || self.audios.is_empty(),
+                "H3 U17 仅支持文生视频"
+            );
+            ensure!(
+                model != "minimax-h3-u32" || self.audios.is_empty(),
+                "H3 U32 不支持参考音频"
+            );
+        }
         ensure!(
             (1..=if h3 { 15 } else { 60 }).contains(&seconds),
             "视频时长超出适配范围"
@@ -210,7 +224,7 @@ impl Generate {
         let images = encode_all(root, &self.images, "image", true, &mut budget)?;
         let audios = encode_all(root, &self.audios, "audio", true, &mut budget)?;
         let videos = encode_all(root, &self.videos, "video", true, &mut budget)?;
-        let prompt = if h3 {
+        let prompt = if h3 && !(images.is_empty() && videos.is_empty() && audios.is_empty()) {
             bind_prompt(prompt, &images, &videos, &audios)
         } else {
             prompt.to_owned()
@@ -477,13 +491,39 @@ mod tests {
     }
 
     #[test]
-    fn h3_requires_a_reference_and_grok_keeps_its_own_contract() {
+    fn h3_text_only_and_model_specific_video_limits() {
         let mut args = args(Path::new("."));
         args.images.clear();
+        let (_, h3) = args
+            .build(Platform::NewApi, "video", "minimax-h3", Path::new("."))
+            .unwrap();
+        assert_eq!(h3["prompt"], args.prompt);
+        assert!(h3.get("reference_images").is_none());
+        args.seconds = Some(3);
         assert!(
             args.build(Platform::NewApi, "video", "minimax-h3", Path::new("."))
                 .is_err()
         );
+        let (_, h3_x) = args
+            .build(Platform::NewApi, "video", "minimax-h3-x", Path::new("."))
+            .unwrap();
+        assert_eq!(h3_x["seconds"], 3);
+        args.images = vec!["frame.png".into(); 10];
+        assert!(
+            args.build(Platform::NewApi, "video", "minimax-h3-x", Path::new("."))
+                .unwrap_err()
+                .to_string()
+                .contains("最多支持 9 张")
+        );
+        args.seconds = Some(5);
+        args.images.truncate(1);
+        assert!(
+            args.build(Platform::NewApi, "video", "minimax-h3-u17", Path::new("."))
+                .unwrap_err()
+                .to_string()
+                .contains("最多支持 0 张")
+        );
+        args.images.clear();
         assert!(
             args.build(
                 Platform::NewApi,
@@ -505,5 +545,18 @@ mod tests {
         assert_eq!(grok["duration"], 6);
         assert_eq!(grok["resolution"], "720p");
         assert!(grok.get("seconds").is_none());
+        args.mode = Some("reference".into());
+        args.seconds = Some(12);
+        assert!(
+            args.build(
+                Platform::NewApi,
+                "video",
+                "grok-imagine-video-1.5",
+                Path::new(".")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("不支持此视频时长")
+        );
     }
 }

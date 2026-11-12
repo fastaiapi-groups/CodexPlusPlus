@@ -291,9 +291,28 @@ pub(super) async fn download(
     location: &str,
     cap: usize,
 ) -> Result<Vec<u8>> {
+    download_for_route(
+        client,
+        connection.platform,
+        &connection.origin,
+        &connection.key,
+        location,
+        cap,
+    )
+    .await
+}
+
+pub(super) async fn download_for_route(
+    client: &Client,
+    platform: Platform,
+    origin: &str,
+    key: &str,
+    location: &str,
+    cap: usize,
+) -> Result<Vec<u8>> {
     tokio::time::timeout(
         Duration::from_secs(60),
-        download_inner(client, connection, location, cap),
+        download_inner(client, platform, origin, key, location, cap),
     )
     .await
     .context("媒体下载超时，请继续下载原任务")?
@@ -301,12 +320,14 @@ pub(super) async fn download(
 
 async fn download_inner(
     client: &Client,
-    connection: &Connection,
+    platform: Platform,
+    origin: &str,
+    key: &str,
     location: &str,
     cap: usize,
 ) -> Result<Vec<u8>> {
-    validate_media_origin(connection.platform, &connection.origin)?;
-    let base = Url::parse(&connection.origin)?;
+    validate_media_origin(platform, origin)?;
+    let base = Url::parse(origin)?;
     let mut url = base
         .join(location)
         .map_err(|_| anyhow::anyhow!("媒体下载地址无效"))?;
@@ -321,7 +342,7 @@ async fn download_inner(
         );
         let mut request = client.get(url.clone());
         if url.origin() == base.origin() {
-            request = request.bearer_auth(&connection.key);
+            request = request.bearer_auth(key);
         }
         let response = request
             .send()

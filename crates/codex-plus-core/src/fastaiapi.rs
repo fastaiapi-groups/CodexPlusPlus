@@ -610,7 +610,17 @@ pub(crate) async fn media_test_for(
         Some(&key),
     )
     .await?;
-    test_result(kind, model, &value)
+    let mut result = test_result(kind, model, &value)?;
+    if let Some(url) = result["image"]
+        .as_str()
+        .filter(|url| !url.starts_with("data:"))
+    {
+        match crate::fastaiapi_media::test_image_data(platform, origin, &key, url).await {
+            Ok(image) => result["image"] = json!(image),
+            Err(_) => result["image_history_unavailable"] = json!(true),
+        }
+    }
+    Ok(result)
 }
 fn test_result(kind: &str, model: &str, value: &Value) -> Result<Value, String> {
     let mut result = json!({"ok":true,"kind":kind,"model":model,"message":if kind=="text" {"文本生成测试成功"} else {"图片生成测试成功"}});

@@ -113,7 +113,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       <div className="fast-endpoint"><span>模型服务</span><strong>{origin}<span>/v1</span></strong><small>已连接你的 {platformName} 账户</small></div>
       {officialMode && <p className="fast-muted">当前 Codex 使用官方账号，下方保留你的 {platformName} 模型配置。</p>}
       {routes.platform === "subapi" && <SubApiSubscriptions/>}
-      <MediaModels key={routes.selected} textKeyId={officialMode ? undefined : configuration.key_id} textModel={configuration.model} textPicker={
+      <MediaModels key={routes.selected} textModel={configuration.model} textPicker={
         <ModelPicker keyId={configuration.key_id ?? 0} value={configuration.model ?? ""}
           busy={busy || officialMode} onApply={async ({model, keyId}) => {
             setConfiguration({key_id: keyId, model});
