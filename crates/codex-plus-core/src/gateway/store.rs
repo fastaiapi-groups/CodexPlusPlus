@@ -1008,6 +1008,10 @@ fn read_store(path: &Path) -> anyhow::Result<GatewaySettings> {
     for provider in &mut settings.providers {
         let mut normalized = provider.relay.clone();
         if crate::relay_config::normalize_relay_profile_for_storage(&mut normalized).is_ok() {
+            crate::fastaiapi_platform::normalize_gateway_provider_brand(
+                &mut normalized,
+                &provider.source,
+            );
             provider.relay = normalized;
         }
         // 导入或手写 `[1M]` 带进上游配置的窗口，收进网关自己的按模型窗口。

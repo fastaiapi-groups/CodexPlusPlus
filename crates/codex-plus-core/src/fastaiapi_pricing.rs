@@ -15,6 +15,52 @@ pub(crate) fn expression_tiers(expression: &str, factor: f64) -> Option<Vec<Valu
     (parser.rest.trim().is_empty() && !parser.rows.is_empty()).then_some(parser.rows)
 }
 
+/// 仅展开以分辨率分支的线性秒价。其他表达式保留平台动态计费提示。
+pub(crate) fn video_second_tiers(expression: &str, factor: f64) -> Option<Vec<Value>> {
+    if expression.len() > 16_384 || !factor.is_finite() || factor < 0.0 {
+        return None;
+    }
+    let mut parser = Parser {
+        rest: expression.strip_prefix("v1:").unwrap_or(expression),
+        factor,
+        rows: vec![],
+    };
+    loop {
+        let resolution = if parser.take("u(") {
+            if parser.label()? != "resolution" || !parser.take(")") || !parser.take("==") {
+                return None;
+            }
+            let resolution = parser.label()?;
+            parser.take("?").then_some(())?;
+            Some(resolution)
+        } else {
+            None
+        };
+        parser.take("tier(").then_some(())?;
+        let label = parser.label()?;
+        if resolution
+            .as_ref()
+            .is_some_and(|resolution| *resolution != label)
+            || !parser.take(",")
+            || !parser.take("u(")
+            || parser.label()? != "seconds"
+            || !parser.take(")")
+            || !parser.take("*")
+        {
+            return None;
+        }
+        let price = parser.number()? * factor;
+        if !price.is_finite() || !parser.take(")") || parser.rows.len() >= 32 {
+            return None;
+        }
+        parser.rows.push(json!({"label":label,"price":price}));
+        if resolution.is_none() {
+            return parser.rest.trim().is_empty().then_some(parser.rows);
+        }
+        parser.take(":").then_some(())?;
+    }
+}
+
 struct Parser<'a> {
     rest: &'a str,
     factor: f64,
@@ -184,6 +230,20 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_resolution_prices_are_per_second_and_reject_other_formulas() {
+        let expression = r#"u("resolution") == "480p" ? tier("480p", u("seconds") * 0.02) : tier("608p", u("seconds") * 0.03)"#;
+        assert_eq!(
+            video_second_tiers(expression, 2.0).unwrap(),
+            vec![
+                json!({"label":"480p","price":0.04}),
+                json!({"label":"608p","price":0.06})
+            ]
+        );
+        assert!(video_second_tiers(r#"tier("base", u("seconds") * 0.02 + 1)"#, 1.0).is_none());
+        assert!(video_second_tiers(r#"u("mode") == "pro" ? tier("pro", u("seconds") * 0.02) : tier("base", u("seconds") * 0.03)"#, 1.0).is_none());
+    }
 
     #[test]
     fn tier_coefficients_are_prices_and_only_apply_group_and_currency_factor() {

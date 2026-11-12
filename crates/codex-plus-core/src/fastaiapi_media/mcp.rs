@@ -10,7 +10,7 @@ use std::{
 use super::{connection, runs};
 
 const MAX_LINE: u64 = 256 * 1024;
-const INSTRUCTIONS: &str = "使用 FastAiApi 生成图片和参考图视频，生成按 FastAiApi 计费。仅在用户明确请求生成时提交。优先使用用户指定的精确模型，否则跟随 Codex++ 默认模型。每次生成使用一个新的 UUID 作为 request_id，重试、查询或恢复必须复用该 ID。视频提交后用 video_status 查询并在成功后用 download_video 保存；用 list_runs 找回当前项目最近任务。遇到 submitting 或 submission_unknown 时查询原任务或按已核实的平台任务 ID 恢复，不得另起生成。MiniMax H3 需要参考图，素材须位于用户指定的项目内或使用受支持的 HTTPS 参考地址。产物写入该项目的 outputs 子目录。工具不会要求用户粘贴 Key 到对话中。";
+const INSTRUCTIONS: &str = "使用当前选中的 TuMeiAPI 或 FastAiAPI 线路生成图片和参考图视频，按对应平台计费。仅在用户明确请求生成时提交。优先使用用户指定的精确模型，否则跟随 Codex++ 默认模型。每次生成使用一个新的 UUID 作为 request_id，重试、查询或恢复必须复用该 ID。视频提交后用 video_status 查询并在成功后用 download_video 保存；用 list_runs 找回当前项目最近任务。遇到 submitting 或 submission_unknown 时查询原任务或按已核实的平台任务 ID 恢复，不得另起生成。MiniMax H3 需要参考图，素材须位于用户指定的项目内或使用受支持的 HTTPS 参考地址。产物写入该项目的 outputs 子目录。工具不会要求用户粘贴 Key 到对话中。";
 
 pub fn run(args: &[OsString]) -> Result<()> {
     let [flag, state] = args else {
@@ -207,14 +207,14 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "generate_image",
-            "按 FastAiApi 计费生成或编辑一张图片，成功时返回本地文件路径。",
+            "按当前平台计费生成或编辑一张图片，成功时返回本地文件路径。",
             json!({"workspace":workspace,"request_id":request,"prompt":string,"model":string,"images":refs,"size":string}),
             &["workspace", "request_id", "prompt"],
             false,
         ),
         tool(
             "submit_video",
-            "按 FastAiApi 计费提交视频任务，保存回执并返回任务 ID。H3 需要至少一张参考图。",
+            "按当前平台计费提交视频任务，保存回执并返回任务 ID。H3 需要至少一张参考图。",
             json!({"workspace":workspace,"request_id":request,"prompt":string,"model":string,
                 "images":refs,"audios":refs,"videos":refs,"seconds":{"type":"integer","minimum":1,"maximum":60},
                 "ratio":{"enum":["16:9","9:16"]},"resolution":{"enum":["480p","720p","768p","1080p"]},

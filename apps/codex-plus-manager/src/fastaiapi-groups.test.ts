@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mediaRouteUrls, withSelectedImageGuide } from './fastaiapi/mediaRoutes.ts';
 import { createAccountFixture } from '../dev/account-fixture.ts';
 import { catalogModels, createModelDirectory, loadModelDirectory } from './fastaiapi/modelDirectory.ts';
 import { createGroupCache } from './fastaiapi/groupCache.ts';
@@ -99,4 +100,22 @@ test('only confirmation provisions a group Key and repeating it reuses the same 
   assert.equal(calls.filter(call => call.action === 'group_model_catalogs').length, 1);
   await assert.rejects(account('apply_model_binding', {...body, route:2}), /路线已切换/);
   assert.deepEqual(await account('configuration'), {key_id:first.key.id, model:body.model});
+});
+
+test('media help and submission addresses follow the selected route', () => {
+  for (const origin of ['http://8.137.194.180:90', 'https://tumeiapi.com', 'https://newapi.fastaiapi.cloud', 'https://fastaiapi.cloud']) {
+    const urls = mediaRouteUrls(origin);
+    assert.equal(urls.guide, origin + '/hub/home/help/image-api/');
+    assert.equal(urls.generateImage, origin + '/v1/images/generations');
+    assert.equal(urls.editImage, origin + '/v1/images/edits');
+    assert.equal(urls.submitVideo, origin + '/v1/videos');
+    assert.equal(withSelectedImageGuide('参数说明：https://fastaiapi.cloud/help/image-api/', urls.guide), '参数说明：' + urls.guide);
+  }
+});
+
+test('media model names and catalog metadata stay out of text tests', () => {
+  const ids = ['gpt-5.6-sol', 'muze', 'opaque-clip'];
+  const kinds = new Map([['opaque-clip', 'video' as const]]);
+  assert.deepEqual(selectableGroupModels('newapi', 'text', ids, [], kinds), ['gpt-5.6-sol']);
+  assert.deepEqual(selectableGroupModels('newapi', 'video', ids, [], kinds), ['muze', 'opaque-clip']);
 });

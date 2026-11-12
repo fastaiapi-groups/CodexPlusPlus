@@ -1,4 +1,4 @@
-import { usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
+import { useActiveServiceRoute, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, X, Check, RefreshCw, ChevronRight, Image, Video, MessageSquare } from "lucide-react";
@@ -6,7 +6,10 @@ import { BRAND_ICON_URLS } from "../provider-brand-icons";
 import { brandIconIsColor, brandIconKey } from "../provider-brands";
 import type { AccountGroup } from "./groupCache";
 import { useModelDirectory } from "./ModelDirectoryContext";
-import { catalogModels } from "./modelDirectory";
+import { catalogModelKinds, catalogModels } from "./modelDirectory";
+import { AppSelect } from "../AppSelect";
+import "./media-select.css";
+import { mediaRouteUrls, withSelectedImageGuide } from "./mediaRoutes";
 import { initialGroup, keyGroup, selectableGroupModels, type ModelChoice, type ModelGroupKey, type ModelKind } from "./modelGroups";
 
 import "./recharge.css";
@@ -25,6 +28,8 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const invoke = usePlatformInvoke();
   const {routes, setLocked} = useServiceRoutes();
   const platform = routes.platform;
+  const {route} = useActiveServiceRoute();
+  const guide = mediaRouteUrls(route.origin).guide;
   const dialog = useRef<HTMLDialogElement>(null);
   const [query, setQuery] = useState(""), [choice, setChoice] = useState<{group: string; model: string} | null>(null);
   const [saving, setSaving] = useState(false), [error, setError] = useState("");
@@ -35,15 +40,16 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const currentKey = account?.keys.find(key => key.id === keyId);
   const defaultGroup = groupId ?? (currentKey ? keyGroup(currentKey, platform) : null);
   const groups = account?.groups ?? [];
+  const kinds = catalogModelKinds(account?.catalogs);
   const currentGroup = groups.find(group => group.id === defaultGroup);
   const modelsForGroup = (id: string) => {
     const pricing = account?.catalogs.get(id);
-    return selectableGroupModels(platform, kind, catalogModels(pricing), !pricing && id === currentGroup?.id ? models : []);
+    return selectableGroupModels(platform, kind, catalogModels(pricing), !pricing && id === currentGroup?.id ? models : [], kinds);
   };
   const visibleGroups = groups.filter(group => modelsForGroup(group.id).length > 0);
   const priority = (group: AccountGroup) => group.id === defaultGroup ? 0 : group.name.toLowerCase() === "default" ? 1 : 2;
   const orderedGroups = [...visibleGroups].sort((left, right) => priority(left) - priority(right));
-  const legacyModels = selectableGroupModels(platform, kind, models);
+  const legacyModels = selectableGroupModels(platform, kind, models, [], kinds);
   const showLegacy = !currentGroup && legacyModels.length > 0 && (keyId > 0 || kind !== "text");
   const activeGroup = visibleGroups.some(group => group.id === browsedGroup) || (showLegacy && browsedGroup === legacyGroup)
     ? browsedGroup
@@ -114,17 +120,16 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
         <div className="fast-model-columns">
           <aside className="fast-model-groups" aria-label="模型分组">
             <h3>模型分组</h3>
-            <label className="fast-model-compact-group">
+            <div className="fast-model-compact-group">
               <span>模型分组</span>
-              <select value={activeGroup ?? ""} disabled={busy || working || !visibleGroups.length}
-                onChange={event => browse(event.target.value)}>
-                {!showLegacy && activeGroup == null && <option value="">暂无可用分组</option>}
-                {showLegacy && <option value={legacyGroup}>现有连接{!currentGroup ? "（当前默认）" : ""}</option>}
-                {orderedGroups.map(group => <option key={group.id} value={group.id}>
-                  {group.name}{group.id === defaultGroup ? "（当前默认）" : ""}
-                </option>)}
-              </select>
-            </label>
+              <AppSelect ariaLabel="模型分组" className="fast-styled-select" value={activeGroup ?? ""}
+                disabled={busy || working || !visibleGroups.length} onChange={browse} placeholder="暂无可用分组"
+                options={[
+                  ...(showLegacy ? [{value: legacyGroup, label: "现有连接"}] : []),
+                  ...orderedGroups.map(group => ({value: group.id, label: group.name,
+                    hint: group.id === defaultGroup ? "当前默认" : undefined})),
+                ]}/>
+            </div>
             <div className="fast-model-group-scroll">
               {showLegacy && groupButton(legacyGroup, "现有连接")}
               {orderedGroups.map(group => groupButton(group.id, group.name, group.description, group.rate_multiplier))}
@@ -146,7 +151,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
                 const price = pricing?.models.find(row => row.model === model);
                 const brand = brandIconKey(price?.icon ?? "", price?.vendor_icon ?? "") ?? brandIconKey(model);
                 const icon = brand ? BRAND_ICON_URLS[brand] : undefined;
-                const unit = price?.billing_unit === "image" ? "每张" : "每次调用";
+                const unit = price?.billing_unit === "second" ? "每秒" : price?.billing_unit === "image" ? "每张" : "每次调用";
                 const note = model.endsWith("-sol") ? "推理强" : model.endsWith("-luna") ? "性价比高" : "";
                 return <label key={model} className={selected === model ? "selected" : ""}>
                   <input type="radio" name="default-model" checked={selected === model} disabled={busy || working}
@@ -156,7 +161,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
                       {icon && brand ? <img className={brandIconIsColor(brand) ? "" : "is-monochrome"} src={icon} alt=""/> : <KindIcon aria-hidden="true"/>}
                       {model}
                     </span>
-                    {price?.description && <span className="fast-model-card-description">{price.description}</span>}
+                    {price?.description && <span className="fast-model-card-description">{withSelectedImageGuide(price.description, guide)}</span>}
                     {(note || (isCurrent && model === value)) && <span className="fast-model-card-tags">
                       {note && <em>{note}</em>}{isCurrent && model === value && <em className="is-current">当前默认</em>}
                     </span>}

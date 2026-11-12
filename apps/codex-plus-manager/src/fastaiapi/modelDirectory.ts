@@ -1,15 +1,16 @@
 import type { AccountGroup } from "./groupCache.ts";
-import { keyGroup, type ModelGroupKey } from "./modelGroups.ts";
+import { keyGroup, type ModelGroupKey, type ModelKind } from "./modelGroups.ts";
 
 type ModelPrice = {
   model: string;
+  kind?: ModelKind | "other";
   description?: string | null;
   icon?: string | null;
   vendor_icon?: string | null;
   time_pricing: boolean;
   pricing_note?: string;
   unit_price?: number | null;
-  billing_unit?: "image" | "call" | "token";
+  billing_unit?: "image" | "call" | "token" | "second";
   unit_tiers?: {label: string | null; price: number}[];
   tiers: {label: string; input: number | null; output: number | null; cache: number | null}[];
 };
@@ -48,6 +49,16 @@ export async function loadModelDirectory(platform: string, client: Client): Prom
 
 export function catalogModels(pricing: ModelPricing | undefined): string[] {
   return pricing?.model_ids ?? pricing?.models.map(price => price.model) ?? [];
+}
+
+export function catalogModelKinds(catalogs?: ReadonlyMap<string, ModelPricing>) {
+  const kinds = new Map<string, ModelKind | "other">();
+  for (const catalog of catalogs?.values() ?? []) {
+    for (const model of catalog.models) {
+      if (model.kind) kinds.set(model.model, model.kind);
+    }
+  }
+  return kinds;
 }
 
 export function createModelDirectory(load: () => Promise<Directory>) {

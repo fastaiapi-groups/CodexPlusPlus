@@ -264,17 +264,7 @@
     border-color: #343942;
     font-size: 12px;
   }
-  .fast-model-compact-group select {
-    width: 100%;
-    min-width: 0;
-    padding: 8px 6px;
-    border: 0;
-    border-radius: inherit;
-    background: #272c32;
-    color: #edf0f3;
-    font: inherit;
-    text-overflow: ellipsis;
-  }
+
 }
 @media (max-height: 460px) {
   .fast-model-dialog .fast-dialog-content {

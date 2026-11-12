@@ -7,7 +7,7 @@ import { Image, Video, RefreshCw, FlaskConical } from "lucide-react";
 import { keyGroup, supportsModel } from "./modelGroups";
 
 import { useModelDirectory } from "./ModelDirectoryContext";
-import { catalogModels } from "./modelDirectory";
+import { catalogModelKinds, catalogModels } from "./modelDirectory";
 
 type Status = {
   state: string; message: string; default_video_available?: boolean; models?: string[];
@@ -22,6 +22,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
   const api = <T,>(action: string, body?: object) => invoke<T>("fastaiapi_account", {action, body});
   const {routes, setLocked} = useServiceRoutes();
   const {directory} = useModelDirectory();
+  const kinds = catalogModelKinds(directory?.catalogs);
   const platformName = routes.platforms.find(platform => platform.id === routes.platform)?.name;
   const [status, setStatus] = useState<Status | null>(null), [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -61,7 +62,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
   const defaults = {image: status?.image_model || "gpt-image-2", video: status?.video_model || "minimax-h3"};
   const modelsFor = (kind: "text" | "image" | "video") =>
     (status?.models_by_kind ? status.models_by_kind[kind] ?? [] : status?.models ?? [])
-      .filter(model => supportsModel(routes.platform, kind, model));
+      .filter(model => supportsModel(routes.platform, kind, model, kinds.get(model)));
   const boundKey = (kind: "image" | "video") => status?.key_ids?.[kind] ?? status?.fallback_key_id ?? 0;
   const groupFor = (kind: "image" | "video") => {
     const key = directory?.keys.find(key => key.id === boundKey(kind));
@@ -86,7 +87,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
     <p>Key 保存在系统凭据库。生成和测试使用当前 {platformName} 路线并按平台计费。</p>
     <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
       const ids = new Set([...modelsFor(kind), ...Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels)]
-        .filter(id => supportsModel(routes.platform, kind, id)));
+        .filter(id => supportsModel(routes.platform, kind, id, kinds.get(id))));
       const group = directory?.groups.find(group => group.id === groupFor(kind));
       return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{ids.size} 个可用</small></header><span>默认模型{group && ` · ${group.name}`}</span><b>{defaults[kind]}</b><button disabled={working} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button></article>;
     })}</div>

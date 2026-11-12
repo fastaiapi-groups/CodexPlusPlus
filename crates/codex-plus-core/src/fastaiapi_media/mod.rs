@@ -60,9 +60,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_plain_http_and_routes_from_another_platform() {
+    fn accepts_only_routes_built_into_the_selected_platform() {
         use crate::fastaiapi_platform::Platform;
-        assert!(validate_media_origin(Platform::NewApi, "http://8.137.194.180:90").is_err());
+        assert!(validate_media_origin(Platform::NewApi, "http://8.137.194.180:90").is_ok());
+        assert!(validate_media_origin(Platform::NewApi, "http://tumeiapi.com").is_err());
         assert!(validate_media_origin(Platform::NewApi, "https://fastaiapi.cloud").is_err());
         assert!(validate_media_origin(Platform::NewApi, "https://tumeiapi.com").is_ok());
     }

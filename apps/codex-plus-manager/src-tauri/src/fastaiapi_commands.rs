@@ -147,7 +147,7 @@ async fn apply_model_binding(platform: Platform, mut body: Value) -> Result<Valu
                 "ensure_group_key",
                 "",
                 json!({
-                    "group_id":group,"name":"Codex++ FastAiApi","dedicated":true
+                    "group_id":group,"name":format!("Codex++ {}", platform.name()),"dedicated":true
                 }),
             )
             .await?;

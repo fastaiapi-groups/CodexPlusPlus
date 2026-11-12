@@ -9,6 +9,13 @@ type Routes = {platform: Platform; platforms: {id: Platform; name: string; origi
 type Probe = {id: number; latency_ms: number | null; error: string | null};
 const Context = createContext<{routes: Routes; locked: boolean; authenticated: boolean; setAuthenticated: (value: boolean) => void; warning: string; setLocked: (value: boolean) => void; selectPlatform: (id: Platform) => Promise<void>; select: (id: number) => Promise<void>} | null>(null);
 export const useServiceRoutes = () => useContext(Context)!;
+export function useActiveServiceRoute() {
+  const {routes} = useServiceRoutes();
+  return {
+    route: routes.items.find(route => route.id === routes.selected)!,
+    platformName: routes.platforms.find(platform => platform.id === routes.platform)!.name,
+  };
+}
 // 捕获本次渲染的平台，异步请求不依赖可变的全局选择。
 export function usePlatformInvoke() {
   const {routes} = useServiceRoutes();
@@ -69,7 +76,7 @@ function RouteDialog({routes, onSelect, onClose}: {routes: Routes; onSelect: (id
     const probe = probes.find(p => p.id === route.id), selected = route.id === routes.selected;
     return <button key={route.id} type="button" aria-pressed={selected} disabled={switching} className={selected ? "is-selected" : ""} onClick={async () => {setSwitching(true); setError(""); try {await onSelect(route.id); onClose();} catch(e) {setError(String(e));} finally {setSwitching(false);}}}>
       <Globe size={27}/>
-      <span className="fast-route-name"><strong>{route.name}</strong><span className="fast-route-origin">{route.origin}</span></span>
+      <span className="fast-route-name"><strong>{route.name}</strong><span className="fast-route-origin">{route.origin}{route.origin.startsWith("http://") && " · 未加密"}</span></span>
       <span className={`fast-route-latency${probe?.error ? " is-error" : ""}`}><Signal size={19}/>{testing ? "测试中…" : probe?.latency_ms != null ? `${probe.latency_ms} 毫秒` : probe?.error ? "暂不可用" : "待测试"}</span>
       <span className="fast-route-check">{selected && <Check size={25}/>}</span>
     </button>;

@@ -119,6 +119,16 @@ fn is_builtin_name(name: &str) -> bool {
         .any(|platform| name.trim().eq_ignore_ascii_case(platform.name()))
 }
 
+pub(crate) fn normalize_gateway_provider_brand(profile: &mut RelayProfile, source: &str) {
+    let Some(source_id) = source.strip_prefix("codex:") else {
+        return;
+    };
+    // 网关有独立 ID，导入来源才是原账号配置的 ID。
+    let gateway_id = std::mem::replace(&mut profile.id, source_id.to_owned());
+    normalize_managed_profile_brand(profile);
+    profile.id = gateway_id;
+}
+
 /// 只迁移旧的内置品牌标签，保留自定义名称、地址、Key 和供应商 ID。
 pub(crate) fn normalize_managed_profile_brand(profile: &mut RelayProfile) {
     let Some(platform) = managed_profile_platform(profile) else {
@@ -326,6 +336,26 @@ mod tests {
             normalize_managed_profile_brand(&mut profile);
             assert_eq!(profile.name, "FastAiApi");
         }
+    }
+
+    #[test]
+    fn imported_gateway_brands_keep_gateway_identity_and_source() {
+        let mut relay = RelayProfile {
+            id: "fastaiapi-2".into(),
+            name: "FastAiApi".into(),
+            upstream_base_url: "https://tumeiapi.com/v1".into(),
+            relay_mode: RelayMode::PureApi,
+            ..Default::default()
+        };
+        normalize_gateway_provider_brand(&mut relay, "codex:fastaiapi-newapi-116");
+        assert_eq!(relay.name, "TuMeiAPI");
+        assert_eq!(relay.id, "fastaiapi-2");
+        relay.name = "FastAiApi".into();
+        relay.upstream_base_url = "https://fastaiapi.cloud/v1".into();
+        normalize_gateway_provider_brand(&mut relay, "codex:fastaiapi-411");
+        assert_eq!(relay.name, "FastAiAPI");
+        normalize_gateway_provider_brand(&mut relay, "codex:manual-provider");
+        assert_eq!(relay.name, "FastAiAPI");
     }
 
     #[test]

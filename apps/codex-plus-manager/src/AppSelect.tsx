@@ -115,7 +115,7 @@ export function AppSelect<T extends string>({
             </button>
           ))}
         </div>,
-        document.body,
+        rootRef.current?.closest("dialog[open]") ?? document.body,
       ) : null}
     </div>
   );

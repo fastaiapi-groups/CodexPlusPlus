@@ -1192,6 +1192,30 @@ fn group_model_catalog(
     Ok(catalog)
 }
 
+fn catalog_model_kind(model: &Value) -> &'static str {
+    let tags = model["tags"]
+        .as_str()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim);
+    let endpoints = model["supported_endpoint_types"].as_array();
+    if tags
+        .clone()
+        .any(|tag| matches!(tag, "视频" | "Video" | "video"))
+        || endpoints.is_some_and(|values| values.iter().any(|value| value == "openai-video"))
+    {
+        "video"
+    } else if tags
+        .clone()
+        .any(|tag| matches!(tag, "图像" | "生图" | "Image" | "image"))
+        || endpoints.is_some_and(|values| values.iter().any(|value| value == "image-generation"))
+    {
+        "image"
+    } else {
+        model_kind(model["model_name"].as_str().unwrap_or(""))
+    }
+}
+
 fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
     let rate = if group == "auto" {
         None
@@ -1223,10 +1247,18 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
                 "output": input.zip(m["completion_ratio"].as_f64()).map(|(a,b)| a*b),
                 "cache": input.zip(m["cache_ratio"].as_f64()).map(|(a,b)| a*b)})]
         } else {vec![]};
+        let kind = catalog_model_kind(m);
+        let second_tiers = if kind == "video" && expression_billed
+            && m["billing_plugin_variants"].as_array().is_none_or(Vec::is_empty)
+        {
+            rate.zip(m["billing_expr"].as_str()).and_then(|(rate, expression)|
+                crate::fastaiapi_pricing::video_second_tiers(expression, rate * fx)
+            ).unwrap_or_default()
+        } else {vec![]};
         let note = if group == "auto" {
             Some("自动分组按实际命中的分组计价。")
         } else {
-            (expression_billed && tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。")
+            (expression_billed && tiers.is_empty() && second_tiers.is_empty()).then_some("该模型采用动态计价，请到平台查看完整规则。")
         };
         let per_call = m["quota_type"] == 1 && m["billing_mode"].as_str().is_none_or(|value| matches!(value,""|"per_call"));
         let model_price = m["group_model_prices"][group].as_f64().or_else(|| m["model_price"].as_f64());
@@ -1234,7 +1266,7 @@ fn model_pricing(raw: &Value, group: &str, status: &Value) -> Value {
         let vendor_icon = m["vendor_id"].as_i64().and_then(|id| {
             raw["vendors"].as_array()?.iter().find(|vendor| vendor["id"].as_i64() == Some(id))?["icon"].as_str()
         });
-        json!({"model": m["model_name"], "description":m["description"], "icon":m["icon"], "vendor_icon":vendor_icon, "time_pricing": false, "pricing_note": note, "tiers": tiers, "unit_price": unit_price, "billing_unit": if per_call {"call"} else {"token"}})
+        json!({"model": m["model_name"], "kind":kind, "description":m["description"], "icon":m["icon"], "vendor_icon":vendor_icon, "time_pricing": false, "pricing_note": note, "tiers": tiers, "unit_tiers":second_tiers, "unit_price": unit_price, "billing_unit": if !second_tiers.is_empty() {"second"} else if per_call {"call"} else {"token"}})
     }).collect();
     json!({"group": group, "rate_multiplier": rate, "currency": currency, "models": models})
 }
@@ -1282,6 +1314,7 @@ pub fn model_kind(id: &str) -> &'static str {
         "ltx",
         "hunyuan",
         "sd2.5",
+        "muze",
     ]
     .iter()
     .any(|v| lower.contains(v))
@@ -1605,9 +1638,25 @@ mod tests {
         for id in ["gpt-image-2.5", "dall-e-3", "flux-pro"] {
             assert_eq!(model_kind(id), "image");
         }
-        for id in ["grok-imagine-video-1.5", "sora-2", "minimax-h3", "veo3"] {
+        for id in [
+            "grok-imagine-video-1.5",
+            "sora-2",
+            "minimax-h3",
+            "veo3",
+            "muze",
+        ] {
             assert_eq!(model_kind(id), "video");
         }
+        assert_eq!(
+            catalog_model_kind(&json!({"model_name":"opaque","tags":"视频,按秒计费"})),
+            "video"
+        );
+        assert_eq!(
+            catalog_model_kind(
+                &json!({"model_name":"opaque","supported_endpoint_types":["image-generation","openai"]})
+            ),
+            "image"
+        );
         assert_eq!(model_kind("gpt-6-sol"), "text");
     }
     #[tokio::test]

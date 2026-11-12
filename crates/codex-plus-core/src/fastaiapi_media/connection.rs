@@ -41,10 +41,6 @@ pub fn validate_media_origin(platform: Platform, origin: &str) -> Result<()> {
         platform.origins().contains(&origin),
         "媒体路线不属于当前平台"
     );
-    ensure!(
-        origin.starts_with("https://"),
-        "媒体工具需要 HTTPS。请先选择当前平台的 HTTPS 路线。"
-    );
     Ok(())
 }
 
@@ -99,7 +95,7 @@ pub(super) async fn load(
         };
         ensure!(
             selected == platform && selected.origins()[route] == origin,
-            "平台或路线已切换，请在 Codex++ 中连接当前 HTTPS 路线"
+            "平台或路线已切换，请在 Codex++ 中连接当前线路"
         );
     }
     let group_credential = match pinned {
@@ -309,12 +305,20 @@ async fn download_inner(
     location: &str,
     cap: usize,
 ) -> Result<Vec<u8>> {
-    let base = https_url(&connection.origin)?;
+    validate_media_origin(connection.platform, &connection.origin)?;
+    let base = Url::parse(&connection.origin)?;
     let mut url = base
         .join(location)
         .map_err(|_| anyhow::anyhow!("媒体下载地址无效"))?;
     for _ in 0..5 {
-        url = https_url(url.as_str())?;
+        // 路线 1 是明确选择的内置 HTTP 地址。跨域下载和其他地址继续使用公网 HTTPS。
+        if base.scheme() != "http" || url.origin() != base.origin() {
+            url = https_url(url.as_str())?;
+        }
+        ensure!(
+            url.username().is_empty() && url.password().is_none(),
+            "媒体地址不可内嵌凭据"
+        );
         let mut request = client.get(url.clone());
         if url.origin() == base.origin() {
             request = request.bearer_auth(&connection.key);

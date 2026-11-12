@@ -72,7 +72,7 @@ export function createAccountFixture() {
         else if(action==="model_pricing")value={group:"default",rate_multiplier:1,currency:"USD",models:[{model:p.model,time_pricing:false,tiers:[{label:"标准价",input:1,output:2,cache:0.1}]}]};
         else if(action==="media_status"){
           const image=media.get(`${platform}:${p.route}:image`), video=media.get(`${platform}:${p.route}:video`);
-          value={state:"ready",message:`${p.name} 测试连接`,models:[p.model,"gpt-image-2","minimax-h3"],default_video_available:true,
+          value={state:"ready",message:`${p.name} 测试连接`,models:[p.model,"gpt-image-2","minimax-h3","muze"],default_video_available:true,
             image_model:image?.model,video_model:video?.model,key_ids:{image:image?.keyId,video:video?.keyId},group_ids:{image:image?.groupId,video:video?.groupId}};
         }
         else if(action==="media_setup"||action==="media_manual")value={configured:true};

@@ -1,14 +1,16 @@
-# Codex++ 的 FastAiApi / New API / SubAPI 接入
+# Codex++ 的 TuMeiAPI / FastAiAPI 接入
 
 登录和注册页先选择 New API 或 SubAPI；登录后展示对应平台的账号、余额、Key、分组、模型及充值。两个平台分别保存凭据和记住的登录信息；注册、登录成功或恢复有效会话后固定当前平台，右上角隐藏平台入口，仍可切换该平台路线。退出登录后才能重新选择平台。选择平台不会应用 Codex 配置或接管媒体环境。
 
-New API 路线：
+TuMeiAPI 路线：
 
-| 路线 | 服务来源 | 模型地址 |
+| 路线 | 服务来源 | 图片 API 文档 |
 |---|---|---|
-| 路线1 | http://8.137.194.180:90 | http://8.137.194.180:90/v1 |
-| 路线2 | https://tumeiapi.com | https://tumeiapi.com/v1 |
-| 路线3 | https://newapi.fastaiapi.cloud | https://newapi.fastaiapi.cloud/v1 |
+| 路线1 | `http://8.137.194.180:90` | [路线1文档](http://8.137.194.180:90/hub/home/help/image-api/) |
+| 路线2 | `https://tumeiapi.com` | [路线2文档](https://tumeiapi.com/hub/home/help/image-api/) |
+| 路线3 | `https://newapi.fastaiapi.cloud` | [路线3文档](https://newapi.fastaiapi.cloud/hub/home/help/image-api/) |
+
+文档和 API 使用当前线路的服务来源。文字生图、图片编辑和视频提交分别拼接 `/v1/images/generations`、`/v1/images/edits` 和 `/v1/videos`。FastAiAPI 使用自己的 [图片 API 文档](https://fastaiapi.cloud/hub/home/help/image-api/)。路线 1 使用未加密的 HTTP。
 
 路线选择保存在应用状态目录。所有路线指向同一个 New API 后台，共用账号会话、Key、余额、分组和模型选择；切换仅改变请求来源，不退出登录、不重建页面状态。完整密码、会话和媒体 Key 使用系统凭据库保存；与 SubAPI 的会话、Key 和配置命名空间隔离。账户生成的 Codex 连接随路线更新，保留上下文等高级设置；其他供应商配置不受影响。
 
@@ -18,7 +20,7 @@ New API 路线：
 
 New API 退出时将当前会话替换为空会话记录，阻止旧路线的遗留登录被回退恢复；不依赖额外权限删除旧签名应用的历史条目。当前媒体凭据清理失败会明确提示，已完成的账号退出仍生效。登录成功会覆盖空记录保存新会话。
 
-分组来自 `/api/user/self/groups`，保持 New API 的字符串分组名称；Key 通过 `/api/token/` 管理，仅原生层读取完整密钥。自动配置优先复用名为 `Codex++ FastAiApi` 的有效专用 Key，没有时优先选 `default` 或已开放的对话分组。余额使用站点 `quota_per_unit` 与货币设置换算；定价来自 `/api/pricing`，按当前 Key 分组倍率显示；支持 tiered_expr 上下文阶梯价，表达式单价仅叠加分组和币种因子。无法准确展开的专用计价规则提示前往平台查看，未知价格不填为零。
+分组来自 `/api/user/self/groups`，保持 New API 的字符串分组名称；Key 通过 `/api/token/` 管理，仅原生层读取完整密钥。确认默认分组和模型时，优先复用该组中具有对应模型权限的有效 Key，必要时创建该平台的专用 Key。余额使用站点 `quota_per_unit` 与货币设置换算；模型描述和定价来自 `/api/pricing`，按当前所选分组与模型匹配。支持模型分组专价、Token 阶梯价及可明确解析的分辨率视频秒价。无法准确展开的专用计价规则提示前往平台查看，未知价格不填为零。
 
 充值使用 `/api/user/topup/info`、`/api/user/amount`、`/api/user/topup/self`、`/api/user/topup`。按后台开关支持易支付收银台、多彩付款码与兑换码。多彩沿用原 `request_id` 和订单号；易支付提交结果未知时先查订单，不自动重建。其他支付渠道可从当前路线的平台钱包继续。
 
