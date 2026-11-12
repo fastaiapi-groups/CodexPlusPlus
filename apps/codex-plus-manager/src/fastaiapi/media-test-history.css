@@ -62,6 +62,20 @@
 
 .fast-test-history nav { justify-content: center; }
 .fast-test-history time { color: #91a0b0; }
+.fast-test-history li.fast-test-history-clickable { padding: 0; }
+.fast-test-history .fast-test-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  text-align: left;
+}
+.fast-test-history-row:hover { background: #8195ab18; }
+.fast-test-history-row small { display: block; margin-top: 4px; color: #91a0b0; }
+.fast-test-history-row>svg { color: #67cdbb; }
 .fast-test-history img {
   display: block;
   max-width: 100%;

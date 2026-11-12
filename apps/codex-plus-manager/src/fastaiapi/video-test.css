@@ -67,6 +67,17 @@
   background: #111;
 }
 
+.fast-video-history-preview {
+  display: grid;
+  gap: 12px;
+}
+.fast-video-history-preview>button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  justify-self: start;
+}
+
 .fast-video-test-resume {
   border-top: 1px solid #8195ab35;
   padding-top: 12px;

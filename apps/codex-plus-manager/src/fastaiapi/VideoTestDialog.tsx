@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, LoaderCircle, Plus, RefreshCw, Video, X } from "lucide-react";
+import { ArrowLeft, FolderOpen, LoaderCircle, Plus, RefreshCw, Video, X } from "lucide-react";
 import { AppSelect } from "../AppSelect";
 import { mediaRouteUrls } from "./mediaRoutes";
 import { useActiveServiceRoute } from "./ServiceRoutes";
 import { MediaTestHistory, MediaTestTabs } from "./MediaTestHistory";
-import { saveMediaTest } from "./mediaTestStore";
+import { saveMediaTest, type MediaTestEntry } from "./mediaTestStore";
 import "./video-test.css";
 
 type Task = {workspace: string; request_id: string; createdAt?: number; model?: string};
@@ -27,6 +27,45 @@ const taskLabels: Record<string, string> = {
   submission_unknown: "提交结果待核实",
   submitting: "等待确认提交结果",
 };
+
+function VideoHistoryPreview({entry, onBack, onSaved}: {
+  entry: MediaTestEntry; onBack: () => void; onSaved: (result: Result) => void;
+}) {
+  const [result, setResult] = useState<Result | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let disposed = false;
+    setLoading(true);
+    setError("");
+    void invoke<Result>("fastaiapi_video_test", {
+      action: "download_video", body: {workspace: entry.workspace, request_id: entry.id},
+    }).then(next => {
+      if (disposed) return;
+      setResult(next);
+      onSaved(next);
+    }).catch(error => {if (!disposed) setError(String(error));})
+      .finally(() => {if (!disposed) setLoading(false);});
+    return () => {disposed = true;};
+  }, [entry, retry]);
+
+  const file = result?.state === "downloaded" ? result.files[0] : undefined;
+  return <section className="fast-video-history-preview" aria-label="历史视频详情">
+    <button type="button" onClick={onBack} autoFocus><ArrowLeft size={15}/>返回历史记录</button>
+    <div className="fast-media-test-result">
+      <strong><Video size={16}/>{result?.model || entry.model}</strong>
+      <small>测试编号 · {entry.id}</small>
+      {result?.job_id && <small>平台任务 ID · {result.job_id}</small>}
+      <p role="status">{loading ? "正在查询原任务…" : taskLabels[result?.state ?? ""] ?? entry.status}</p>
+      {file && <><video src={convertFileSrc(file)} controls autoPlay preload="metadata" aria-label="历史视频播放器"
+        onError={() => setError("视频已保存，本地预览暂不可用。请通过下方路径打开。")}/><small>{file}</small></>}
+      {error && <p className="fast-error" role="alert">{error}</p>}
+      {!loading && !file && result?.state !== "failed" && <button type="button" onClick={() => setRetry(value => value + 1)}>查询原任务</button>}
+    </div>
+  </section>;
+}
 
 function lastTask(key: string): Task | null {
   try {
@@ -60,14 +99,16 @@ export function VideoTestDialog({models, value, onClose, onBusy}: {
   const [result, setResult] = useState<Result | null>(null);
   const [tab, setTab] = useState<"generate" | "history">("generate");
   const [historyError, setHistoryError] = useState(false);
+  const [preview, setPreview] = useState<MediaTestEntry | null>(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
+  const historyOpener = useRef<HTMLElement | null>(null);
   const available = models.filter(model => capabilities?.[model]?.length);
-  const model = [selectedModel, "minimax-h3-x", value, ...available].find(model => available.includes(model)) ?? "";
+  const model = [selectedModel, value, "minimax-h3-x", ...available].find(model => available.includes(model)) ?? "";
   const modes = capabilities?.[model] ?? [];
   const mode = modes.find(mode => mode.id === selectedMode) ?? modes[0];
   const seconds = selectedSeconds || String(mode?.default_seconds ?? "");
   const maxImages = mode?.max_images ?? 0;
   const terminal = result?.state === "downloaded" || result?.state === "failed";
-  const file = result?.state === "downloaded" ? result.files[0] : undefined;
   const canSubmit = Boolean(workspace && mode?.seconds.includes(Number(seconds)) && prompt.trim() && images.length <= maxImages);
 
   useEffect(() => {
@@ -176,17 +217,20 @@ export function VideoTestDialog({models, value, onClose, onBusy}: {
       <div><small>当前媒体连接 · 真实调用</small><h2 id="fast-video-test-title">视频生成测试</h2></div>
       <button type="button" aria-label="关闭视频测试" disabled={!!busy} onClick={onClose}><X size={20}/></button>
     </header>
-    <MediaTestTabs id="fast-video-test" tab={tab} onChange={setTab} disabled={!!busy}/>
-    {tab === "history" && <MediaTestHistory id="fast-video-test" scope={historyScope} onCleared={startOver}
-      onResume={entry => {
-        if (!entry.workspace) return;
-        const next = {workspace: entry.workspace, request_id: entry.id, createdAt: entry.createdAt, model: entry.model};
-        if (!remember(next)) return;
-        setWorkspace(entry.workspace);
-        setResult(null);
-        setTab("generate");
-        void query(next);
-      }}/>}
+    <MediaTestTabs id="fast-video-test" tab={tab} onChange={next => {setPreview(null); setTab(next);}} disabled={!!busy}/>
+    {tab === "history" && <MediaTestHistory id="fast-video-test" scope={historyScope} onCleared={startOver} refresh={historyRefresh}
+      onOpen={entry => {
+        historyOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setPreview(entry);
+      }}
+      detail={preview && <VideoHistoryPreview key={preview.id} entry={preview}
+        onBack={() => {setPreview(null); requestAnimationFrame(() => historyOpener.current?.focus());}}
+        onSaved={next => {
+          const status = taskLabels[next.state] ?? "平台正在处理视频";
+          if (status === preview.status) return;
+          void saveMediaTest(historyScope, {...preview, model: next.model, status})
+            .then(() => setHistoryRefresh(value => value + 1), () => setHistoryError(true));
+        }}/>}/>}
     <form hidden={tab !== "generate"} role="tabpanel" id="fast-video-test-generate-panel" aria-labelledby="fast-video-test-generate-tab"
       onSubmit={event => {event.preventDefault(); if (!busy && !task && canSubmit) void submit();}}>
       {!task && <>
@@ -251,16 +295,15 @@ export function VideoTestDialog({models, value, onClose, onBusy}: {
         {result?.job_id && <small>平台任务 ID · {result.job_id}</small>}
         <small>测试编号 · {task.request_id}</small>
         {result?.message && <p>{result.message}</p>}
-        {file && <><video src={convertFileSrc(file)} controls preload="metadata" aria-label="视频测试结果"
-          onError={() => setError("视频已保存，本地预览暂不可用。请通过下方路径打开。")}/><small>{file}</small></>}
       </div>}
       {error && <div className="fast-media-test-error" role="alert"><strong>视频测试需要检查</strong><p>{error}</p></div>}
       {historyError && <p role="alert">本次结果未能写入本地历史。</p>}
       <footer>
         {task ? <>
-          {(!terminal || result?.state === "downloaded") && <button type="button" disabled={!!busy} onClick={() => void query(task)}>
+          {!terminal && <button type="button" disabled={!!busy} onClick={() => void query(task)}>
             {busy ? <LoaderCircle size={16}/> : <RefreshCw size={16}/>}查询原任务
           </button>}
+          {result?.state === "downloaded" && !historyError && <button type="button" onClick={() => setTab("history")}>查看历史记录</button>}
           {(terminal || error) && <button type="button" disabled={!!busy} onClick={startOver}>返回测试设置</button>}
         </> : <button type="submit" className="fast-media-test-submit" disabled={!canSubmit}><Video size={16}/>开始视频测试</button>}
       </footer>

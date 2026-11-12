@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { clearMediaTests, mediaTestPage, type MediaTestEntry } from "./mediaTestStore";
 import "./media-test-history.css";
 
@@ -20,8 +21,9 @@ export function MediaTestTabs({tab, onChange, disabled, id}: {
   </div>;
 }
 
-export function MediaTestHistory({scope, onResume, onCleared, id}: {
-  scope: string; onResume?: (entry: MediaTestEntry) => void; onCleared?: () => void; id: string;
+export function MediaTestHistory({scope, onOpen, onCleared, id, detail, refresh}: {
+  scope: string; onOpen?: (entry: MediaTestEntry) => void; onCleared?: () => void; id: string;
+  detail?: ReactNode; refresh?: number;
 }) {
   const [page, setPage] = useState(0);
   const [data, setData] = useState<Awaited<ReturnType<typeof mediaTestPage>> | null>(null);
@@ -38,7 +40,7 @@ export function MediaTestHistory({scope, onResume, onCleared, id}: {
       else setData(next);
     }).catch(() => {if (!disposed) setError("无法读取本地测试历史。");});
     return () => {disposed = true;};
-  }, [scope, page, revision]);
+  }, [scope, page, revision, refresh]);
 
   const clear = async () => {
     setClearing(true);
@@ -58,6 +60,8 @@ export function MediaTestHistory({scope, onResume, onCleared, id}: {
   };
 
   return <div className="fast-test-history" role="tabpanel" id={`${id}-history-panel`} aria-labelledby={`${id}-history-tab`}>
+    {detail}
+    <div hidden={!!detail}>
     {error && <p role="alert">{error}</p>}
     {!data && !error && <p role="status">正在读取测试历史…</p>}
     {data && <>
@@ -71,14 +75,19 @@ export function MediaTestHistory({scope, onResume, onCleared, id}: {
         <button type="button" disabled={clearing} onClick={() => void clear()}>确认清空</button>
       </div>}
       {data.total === 0 && <p>暂无测试历史。</p>}
-      <ul>{data.entries.map(entry => <li key={entry.id}>
+      <ul>{data.entries.map(entry => <li key={entry.id} className={onOpen && entry.workspace ? "fast-test-history-clickable" : undefined}>
+        {onOpen && entry.workspace ? <button type="button" className="fast-test-history-row" onClick={() => onOpen(entry)}>
+          <span><strong>{entry.model || "视频任务"}</strong><small>{entry.status}</small></span>
+          <time dateTime={new Date(entry.createdAt).toISOString()}>{new Date(entry.createdAt).toLocaleString()}</time>
+          <ChevronRight size={16} aria-hidden="true"/>
+        </button> : <>
         <div className="fast-test-history-bar">
           <strong>{entry.model || "视频任务"}</strong>
           <time dateTime={new Date(entry.createdAt).toISOString()}>{new Date(entry.createdAt).toLocaleString()}</time>
         </div>
         <p>{entry.status}</p>
         {entry.image && <details><summary>查看图片</summary><img loading="lazy" src={entry.image} alt={`${entry.model} 测试结果`}/></details>}
-        {onResume && entry.workspace && <button type="button" onClick={() => onResume(entry)}>查看原任务</button>}
+        </>}
       </li>)}</ul>
       {data.pages > 1 && <nav aria-label="历史分页">
         <button type="button" disabled={page === 0 || clearing} onClick={() => setPage(page - 1)}>上一页</button>
@@ -86,5 +95,6 @@ export function MediaTestHistory({scope, onResume, onCleared, id}: {
         <button type="button" disabled={page + 1 >= data.pages || clearing} onClick={() => setPage(page + 1)}>下一页</button>
       </nav>}
     </>}
+    </div>
   </div>;
 }

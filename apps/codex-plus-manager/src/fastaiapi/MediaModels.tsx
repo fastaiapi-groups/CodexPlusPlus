@@ -76,7 +76,14 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
   };
   const working = connecting || Boolean(busy);
   const setTestBusy = (value: boolean) => {setBusy(value ? "test" : "");setLocked(value);};
-  return <section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>在 Codex 对话中调用生图和视频工具。默认模型可在下方选择。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
+  return <>
+    <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
+      const ids = new Set([...modelsFor(kind), ...Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels)]
+        .filter(id => supportsModel(routes.platform, kind, id, kinds.get(id))));
+      const group = directory?.groups.find(group => group.id === groupFor(kind));
+      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{ids.size} 个可用</small></header><span>默认模型{group && ` · ${group.name}`}</span><b>{defaults[kind]}</b><button disabled={working} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button></article>;
+    })}</div>
+    <section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>使用上方选定的默认模型，测试当前线路或在 Codex 对话中调用媒体工具。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
     <div className={`fast-media-status ${status?.state === "ready" && registered ? "is-ready" : "needs-repair"}`} role="status">
       <strong>{connecting ? "正在连接" : registered && status?.state === "ready" ? "工具已连接" : "连接待检查"}</strong>
       <span>{status?.message || "正在检查媒体凭据与路线…"}</span>
@@ -88,12 +95,6 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
       <button disabled={working || !registered} onClick={() => setTest("video")}><Video size={14}/>视频测试</button>
     </div>
     <p>Key 保存在系统凭据库。生成和测试使用当前 {platformName} 路线并按平台计费。</p>
-    <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
-      const ids = new Set([...modelsFor(kind), ...Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels)]
-        .filter(id => supportsModel(routes.platform, kind, id, kinds.get(id))));
-      const group = directory?.groups.find(group => group.id === groupFor(kind));
-      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{ids.size} 个可用</small></header><span>默认模型{group && ` · ${group.name}`}</span><b>{defaults[kind]}</b><button disabled={working} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button></article>;
-    })}</div>
     {picker && <ModelDialog kind={picker} keyId={boundKey(picker)} groupId={groupFor(picker)}
       models={modelsFor(picker)} value={defaults[picker]} busy={working} onClose={() => setPicker(null)}
       onApply={async () => {
@@ -103,5 +104,6 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
     {test === "video" && <VideoTestDialog models={modelsFor("video")} value={defaults.video} onClose={() => setTest(null)} onBusy={setTestBusy}/>}
     {(test === "text" || test === "image") && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={setTestBusy}/>}
     {message && <p role="status" className="fast-notice">{message}</p>}
-  </section>;
+    </section>
+  </>;
 }
