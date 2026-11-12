@@ -32,6 +32,14 @@
   padding: 12px 7px;
 }
 .fast-newapi-recharge .fast-package-picker label>strong { font-size: 16px; }
+
+.fast-website-recharge .fast-package-picker label>strong { font-size: 17px; }
+.fast-website-recharge .fast-package-picker>div { max-height: none; }
+@media (min-width: 561px) {
+  .fast-website-recharge .fast-package-picker>div {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
 .fast-recharge-money { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .fast-payment-dialog .fast-recharge-money small {
   font-size: .63em;

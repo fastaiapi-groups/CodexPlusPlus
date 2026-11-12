@@ -430,6 +430,31 @@ fn valid_order(id: &str) -> Result<i64, String> {
         .ok_or("订单号无效".into())
 }
 
+fn recharge_route(action: &str, id: &str) -> Result<(&'static str, String), String> {
+    const BASE: &str = "/hub/home/services/api/recharge";
+    let (method, path) = match action {
+        "recharge_packages" => ("GET", format!("{BASE}/packages")),
+        "recharge_channels" => ("GET", format!("{BASE}/channel-status")),
+        "recharge_orders" => ("GET", format!("{BASE}/orders")),
+        "recharge_create_order" => ("POST", format!("{BASE}/orders")),
+        "recharge_order" | "recharge_checkout" | "recharge_recheck" => {
+            if id.is_empty()
+                || id.len() > 80
+                || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            {
+                return Err("订单号无效".into());
+            }
+            match action {
+                "recharge_checkout" => ("POST", format!("{BASE}/orders/{id}/checkout")),
+                "recharge_recheck" => ("POST", format!("{BASE}/orders/{id}/recheck")),
+                _ => ("GET", format!("{BASE}/orders/{id}")),
+            }
+        }
+        _ => return Err("不支持的充值操作".into()),
+    };
+    Ok((method, path))
+}
+
 pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, String> {
     if action == "settings" || action == "test_routes" {
         let start = Instant::now();
@@ -553,6 +578,16 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
         "create_key" => create_key(&mut s, &body).await,
         "ensure_group_key" => group_key(&mut s, &body, true).await,
         "subscriptions" => request(&mut s, "GET", "/api/v1/subscriptions", Value::Null).await,
+        "recharge_packages"
+        | "recharge_channels"
+        | "recharge_orders"
+        | "recharge_create_order"
+        | "recharge_order"
+        | "recharge_checkout"
+        | "recharge_recheck" => {
+            let (method, path) = recharge_route(action, id)?;
+            request(&mut s, method, &path, body).await
+        }
         "checkout_info" => {
             request(&mut s, "GET", "/api/v1/payment/checkout-info", Value::Null).await
         }
@@ -744,6 +779,38 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path},
     };
+
+    #[test]
+    fn fastai_recharge_uses_the_website_service_for_new_and_existing_orders() {
+        assert_eq!(
+            recharge_route("recharge_packages", "").unwrap(),
+            ("GET", "/hub/home/services/api/recharge/packages".into())
+        );
+        assert_eq!(
+            recharge_route("recharge_channels", "").unwrap(),
+            (
+                "GET",
+                "/hub/home/services/api/recharge/channel-status".into()
+            )
+        );
+        for (action, verb, suffix) in [
+            ("recharge_orders", "GET", ""),
+            ("recharge_create_order", "POST", ""),
+            ("recharge_order", "GET", "/RA123"),
+            ("recharge_checkout", "POST", "/RA123/checkout"),
+            ("recharge_recheck", "POST", "/RA123/recheck"),
+        ] {
+            assert_eq!(
+                recharge_route(action, "RA123").unwrap(),
+                (
+                    verb,
+                    format!("/hub/home/services/api/recharge/orders{suffix}")
+                )
+            );
+        }
+        assert!(recharge_route("recharge_checkout", "../RA123").is_err());
+    }
+
     #[test]
     fn image_plaza_uses_group_model_price_and_independent_image_rate() {
         let plaza = json!({"groups":[

@@ -1,7 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { paymentState } from "./fastaiapi/paymentState.ts";
-import { canResumeDuocaiOrder, createNewApiRechargeData, paymentQrImage, rechargeCurrency, type NewApiOrder } from "./fastaiapi/rechargeData.ts";
+import { canResumeDuocaiOrder, createFastAiRechargeData, createNewApiRechargeData, paymentQrImage, rechargeCurrency, type NewApiOrder } from "./fastaiapi/rechargeData.ts";
+
+test("FastAiAPI preloads website packages and only enables available payment channels", async () => {
+  const calls: string[] = [];
+  const packages = [{id: "1", name: "1 刀额度", amount_cents: 100, credit: "1"}];
+  const data = createFastAiRechargeData(
+    async () => { calls.push("packages"); return packages; },
+    async () => {
+      calls.push("channels");
+      return [{payment_type: "alipay", available: false}, {payment_type: "wxpay", available: true}];
+    },
+    async () => { calls.push("orders"); return null; },
+  );
+  const preload = data.info.load();
+  assert.equal(data.info.load(), preload);
+  assert.deepEqual(await preload, {packages, channels: ["wxpay"]});
+  assert.deepEqual(await data.info.load(), data.info.current());
+  assert.deepEqual(await data.orders.load(), []);
+  assert.deepEqual(calls, ["packages", "channels", "orders"]);
+});
 
 test("login preload and opening recharge share one configuration, order list, and initial quote", async () => {
   const calls: string[] = [];

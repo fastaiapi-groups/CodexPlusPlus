@@ -5,9 +5,9 @@ import "./account.css";
 import "./overview.css";
 import { RefreshCw, Plus, ArrowUpRight, LogOut, Sparkles } from "lucide-react";
 import { SubApiSubscriptions } from "./SubApiSubscriptions";
-import { SubApiRecharge } from "./SubApiRecharge";
+import { Recharge } from "./Recharge";
 import { NewApiRecharge } from "./NewApiRecharge";
-import { createNewApiRechargeData, createRechargeData, type NewApiOrder, type NewApiRechargeInfo, type SubApiOrder, type SubApiRechargeInfo } from "./rechargeData";
+import { createFastAiRechargeData, createNewApiRechargeData, type NewApiOrder, type NewApiRechargeInfo } from "./rechargeData";
 import { ServiceRouteProvider, RouteSelector, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { MediaModels } from "./MediaModels";
 import "./gate.css";
@@ -58,9 +58,10 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       () => api<{items?: NewApiOrder[]}>("orders").then(result => result.items ?? []),
       amount => api<string>("quote", {amount}),
     ),
-    subapi: createRechargeData(
-      () => api<SubApiRechargeInfo>("checkout_info"),
-      () => api<{items?: SubApiOrder[]}>("orders").then(result => result.items ?? []),
+    subapi: createFastAiRechargeData(
+      () => api("recharge_packages"),
+      () => api("recharge_channels"),
+      () => api("recharge_orders"),
     ),
   }), [routes.platform, routes.selected, account]);
   useEffect(() => {
@@ -141,7 +142,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
           }}/>
       }/>
       <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频工具</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); setUser(null); setAuthenticated(false); setConfiguration({}); await restoreLogin(); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
-      {recharge && (routes.platform === "subapi" ? <SubApiRecharge origin={walletOrigin} currency={user.currency} data={rechargeData.subapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} walletOrigin={walletOrigin} currency={user.currency} data={rechargeData.newapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
+      {recharge && (routes.platform === "subapi" ? <Recharge origin={walletOrigin} data={rechargeData.subapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} walletOrigin={walletOrigin} currency={user.currency} data={rechargeData.newapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
     {!user && busy && <p className="fast-muted" role="status">正在登录平台，请留意系统凭据授权提示。</p>}
   </section>;

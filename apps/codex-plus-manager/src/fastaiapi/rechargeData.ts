@@ -18,6 +18,27 @@ export type SubApiRechargeInfo = {
 };
 export type SubApiOrder = {id: number; out_trade_no: string; amount: number; pay_amount: number; currency?: string; status: string; order_type: string};
 
+export type FastAiRechargePackage = {id: string; name: string; amount_cents: number; credit: string};
+export type FastAiRechargeOrder = {id: string; status: string; amount_cents: number; credit: string; gateway_status: string; payment_type: string; reversed_at?: string};
+type FastAiRechargeChannel = {payment_type: string; available: boolean};
+export const fastAiPaymentChannels = ["alipay", "wxpay"] as const;
+
+export function createFastAiRechargeData(
+  loadPackages: () => Promise<FastAiRechargePackage[]>,
+  loadChannels: () => Promise<FastAiRechargeChannel[]>,
+  loadOrders: () => Promise<FastAiRechargeOrder[] | null>,
+) {
+  return createRechargeData(async () => {
+    const [packages, channels] = await Promise.all([loadPackages(), loadChannels()]);
+    return {
+      packages,
+      channels: fastAiPaymentChannels.filter(channel => channels.some(item => item.payment_type === channel && item.available)),
+    };
+  }, async () => await loadOrders() ?? []);
+}
+
+export type FastAiRechargeData = ReturnType<typeof createFastAiRechargeData>;
+
 export function initialTopupAmount(info: NewApiRechargeInfo) {
   const minimum = info.min_topup ?? 1;
   return info.amount_options?.find(amount => Number.isInteger(amount) && amount >= minimum) ?? info.min_topup ?? 10;

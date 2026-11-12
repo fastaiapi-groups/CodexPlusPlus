@@ -68,7 +68,15 @@ async fn main() {
                 match request["command"].as_str().unwrap_or("") {
                     "fastaiapi_account" => {
                         let action = args["action"].as_str().unwrap_or("");
-                        if matches!(action, "pay" | "duocai_pay" | "redeem") {
+                        if matches!(
+                            action,
+                            "pay"
+                                | "duocai_pay"
+                                | "redeem"
+                                | "recharge_create_order"
+                                | "recharge_checkout"
+                                | "recharge_recheck"
+                        ) {
                             return Err(
                                 "网页联调不创建充值订单或兑换额度，请在正式客户端操作。".into()
                             );
