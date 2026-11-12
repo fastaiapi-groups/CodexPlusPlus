@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ModelDialog } from "./ModelDialog";
 import { MediaTestDialog } from "./MediaTestDialog";
+import { VideoTestDialog } from "./VideoTestDialog";
 
 import { usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { Image, Video, RefreshCw, FlaskConical } from "lucide-react";
@@ -58,7 +59,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
     return () => { disposed = true; };
   }, [routes.platform, routes.selected]);
   const work = async (name: string, fn: () => Promise<void>) => {setBusy(name); setLocked(true); setMessage(""); try {await fn();} catch(e) {setMessage(String(e));} finally {setBusy("");setLocked(false);}};
-  const [picker, setPicker] = useState<"image" | "video" | null>(null), [test, setTest] = useState<"text" | "image" | null>(null);
+  const [picker, setPicker] = useState<"image" | "video" | null>(null), [test, setTest] = useState<"text" | "image" | "video" | null>(null);
   const defaults = {image: status?.image_model || "gpt-image-2", video: status?.video_model || "minimax-h3"};
   const modelsFor = (kind: "text" | "image" | "video") =>
     (status?.models_by_kind ? status.models_by_kind[kind] ?? [] : status?.models ?? [])
@@ -74,6 +75,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
     await refresh();
   };
   const working = connecting || Boolean(busy);
+  const setTestBusy = (value: boolean) => {setBusy(value ? "test" : "");setLocked(value);};
   return <><section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>在 Codex 对话中调用生图和视频工具。默认模型可在下方选择。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
     <div className={`fast-media-status ${status?.state === "ready" && registered ? "is-ready" : "needs-repair"}`} role="status">
       <strong>{connecting ? "正在连接" : registered && status?.state === "ready" ? "工具已连接" : "连接待检查"}</strong>
@@ -83,6 +85,7 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
     <div className="fast-row">
       <button disabled={working || !registered || !modelsFor("text").length} onClick={() => setTest("text")}><FlaskConical size={14}/>文本测试</button>
       <button disabled={working || !registered || !modelsFor("image").length} onClick={() => setTest("image")}><Image size={14}/>图片测试</button>
+      <button disabled={working || !registered} onClick={() => setTest("video")}><Video size={14}/>视频测试</button>
     </div>
     <p>Key 保存在系统凭据库。生成和测试使用当前 {platformName} 路线并按平台计费。</p>
     <div className="fast-media-grid" role="group" aria-label="默认模型">{textPicker}{(["image", "video"] as const).map(kind => {
@@ -97,7 +100,8 @@ export function MediaModels({textKeyId, textModel, textPicker}: {textKeyId?: num
         await refresh().catch(() => {});
         setMessage("媒体默认分组和模型已保存。");
       }}/>}
-    {test && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={value=>{setBusy(value ? "test" : "");setLocked(value);}}/>}
+    {test === "video" && <VideoTestDialog models={modelsFor("video")} value={defaults.video} onClose={() => setTest(null)} onBusy={setTestBusy}/>}
+    {(test === "text" || test === "image") && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={setTestBusy}/>}
     {message && <p role="status" className="fast-notice">{message}</p>}
   </section>
     <details className="fast-advanced">

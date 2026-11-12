@@ -115,8 +115,8 @@ test('media help and submission addresses follow the selected route', () => {
 });
 
 test('media model names and catalog metadata stay out of text tests', () => {
-  const ids = ['gpt-5.6-sol', 'muze', 'opaque-clip'];
+  const ids = ['gpt-5.6-sol', 'muze', 'muse-zqi', 'opaque-clip'];
   const kinds = new Map([['opaque-clip', 'video' as const]]);
   assert.deepEqual(selectableGroupModels('newapi', 'text', ids, [], kinds), ['gpt-5.6-sol']);
-  assert.deepEqual(selectableGroupModels('newapi', 'video', ids, [], kinds), ['muze', 'opaque-clip']);
+  assert.deepEqual(selectableGroupModels('newapi', 'video', ids, [], kinds), ['muze', 'muse-zqi', 'opaque-clip']);
 });

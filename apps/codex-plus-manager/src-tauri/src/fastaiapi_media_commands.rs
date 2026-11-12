@@ -4,8 +4,45 @@ use codex_plus_core::{
     settings::SettingsStore,
 };
 use serde_json::{Value, json};
+use std::path::PathBuf;
+use tauri::Manager;
 
 static CONNECT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tauri::command]
+pub async fn fastaiapi_video_test(
+    app: tauri::AppHandle,
+    action: String,
+    body: Value,
+) -> Result<Value, String> {
+    let workspace = body["workspace"].as_str().map(PathBuf::from);
+    let result = media::video_test(&paths::default_app_state_dir(), &action, body)
+        .await
+        .map_err(|error| error.to_string())?;
+    if result["state"] == "downloaded"
+        && let (Some(root), Some(id), Some(files)) = (
+            workspace.and_then(|path| path.canonicalize().ok()),
+            result["request_id"].as_str(),
+            result["files"].as_array(),
+        )
+    {
+        let output = root.join("outputs").join(format!("fastaiapi-{id}"));
+        for file in files.iter().filter_map(Value::as_str) {
+            if let Ok(path) = std::fs::canonicalize(file)
+                && path.parent() == Some(output.as_path())
+                && matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("video.mp4" | "video.webm")
+                )
+            {
+                app.asset_protocol_scope()
+                    .allow_file(path)
+                    .map_err(|_| "视频已下载，但无法打开本地预览")?;
+            }
+        }
+    }
+    Ok(result)
+}
 
 /// 仅注册媒体工具；模型路由和 Codex 的登录配置由原有切换逻辑维护。
 #[tauri::command]

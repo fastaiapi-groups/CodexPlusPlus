@@ -11,6 +11,19 @@ pub use connection::{
 };
 pub use mcp::run;
 
+/// 桌面测试复用 MCP 的提交、查询和下载回执。
+pub async fn video_test(
+    state: &std::path::Path,
+    action: &str,
+    args: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(
+        matches!(action, "submit_video" | "video_status" | "download_video"),
+        "未知的视频测试操作"
+    );
+    mcp::call(state, &connection::client()?, action, args).await
+}
+
 pub const MCP_FLAG: &str = "--fastaiapi-media-mcp";
 
 pub const SPEC: ManagedMcp = ManagedMcp {

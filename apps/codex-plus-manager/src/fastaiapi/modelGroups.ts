@@ -18,7 +18,7 @@ export function initialGroup(groups: AccountGroup[], current: string | null) {
 
 export function modelKind(id: string): ModelKind | "other" {
   const name = id.toLowerCase();
-  if (/video|sora|veo|kling|wan|seedance|minimax-h3|ltx|hunyuan|sd2\.5|muze/.test(name)) return "video";
+  if (/video|sora|veo|kling|wan|seedance|minimax-h3|ltx|hunyuan|sd2\.5|muze|^muse-/.test(name)) return "video";
   if (/image|dall-e|flux|midjourney|stable-diffusion|sdxl|imagen|ideogram/.test(name)) return "image";
   if (/audio|tts|embedding|realtime|whisper|dubbing|transcribe|moderation|auto-review|reserve/.test(name)) return "other";
   return "text";

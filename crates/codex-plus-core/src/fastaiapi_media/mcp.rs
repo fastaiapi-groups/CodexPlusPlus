@@ -125,7 +125,12 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("工具参数不符合定义，请检查必填字段和类型"))
 }
 
-async fn call(state: &Path, client: &reqwest::Client, name: &str, args: Value) -> Result<Value> {
+pub(super) async fn call(
+    state: &Path,
+    client: &reqwest::Client,
+    name: &str,
+    args: Value,
+) -> Result<Value> {
     match name {
         "connection_status" | "list_models" => {
             ensure!(

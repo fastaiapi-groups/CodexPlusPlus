@@ -436,6 +436,15 @@ mod tests {
         assert_eq!(sub["duration"], 5);
         assert_eq!(sub["content"][1]["type"], "image_b64");
         assert_eq!(sub["resolution"], "720p");
+        let args = Generate {
+            seconds: Some(3),
+            ..args
+        };
+        let (_, short) = args
+            .build(Platform::NewApi, "video", "minimax-h3-x", &root)
+            .unwrap();
+        assert_eq!(short["model"], "minimax-h3-x");
+        assert_eq!(short["seconds"], 3);
     }
 
     #[test]

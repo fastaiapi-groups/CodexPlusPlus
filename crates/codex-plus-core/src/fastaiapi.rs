@@ -1318,21 +1318,22 @@ async fn models_for_key(origin: &str, secret: &str) -> Result<Vec<String>, Strin
 }
 pub fn model_kind(id: &str) -> &'static str {
     let lower = id.to_ascii_lowercase();
-    if [
-        "video",
-        "sora",
-        "veo",
-        "kling",
-        "wan",
-        "seedance",
-        "minimax-h3",
-        "ltx",
-        "hunyuan",
-        "sd2.5",
-        "muze",
-    ]
-    .iter()
-    .any(|v| lower.contains(v))
+    if lower.starts_with("muse-")
+        || [
+            "video",
+            "sora",
+            "veo",
+            "kling",
+            "wan",
+            "seedance",
+            "minimax-h3",
+            "ltx",
+            "hunyuan",
+            "sd2.5",
+            "muze",
+        ]
+        .iter()
+        .any(|v| lower.contains(v))
     {
         "video"
     } else if [
@@ -1666,6 +1667,10 @@ mod tests {
             "minimax-h3",
             "veo3",
             "muze",
+            "muse-zqi",
+            "muse-apm",
+            "muse-orb",
+            "muse-zqq",
         ] {
             assert_eq!(model_kind(id), "video");
         }

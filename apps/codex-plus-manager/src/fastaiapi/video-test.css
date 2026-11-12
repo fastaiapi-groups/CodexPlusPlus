@@ -1,0 +1,75 @@
+.fast-video-test-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 14px;
+}
+
+.fast-video-test-options input,
+.fast-video-test-resume input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #8195ab50;
+  border-radius: 9px;
+  background: #8195ab10;
+  color: inherit;
+  font: inherit;
+}
+
+.fast-video-test-path {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.fast-video-test-path button,
+.fast-video-test-resume button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #8195ab50;
+  border-radius: 9px;
+  padding: 9px 12px;
+  background: #8195ab10;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fast-video-test-path span {
+  flex: 1 1 180px;
+  color: #91a0b0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.fast-video-test video {
+  display: block;
+  margin-top: 12px;
+  width: 100%;
+  max-height: 320px;
+  border-radius: 9px;
+  background: #111;
+}
+
+.fast-video-test-resume {
+  border-top: 1px solid #8195ab35;
+  padding-top: 12px;
+  font-size: 12px;
+}
+
+.fast-video-test-resume summary {
+  cursor: pointer;
+  color: #91a0b0;
+}
+
+.fast-video-test-resume label,
+.fast-video-test-resume button {
+  margin-top: 10px;
+}
+
+@media (max-width: 420px) {
+  .fast-video-test-options { grid-template-columns: minmax(0, 1fr); }
+}
