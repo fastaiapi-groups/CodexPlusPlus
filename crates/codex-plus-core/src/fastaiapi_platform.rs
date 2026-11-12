@@ -225,6 +225,22 @@ pub async fn account(
         return routes(next).await;
     }
     if action == "routes" {
+        let path = selection_path();
+        let platform = if platform == Platform::NewApi && !path.exists() {
+            let _lock = SESSION_PLATFORM.lock().await;
+            if path.exists() {
+                selected()
+            } else if legacy_fastai_login_exists().await {
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|_| "无法保存平台选择")?;
+                crate::settings::atomic_write(&path, Platform::SubApi.id().as_bytes())
+                    .map_err(|_| "无法保存平台选择")?;
+                Platform::SubApi
+            } else {
+                platform
+            }
+        } else {
+            platform
+        };
         return routes(platform).await;
     }
     // 与平台切换串行化，认证成功后立即固定平台，包括恢复已有会话。
@@ -236,6 +252,18 @@ pub async fn account(
     }?;
     lock.record(platform, action, &result);
     Ok(result)
+}
+async fn legacy_fastai_login_exists() -> bool {
+    use crate::fastaiapi_subapi::{LEGACY_REMEMBERED_LOGIN, LEGACY_SESSION};
+    let (newapi, session, remembered) = tokio::join!(
+        crate::fastaiapi_secret_store::load_with_timeout(Platform::NewApi.service("session")),
+        crate::fastaiapi_secret_store::load_with_timeout(LEGACY_SESSION.into()),
+        crate::fastaiapi_secret_store::load_with_timeout(LEGACY_REMEMBERED_LOGIN.into()),
+    );
+    matches!(newapi, Ok(None))
+        && [session, remembered]
+            .into_iter()
+            .any(|value| value.ok().flatten().is_some_and(|bytes| !bytes.is_empty()))
 }
 async fn routes(platform: Platform) -> Result<Value, String> {
     let platforms = Platform::BUILT_INS

@@ -9,6 +9,8 @@ use std::{
 };
 const PLATFORM: Platform = Platform::SubApi;
 const ORIGIN: &str = "https://fastaiapi.cloud";
+pub(crate) const LEGACY_SESSION: &str = "com.fastaiapi.codexplusplus.session";
+pub(crate) const LEGACY_REMEMBERED_LOGIN: &str = "com.fastaiapi.codexplusplus.remembered-login";
 #[derive(Default, Serialize, Deserialize)]
 struct LoginSession {
     access_token: String,
@@ -107,15 +109,25 @@ fn persist(s: &State) -> bool {
         &serde_json::to_vec(&s.session).unwrap_or_default(),
     )
 }
+fn load_session(mut load: impl FnMut(&str) -> Option<Vec<u8>>) -> LoginSession {
+    if let Some(current) = load(&PLATFORM.service("session")) {
+        return serde_json::from_slice(&current).unwrap_or_default();
+    }
+    // 1.11.5 只保存 FastAiAPI access token。旧版没有可供迁移的 refresh token。
+    let access_token = load(LEGACY_SESSION)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    LoginSession {
+        access_token,
+        ..LoginSession::default()
+    }
+}
+
 async fn ensure_loaded(s: &mut State) -> Result<(), String> {
     if !s.loaded {
         s.session = tokio::time::timeout(
             Duration::from_secs(6),
-            tokio::task::spawn_blocking(|| {
-                crate::fastaiapi_secret_store::load(&PLATFORM.service("session"))
-                    .and_then(|v| serde_json::from_slice(&v).ok())
-                    .unwrap_or_default()
-            }),
+            tokio::task::spawn_blocking(|| load_session(crate::fastaiapi_secret_store::load)),
         )
         .await
         .map_err(|_| "系统凭据库未响应，请允许钥匙串访问或重新登录")?
@@ -400,6 +412,7 @@ async fn finish_login(s: &mut State, raw: Value, registration: bool) -> Result<V
                 .as_bytes(),
         )
     } else {
+        crate::fastaiapi_secret_store::clear(LEGACY_REMEMBERED_LOGIN)?;
         crate::fastaiapi_secret_store::clear(&PLATFORM.service("remembered-login"))?;
         false
     };
@@ -486,14 +499,23 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
     match action {
         "remembered_login" => {
             drop(s);
-            return Ok(crate::fastaiapi_secret_store::load_with_timeout(
+            let current = crate::fastaiapi_secret_store::load_with_timeout(
                 PLATFORM.service("remembered-login"),
             )
-            .await?
-            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
-            .unwrap_or(json!({})));
+            .await?;
+            let remembered = match current {
+                Some(value) => Some(value),
+                None => {
+                    crate::fastaiapi_secret_store::load_with_timeout(LEGACY_REMEMBERED_LOGIN.into())
+                        .await?
+                }
+            };
+            return Ok(remembered
+                .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+                .unwrap_or(json!({})));
         }
         "forget_login" => {
+            crate::fastaiapi_secret_store::clear(LEGACY_REMEMBERED_LOGIN)?;
             crate::fastaiapi_secret_store::clear(&PLATFORM.service("remembered-login"))?;
             return Ok(json!({}));
         }
@@ -558,6 +580,7 @@ pub async fn account(action: &str, id: &str, body: Value) -> Result<Value, Strin
             &json!({"refresh_token":s.session.refresh_token}),
         )
         .await;
+        crate::fastaiapi_secret_store::clear(LEGACY_SESSION)?;
         crate::fastaiapi_secret_store::clear(&PLATFORM.service("session"))?;
         crate::fastaiapi_secret_store::clear(&PLATFORM.service("media"))?;
         s.session = LoginSession::default();
@@ -779,6 +802,41 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path},
     };
+
+    #[tokio::test]
+    async fn legacy_fastai_access_token_authenticates_the_new_subapi_panel() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/auth/me"))
+            .and(header("Authorization", "Bearer legacy-test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"code":0,"data":{"email":"upgrade-test@example.invalid","balance":12}}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let session =
+            load_session(|name| (name == LEGACY_SESSION).then(|| b"legacy-test-token".to_vec()));
+        let mut state = State {
+            origin: server.uri(),
+            loaded: true,
+            session,
+        };
+        let account = request(&mut state, "GET", "/api/v1/auth/me", Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(user_view(&account)["email"], "upgrade-test@example.invalid");
+        assert!(state.session.refresh_token.is_empty());
+    }
+
+    #[test]
+    fn current_session_entry_takes_priority_over_the_legacy_token() {
+        let session = load_session(|name| {
+            assert_eq!(name, PLATFORM.service("session"));
+            Some(serde_json::to_vec(&LoginSession::default()).unwrap())
+        });
+        assert!(session.access_token.is_empty());
+    }
 
     #[test]
     fn fastai_recharge_uses_the_website_service_for_new_and_existing_orders() {
