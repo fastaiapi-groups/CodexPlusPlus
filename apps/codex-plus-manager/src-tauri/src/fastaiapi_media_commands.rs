@@ -38,22 +38,22 @@ pub async fn fastaiapi_media_tool(
                 if status.disabled {
                     return Err("媒体工具已停用，可在 MCP 与 Skills 中重新启用。".into());
                 }
-                if status.registered
-                    && media::native_enabled()
-                    && media::has_saved_route(platform, origin)
-                {
+                media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
+                codex_plus_core::fastaiapi_media_env::restore_group_route(platform, origin)?;
+                if status.registered {
                     return Ok(json!({"registered":true}));
                 }
+            } else {
+                media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
+                if let Some(key) = api_key {
+                    panels::account(platform, "media_manual", "", json!({"api_key":key})).await?;
+                } else if !media::has_saved_route(platform, origin) {
+                    panels::account(platform, "media_setup", "", json!({})).await?;
+                }
+                media::verify_connection(platform, origin)
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
-            media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
-            if let Some(key) = api_key {
-                panels::account(platform, "media_manual", "", json!({"api_key":key})).await?;
-            } else if !media::has_saved_route(platform, origin) {
-                panels::account(platform, "media_setup", "", json!({})).await?;
-            }
-            media::verify_connection(platform, origin)
-                .await
-                .map_err(|error| error.to_string())?;
             crate::agent_collaboration_commands::connect_codex(
                 &SPEC,
                 &SettingsStore::default(),
@@ -64,7 +64,7 @@ pub async fn fastaiapi_media_tool(
             .map_err(|error| error.to_string())?;
             let status = registration()?;
             Ok(json!({"registered":status.registered && !status.disabled,
-                "message":"媒体工具已连接，重新打开 Codex 会话后可在对话中调用。"}))
+                "message":"媒体工具已注册。"}))
         }
         _ => Err("未知的媒体工具操作".into()),
     }

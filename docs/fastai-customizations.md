@@ -9,7 +9,7 @@
 | 编号 | 要保留的用户行为 | 当前关键入口 | 验收重点 |
 | --- | --- | --- | --- |
 | F01 | FastAiApi 账号登录、恢复、退出，TuMeiAPI / FastAiAPI 双内置渠道，登录平台固定、路线可切换 | `apps/codex-plus-manager/src/fastaiapi/`；Tauri `src/fastaiapi_commands.rs`；core `fastaiapi_platform.rs`、`fastaiapi_session.rs`、`fastaiapi_credentials.rs`、`fastaiapi_secret_store.rs` | 平台凭据不串用；切路线保留正确状态；退出/重启不复活历史会话；系统凭据失败有明确提示 |
-| F02 | 自动接入供应商、选择 Key/模型、文字/图片/视频分组与模型说明、人民币价格含阶梯定价 | 前端 `KeySelector.tsx`、`ModelPicker.tsx`、`ModelDialog.tsx`、`GroupDescription.tsx`、`onboarding.ts`；core `fastaiapi.rs`、`fastaiapi_subapi.rs`、`fastaiapi_pricing.rs` | 使用正确平台与 Key 分组；不覆盖未知现有配置；保留供应商切换保护、回滚及备份；不虚构价格 |
+| F02 | 确认分组和模型时自动绑定 Key、文字/图片/视频分组与模型说明、人民币价格含阶梯定价 | 前端 `ModelPicker.tsx`、`ModelDialog.tsx`、`modelDirectory.ts`；管理器 `fastaiapi_commands.rs`；core `fastaiapi.rs`、`fastaiapi_subapi.rs`、`fastaiapi_pricing.rs` | 使用正确平台与 Key 分组；不覆盖未知现有配置；保留供应商切换保护、回滚及备份；不虚构价格 |
 | F03 | 充值、订单恢复、支付标识、兑换码、订阅与客服入口 | 前端 `NewApiRecharge.tsx`、`SubApiRecharge.tsx`、`SubApiSubscriptions.tsx`、`paymentState.ts`、`ContactQr.tsx` | 金额输入可见、支付状态/恢复正确、平台接口隔离；离线回归不真实下单 |
 | F04 | 平台反馈、二维码、私有管理入口及服务端隔离 | 前端 `Feedback.tsx`；`services/` 及已有反向代理配置 | 保留客服和反馈；私有管理接口不意外公开；不随桌面同步自动部署服务器 |
 | F05 | Rust 媒体工具自动接入、图片/视频默认分组与模型按平台、路线和类型保存、显式型号覆盖、托管 H3/Grok/公共协议 | `integrations/fastaiapi/media-api/`；前端 `MediaModels.tsx`、`MediaTestDialog.tsx`；core `fastaiapi_media_env.rs` | 重启/切路线保存正确默认；原任务沿用回执；不重复提交；跨域下载不携带 Key；独立旧技能与已有回执继续可用 |
@@ -41,12 +41,12 @@
 
 - New API/SubAPI 的 remembered-login 读取须在阻塞线程内运行并设置 6 秒超时；超时释放平台请求调用方，不能因钥匙串授权无响应让整个登录恢复无限等待。不得清空凭据或绕过系统授权。
 
-- 概览统一通过「切换供应商」选择 TuMeiAPI、FastAiAPI 或官方登录配置。沿用 `switchRelayProfile` 事务保存和恢复配置，管理供应商中的 `NativeAuthControl` 负责原生登录账号选择。官方模式下概览禁用平台文字模型应用和自动配置，媒体服务仍使用平台账号。
+- 概览统一通过「切换供应商」选择 TuMeiAPI、FastAiAPI 或官方登录配置。沿用 `switchRelayProfile` 事务保存和恢复配置，管理供应商中的 `NativeAuthControl` 负责原生登录账号选择。官方模式下概览禁用平台文字模型应用，媒体服务仍使用平台账号。
 
 
 - 内置媒体工具实现集中在 `crates/codex-plus-core/src/fastaiapi_media/`，管理器通过独立 `fastaiapi_media_commands.rs` 注册，启动时通过 `--fastaiapi-media-mcp` 分发。继续复用现有凭据库及托管 MCP 上下文，注册只写命令、状态目录与超时，不写媒体 Key。新连接默认使用系统凭据，旧连接在概览自动接入后停止导出环境变量；既有用户变量与恢复项留待跨平台迁移验收后处理。
 - Rust MCP 当前覆盖生图、编辑、视频提交、查询、下载和旧视频回执恢复。新任务使用当前已连接的 HTTPS 路线，已有视频继续使用回执绑定的平台、原路线和原 Key。进程中断或响应不明确时按同一 UUID 查询，禁止自动重发。旧独立 Python 技能与音频功能保留。
 
-- 三种默认模型共用概览分组弹窗，按平台目录只展示提供对应可选模型的分组。显式选择分组时复用已有有效 Key，缺少时自动创建。确认后验证分组 Key 的模型权限，再保存分组与模型。Rust 媒体工具按任务类型读取对应系统凭据，已提交的视频任务沿用原回执的凭据引用。
+- 三种默认模型共用概览分组弹窗，登录成功或恢复后，按账号、平台和路线预加载分组、模型、价格，三个弹窗共享内存目录，只展示提供对应可选模型的分组。确认分组和模型时，后台校验并复用有效 Key，必要时创建专用 Key。验证成功后保存绑定。Rust 媒体工具按任务类型读取对应系统凭据，已提交的视频任务沿用原回执的凭据引用。
 
 - 自有 macOS 分发包要求 Developer ID 签名及 Apple 公证。Windows 签名构建验证主程序和安装器的 Authenticode 与时间戳。签名入口和拦截排查见 [客户端签名](client-code-signing.md)。

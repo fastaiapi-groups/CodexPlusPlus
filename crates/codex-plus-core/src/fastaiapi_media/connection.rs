@@ -109,27 +109,48 @@ pub(super) async fn load(
                 .as_str()
         }),
     };
-    let names = if let Some(credential) = group_credential {
-        vec![
+    let grouped_models = descriptor["group_models"][platform.id()][&origin].clone();
+    let mut candidates: Vec<(String, Option<String>)> = if let Some(credential) = group_credential {
+        vec![(
             fastaiapi_media_env::group_service(platform, credential)
                 .context("媒体分组凭据引用无效")?,
-        ]
+            Some(credential.to_owned()),
+        )]
     } else {
         fastaiapi_media_env::credential_services(platform)
+            .into_iter()
+            .map(|service| (service, None))
+            .collect()
     };
+    // 状态与目录检查可使用已绑定的媒体分组；任务仍按自己的类型或回执读取 Key。
+    if kind.is_none() && pinned.is_none() {
+        for kind in ["image", "video"] {
+            if let Some(credential) = grouped_models[kind]["credential"].as_str()
+                && let Some(service) = fastaiapi_media_env::group_service(platform, credential)
+            {
+                candidates.push((service, Some(credential.to_owned())));
+            }
+        }
+    }
     let account = scope.account;
-    let secret = tokio::time::timeout(
+    let active_origin = origin.clone();
+    let require_origin = pinned.is_none();
+    let (secret, group_credential) = tokio::time::timeout(
         Duration::from_secs(8),
         tokio::task::spawn_blocking(move || {
-            names.into_iter().find_map(|service| {
-                fastaiapi_secret_store::load_in_account(&service, &account)
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            candidates.into_iter().find_map(|(service, credential)| {
+                let bytes = fastaiapi_secret_store::load_in_account(&service, &account)?;
+                let secret: Value = serde_json::from_slice(&bytes).ok()?;
+                if require_origin && credential.is_none() && secret["origin"] != active_origin {
+                    return None;
+                }
+                Some((secret, credential))
             })
         }),
     )
     .await
     .context("系统凭据库未响应，请检查系统授权")??
-    .context("媒体 Key 不可读，请在 Codex++ 中配置或检查系统授权")?;
+    .context("媒体 Key 不可读，请在概览确认默认模型或检查系统授权")?;
     let saved_origin = secret["origin"].as_str().unwrap_or("");
     ensure!(
         platform.origins().contains(&saved_origin),
@@ -146,13 +167,12 @@ pub(super) async fn load(
         .filter(|key| !key.is_empty() && !key.chars().any(char::is_whitespace))
         .context("系统凭据库中的媒体 Key 无效")?;
     let defaults = fastaiapi_media_env::defaults_for(&descriptor, platform, &origin);
-    let grouped_models = descriptor["group_models"][platform.id()][&origin].clone();
     Ok(Connection {
         platform,
         origin,
         key: key.to_owned(),
         defaults,
-        group_credential: group_credential.map(str::to_owned),
+        group_credential,
         grouped_models,
     })
 }
@@ -353,8 +373,10 @@ pub(super) async fn models_by_kind(
     base: &Connection,
 ) -> serde_json::Map<String, Value> {
     let mut lists = serde_json::Map::new();
-    let base_models = models(client, base).await;
-    if let Ok(ids) = &base_models {
+    let base_models = models(client, base).await.ok();
+    if base.group_credential.is_none()
+        && let Some(ids) = &base_models
+    {
         lists.insert(
             "text".into(),
             serde_json::json!(
@@ -365,16 +387,17 @@ pub(super) async fn models_by_kind(
         );
     }
     for kind in ["image", "video"] {
-        let grouped = if base.grouped_models[kind]["credential"].is_string() {
-            Some(match load(state, Some(kind), None).await {
-                Ok(active) => models(client, &active).await,
-                Err(error) => Err(error),
-            })
-        } else {
-            None
+        let grouped = match base.grouped_models[kind]["credential"].as_str() {
+            Some(credential) if Some(credential) != base.group_credential.as_deref() => {
+                Some(match load(state, Some(kind), None).await {
+                    Ok(active) => models(client, &active).await.ok(),
+                    Err(_) => None,
+                })
+            }
+            None if base.group_credential.is_some() => continue,
+            _ => None,
         };
-        let ids = grouped.as_ref().unwrap_or(&base_models);
-        if let Ok(ids) = ids {
+        if let Some(ids) = grouped.as_ref().unwrap_or(&base_models) {
             lists.insert(
                 kind.into(),
                 serde_json::json!(

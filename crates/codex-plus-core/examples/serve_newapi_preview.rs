@@ -76,6 +76,9 @@ async fn main() {
                         if action == "configuration" {
                             return Ok(json!({}));
                         }
+                        if action == "apply_model_binding" {
+                            return Ok(json!({"preview":true}));
+                        }
                         codex_plus_core::fastaiapi_platform::account(
                             platform,
                             action,

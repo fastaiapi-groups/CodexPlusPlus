@@ -3,16 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, X, Check, RefreshCw, ChevronRight } from "lucide-react";
 import type { AccountGroup } from "./groupCache";
+import { useModelDirectory } from "./ModelDirectoryContext";
+import { catalogModels } from "./modelDirectory";
 import { initialGroup, keyGroup, selectableGroupModels, type ModelChoice, type ModelGroupKey, type ModelKind } from "./modelGroups";
 
 import "./recharge.css";
 import "./responsive.css";
 import "./model-dialog.css";
 
-type ModelPrice = {model: string; time_pricing: boolean; pricing_note?: string; unit_price?: number | null; tiers: {label: string; input: number | null; output: number | null; cache: number | null}[]};
-type ModelPricing = {group: string; rate_multiplier?: number | null; currency?: string; model_ids?: string[]; pricing_warning?: string; models: ModelPrice[]};
-type GroupCatalogs = { groups: AccountGroup[]; catalogs: Record<string, ModelPricing> };
-type AccountCatalog = { groups: AccountGroup[]; catalogs: Map<string, ModelPricing>; keys: ModelGroupKey[] };
 const legacyGroup = "";
 
 const priceYuan = (price: number | null, currency = "USD") => price !== null && Number.isFinite(price)
@@ -25,56 +23,12 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const invoke = usePlatformInvoke();
   const {routes, setLocked} = useServiceRoutes();
   const platform = routes.platform;
-  const api = <T,>(action: string, body?: object, id?: string) => invoke<T>("fastaiapi_account", {action, body, id});
   const dialog = useRef<HTMLDialogElement>(null);
   const [query, setQuery] = useState(""), [choice, setChoice] = useState<{group: string; model: string} | null>(null);
   const [saving, setSaving] = useState(false), [error, setError] = useState("");
-  const [preparing, setPreparing] = useState(false);
-  const [keyError, setKeyError] = useState("");
-  const [account, setAccount] = useState<AccountCatalog | null>(null), [groupError, setGroupError] = useState("");
+  const {directory: account, loading, refresh, rememberKey} = useModelDirectory();
   const [browsedGroup, setBrowsedGroup] = useState<string | null>(null);
-  const [revision, setRevision] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    setAccount(null);
-    setGroupError("");
-    const load = async () => {
-      const [directory, keyResult] = await Promise.allSettled([
-        api<GroupCatalogs>("group_model_catalogs"),
-        api<{items: ModelGroupKey[]}>("keys"),
-      ]);
-      if (cancelled) return;
-      const keys = keyResult.status === "fulfilled" ? keyResult.value.items : [];
-      if (directory.status === "rejected") {
-        setAccount({groups: [], catalogs: new Map(), keys});
-        setGroupError(String(directory.reason));
-        return;
-      }
-      const {groups, catalogs: published} = directory.value;
-      const catalogs = new Map(Object.entries(published));
-      // 目录缺少分组时，用现有有效 Key 只读探测；打开弹窗时不创建 Key。
-      const unavailable = groups.filter(group => group.id && !catalogs.has(group.id));
-      await Promise.all(unavailable.map(async group => {
-        const candidates = keys.filter(key => key.status === "active" && keyGroup(key, platform) === group.id);
-        const candidate = candidates.find(key => key.id === keyId) ?? candidates[0];
-        if (!candidate) return;
-        try {
-          const ids = await invoke<string[]>("fastaiapi_models", {keyId: candidate.id});
-          catalogs.set(group.id, {group: group.name, models: [], model_ids: ids});
-        } catch {
-          // 保留未知状态，刷新时重试。
-        }
-      }));
-      if (cancelled) return;
-      if (unavailable.some(group => !catalogs.has(group.id))) {
-        setGroupError("部分分组目录暂不可用，可刷新重试。");
-      }
-      setAccount({groups: groups.filter(group => group.id), catalogs, keys});
-    };
-    void load();
-    return () => {cancelled = true;};
-  }, [platform, routes.selected, revision, keyId]);
+  const groupError = account?.warning;
 
   const currentKey = account?.keys.find(key => key.id === keyId);
   const defaultGroup = groupId ?? (currentKey ? keyGroup(currentKey, platform) : null);
@@ -82,19 +36,17 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const currentGroup = groups.find(group => group.id === defaultGroup);
   const modelsForGroup = (id: string) => {
     const pricing = account?.catalogs.get(id);
-    const ids = pricing?.model_ids ?? pricing?.models.flatMap(price => typeof price.model === "string" ? [price.model] : []) ?? [];
-    return selectableGroupModels(platform, kind, ids, id === currentGroup?.id ? models : []);
+    return selectableGroupModels(platform, kind, catalogModels(pricing), !pricing && id === currentGroup?.id ? models : []);
   };
   const visibleGroups = groups.filter(group => modelsForGroup(group.id).length > 0);
   const priority = (group: AccountGroup) => group.id === defaultGroup ? 0 : group.name.toLowerCase() === "default" ? 1 : 2;
   const orderedGroups = [...visibleGroups].sort((left, right) => priority(left) - priority(right));
   const legacyModels = selectableGroupModels(platform, kind, models);
-  const showLegacy = !currentGroup && legacyModels.length > 0;
+  const showLegacy = !currentGroup && legacyModels.length > 0 && (keyId > 0 || kind !== "text");
   const activeGroup = visibleGroups.some(group => group.id === browsedGroup) || (showLegacy && browsedGroup === legacyGroup)
     ? browsedGroup
-    : showLegacy ? legacyGroup : initialGroup(visibleGroups, defaultGroup)?.id ?? null;
+    : initialGroup(visibleGroups, defaultGroup)?.id ?? (showLegacy ? legacyGroup : null);
   const isCurrent = activeGroup !== null && activeGroup === (currentGroup?.id ?? (showLegacy ? legacyGroup : null));
-  const activeKeys = account?.keys.filter(key => key.status === "active" && keyGroup(key, platform) === activeGroup) ?? [];
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement;
@@ -107,40 +59,19 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
   const list = activeGroup === legacyGroup ? legacyModels : activeGroup === null ? [] : modelsForGroup(activeGroup);
   const filtered = list.filter(model => model.toLowerCase().includes(query.trim().toLowerCase()));
   const selected = choice?.group === activeGroup ? choice?.model : isCurrent && !choice ? value : "";
-  const loading = !account;
   const label = {text: "文字", image: "图片", video: "视频"}[kind];
-  const keyName = kind === "text" ? "Codex++ FastAiApi" : "Codex++ FastAiApi Media";
-  const ensureKey = (group: string, dedicated = false) => api<ModelGroupKey>("ensure_group_key", {
-    group_id: group, name: keyName, dedicated,
-  });
   const apply = async () => {
     if (activeGroup === null || !selected || !list.includes(selected)) return;
     setSaving(true);
     setLocked(true);
     setError("");
     try {
-      if (activeGroup === legacyGroup) {
-        await onApply({model: selected, groupId: null, keyId});
-      } else {
-        const fresh = await api<{items: ModelGroupKey[]}>("keys");
-        const candidates = fresh.items.filter(key => key.status === "active" && keyGroup(key, platform) === activeGroup);
-        if (!candidates.length) candidates.push(await ensureKey(activeGroup));
-        const preferred = candidates.find(key => key.id === keyId);
-        const ordered = preferred ? [preferred, ...candidates.filter(key => key !== preferred)] : candidates;
-        let key: ModelGroupKey | undefined;
-        for (const candidate of ordered) {
-          const permitted = await invoke<string[]>("fastaiapi_models", {keyId: candidate.id});
-          if (permitted.includes(selected)) {
-            key = candidate;
-            break;
-          }
-        }
-        if (!key && candidates.some(candidate => candidate.name === keyName)) {
-          throw new Error("此分组的专用 Key 未开放所选模型，请在平台检查模型权限。");
-        }
-        key ??= await ensureKey(activeGroup, true);
-        await onApply({model: selected, groupId: activeGroup, keyId: key.id});
-      }
+      const groupId = activeGroup || defaultGroup;
+      const result = await invoke<{key?: ModelGroupKey}>("fastaiapi_account", {
+        action: "apply_model_binding", body: {kind, model: selected, group_id: groupId, key_id: keyId, route: routes.selected},
+      });
+      if (result.key) rememberKey(result.key);
+      await onApply({model: selected, groupId, keyId: result.key?.id ?? keyId});
       onClose();
     } catch (error) {
       setError(String(error));
@@ -149,32 +80,16 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
       setLocked(false);
     }
   };
-  const browse = async (group: string) => {
-    if (busy || saving || preparing) return;
+  const browse = (group: string) => {
     setBrowsedGroup(group);
     setChoice(null);
     setQuery("");
     setError("");
-    setKeyError("");
-    if (group === legacyGroup || account?.keys.some(key => key.status === "active" && keyGroup(key, platform) === group)) return;
-    setPreparing(true);
-    setLocked(true);
-    try {
-      const key = await ensureKey(group);
-      setAccount(current => current && {
-        ...current, keys: [...current.keys.filter(existing => existing.id !== key.id), key],
-      });
-    } catch (cause) {
-      setKeyError(String(cause));
-    } finally {
-      setPreparing(false);
-      setLocked(false);
-    }
   };
-  const working = saving || preparing;
+  const working = saving;
   const groupButton = (id: string, name: string, description?: string | null, rate?: number) =>
     <button type="button" key={id} className="fast-model-group" aria-pressed={activeGroup === id} disabled={busy || working}
-      onClick={() => void browse(id)} title={description || name}>
+      onClick={() => browse(id)} title={description || name}>
       <span><strong>{name}</strong>
         {(currentGroup?.id ?? (showLegacy ? legacyGroup : null)) === id
           ? <small className="fast-model-group-default">当前默认</small>
@@ -199,7 +114,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
             <label className="fast-model-compact-group">
               <span>模型分组</span>
               <select value={activeGroup ?? ""} disabled={busy || working || !visibleGroups.length}
-                onChange={event => void browse(event.target.value)}>
+                onChange={event => browse(event.target.value)}>
                 {!showLegacy && activeGroup == null && <option value="">暂无可用分组</option>}
                 {showLegacy && <option value={legacyGroup}>现有连接{!currentGroup ? "（当前默认）" : ""}</option>}
                 {orderedGroups.map(group => <option key={group.id} value={group.id}>
@@ -219,9 +134,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
             <div className="fast-group-caption">
               <span>{visibleGroups.find(group => group.id === activeGroup)?.name || (showLegacy ? "现有连接" : label + "模型")} · {list.length} 个
                 {kind === "text" && pricing ? ` · ${pricing.currency === "CNY" ? "人民币" : "美元"} / 百万 tokens` : ""}</span>
-              {activeGroup && !activeKeys.length && !keyError && <button type="button" disabled={busy || working}
-                onClick={() => void browse(activeGroup)}>准备 Key</button>}
-              <button type="button" disabled={busy || working || !account} onClick={() => setRevision(n => n + 1)}><RefreshCw size={13}/>刷新列表</button>
+              <button type="button" disabled={busy || working || loading} onClick={() => void refresh()}><RefreshCw size={13}/>刷新列表</button>
             </div>
             <label className="fast-group-search"><Search size={16}/><input aria-label="搜索模型" placeholder="搜索模型名称…" value={query} onChange={event => setQuery(event.target.value)}/></label>
             {pricing?.pricing_warning && <p className="fast-model-hint fast-model-warning" role="status">{pricing.pricing_warning}</p>}
@@ -252,16 +165,12 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
           </section>
         </div>
         <footer className="fast-model-footer">
-          {(error || keyError) && <div className="fast-payment-error" role="alert">
-            {error || keyError}
-            {keyError && activeGroup !== null && <button type="button" disabled={working}
-              onClick={() => void browse(activeGroup)}>重试准备 Key</button>}
-          </div>}
+          {error && <div className="fast-payment-error" role="alert">{error}</div>}
           <p className="fast-model-hint">{pricing?.rate_multiplier != null && <>价格已计入分组倍率 {pricing.rate_multiplier}×。 </>}
             {kind === "text" ? "切换后重启 Codex 生效。" : "默认分组与模型用于后续媒体任务。"}
           </p>
-          <button type="button" className="fast-pay-primary" disabled={busy || working || loading || Boolean(keyError) || !selected || !list.includes(selected)}
-            onClick={() => void apply()}>{preparing ? "正在准备分组 Key…" : saving ? "正在应用…" : "设为默认分组和模型"}</button>
+          <button type="button" className="fast-pay-primary" disabled={busy || working || loading || !selected || !list.includes(selected)}
+            onClick={() => void apply()}>{saving ? "正在验证并绑定…" : "设为默认分组和模型"}</button>
         </footer>
       </div>
     </dialog>, document.body

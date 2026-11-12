@@ -70,6 +70,17 @@ fn write_descriptor_at(
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .unwrap_or_else(|| json!({}));
+    let value = connection_descriptor(platform, origin, configured, warning, &previous);
+    write_connection_at(path, &value)
+}
+
+fn connection_descriptor(
+    platform: Platform,
+    origin: &str,
+    configured: bool,
+    warning: Option<&str>,
+    previous: &Value,
+) -> Value {
     let mut value = json!({"platform": platform.id(), "origin": origin, "service": platform.service("media"), "account": crate::fastaiapi_secret_store::account(), "managed": true, "environment_configured": configured, "environment_warning": warning, "model_defaults": previous.get("model_defaults").filter(|v| v.is_object()).cloned().unwrap_or_else(||json!({})), "pricing_keys": previous.get("pricing_keys").filter(|v|v.is_object()).cloned().unwrap_or_else(||json!({}))});
     if previous["account"] == value["account"] {
         for field in ["group_models", "group_credentials"] {
@@ -78,7 +89,7 @@ fn write_descriptor_at(
             }
         }
     }
-    write_connection_at(path, &value)
+    value
 }
 fn write_connection_at(path: &std::path::Path, value: &Value) -> Result<(), String> {
     let pending = path.with_extension("pending");
@@ -86,6 +97,26 @@ fn write_connection_at(path: &std::path::Path, value: &Value) -> Result<(), Stri
         .map_err(|_| "无法保存媒体连接，请检查目录写入权限后重试。")?;
     std::fs::rename(pending, path)
         .map_err(|_| "无法更新媒体连接，请检查目录权限或文件占用后重试。".into())
+}
+
+pub fn restore_group_route(platform: Platform, origin: &str) -> Result<(), String> {
+    let path = descriptor_path();
+    let Ok(raw) = std::fs::read(&path) else {
+        return Ok(());
+    };
+    let previous: Value = serde_json::from_slice(&raw).map_err(|_| "媒体连接配置无效")?;
+    if previous["account"] == crate::fastaiapi_secret_store::account()
+        && (previous["origin"] != origin || previous["service"] != platform.service("media"))
+        && ["image", "video"]
+            .iter()
+            .any(|kind| group_model(&previous, platform, origin, kind)["credential"].is_string())
+    {
+        write_connection_at(
+            &path,
+            &connection_descriptor(platform, origin, false, None, &previous),
+        )?;
+    }
+    Ok(())
 }
 pub(crate) fn defaults_for(value: &Value, platform: Platform, origin: &str) -> Value {
     let mut defaults = value["model_defaults"][platform.id()].clone();
@@ -231,12 +262,24 @@ pub(crate) fn select_group_model(
         .filter(|group| !group.is_empty())
         .ok_or("请选择分组")?;
     let path = descriptor_path();
-    let mut value: Value =
-        serde_json::from_slice(&std::fs::read(&path).map_err(|_| "请先连接当前路线的媒体工具")?)
-            .map_err(|_| "媒体连接配置无效，请重新连接")?;
-    if value["account"] != crate::fastaiapi_secret_store::account() {
+    let previous: Value = match std::fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|_| "媒体连接配置无效，请重新连接")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(_) => return Err("无法读取媒体连接配置".into()),
+    };
+    if previous["account"].is_string()
+        && previous["account"] != crate::fastaiapi_secret_store::account()
+    {
         return Err("请先连接当前实例的媒体工具".into());
     }
+    let mut value = if previous["origin"] == origin
+        && previous["service"] == platform.service("media")
+        && previous["account"] == crate::fastaiapi_secret_store::account()
+    {
+        previous
+    } else {
+        connection_descriptor(platform, origin, false, None, &previous)
+    };
     validate_selection(
         &value,
         platform,
@@ -247,9 +290,9 @@ pub(crate) fn select_group_model(
     )?;
     let fingerprint = format!("{:x}", Sha256::digest(secret.as_bytes()));
     let service = group_service(platform, &fingerprint).ok_or("媒体凭据引用无效")?;
-    // 先记下用于退出登录清理的引用。凭据保存失败时，原模型分组继续生效。
-    value["group_credentials"][platform.id()][&fingerprint] = json!(true);
-    write_connection_at(&path, &value)?;
+    std::fs::create_dir_all(path.parent().ok_or("媒体连接目录无效")?)
+        .map_err(|_| "无法创建媒体连接目录")?;
+    let was_saved = value["group_credentials"][platform.id()][&fingerprint] == true;
     if !crate::fastaiapi_secret_store::save(
         &service,
         json!({"origin":origin, "api_key":secret})
@@ -258,9 +301,15 @@ pub(crate) fn select_group_model(
     ) {
         return Err("系统凭据库无法保存分组 Key，请检查授权后重试".into());
     }
+    value["group_credentials"][platform.id()][&fingerprint] = json!(true);
     value["group_models"][platform.id()][origin][kind] =
         json!({"group_id":group, "key_id":body["key_id"], "model":model, "credential":fingerprint});
-    write_connection_at(&path, &value)?;
+    if let Err(error) = write_connection_at(&path, &value) {
+        if !was_saved {
+            let _ = crate::fastaiapi_secret_store::clear(&service);
+        }
+        return Err(error);
+    }
     Ok(json!({"group_id":group,"model":model}))
 }
 
