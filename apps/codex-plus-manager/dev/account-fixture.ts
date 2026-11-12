@@ -90,9 +90,11 @@ export function createAccountFixture() {
         else if(action==="media_setup"||action==="media_manual")value={configured:true};
         else if(action==="media_test")value={message:"测试场景通过（未发起生成）",model:body.kind==="image"?"gpt-image-2":p.model,
           image:body.kind==="image"?"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBfoAAAAASUVORK5CYII=":undefined};
-        else if(action==="orders")value={items:[{id:42,out_trade_no:"subapi-fixture-order",trade_no:"newapi-fixture-order",amount:10,money:10,pay_amount:10,currency:"USD",status:platform==="newapi"?"success":"COMPLETED",order_type:"balance"}]};
+        else if(action==="orders")value={items:[{id:42,out_trade_no:"subapi-fixture-order",trade_no:"DC1NO-fixture-order",amount:10,money:10,pay_amount:10,currency:"USD",status:platform==="newapi"?"pending":"COMPLETED",order_type:"balance",payment_provider:"epay"}]};
         else if(action==="checkout_info")value={methods:{alipay:{currency:"CNY",display_name:"支付宝",available:true,single_min:1,single_max:1000,fee_rate:0}},plans:[{id:1,name:"SubAPI 测试套餐",price:20,currency:"USD",validity_days:30}],balance_disabled:false,global_min:1,global_max:1000};
-        else if(action==="topup_info")value={enable_online_topup:false,enable_redemption:false};
+        else if(action==="topup_info")value={enable_online_topup:true,enable_duocai_topup:true,enable_redemption:false,min_topup:1,amount_options:[10,20],pay_methods:[{type:"alipay",name:"支付宝"}]};
+        else if(action==="quote")value=Number(body.amount).toFixed(2);
+        else if(action==="duocai_check" && args.id==="DC1NO-fixture-order")value={trade_no:args.id,state:"ready",money:"10.00",credit_amount:10,qr_kind:"image",qr_code:"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"};
         else if(action==="subscriptions")value=[];
         else throw new Error("测试场景未开放此操作");
       }
