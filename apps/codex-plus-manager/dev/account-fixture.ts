@@ -48,7 +48,7 @@ export function createAccountFixture() {
         else if(action==="keys")value={items:accountKeys};
         else if(action==="groups")value=groups;
         else if(action==="group_model_catalogs")value={groups,catalogs:{
-          [groupId]:{group:"default",models:[],model_ids:[p.model,"gpt-image-2","minimax-h3"]},
+          [groupId]:{group:"default",currency:platform==="newapi"?"CNY":"USD",models:[{model:"gpt-image-2",time_pricing:false,unit_price:0.02,tiers:[]}],model_ids:[p.model,"gpt-image-2","minimax-h3"]},
           [textGroupId]:{group:"仅文字",models:[{model:p.model,time_pricing:false,tiers:[{label:"标准价",input:1,output:2,cache:0.1}]}],model_ids:[p.model]},
         }};
         else if(action==="apply_model_binding"){

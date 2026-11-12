@@ -150,7 +150,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
                     {(note || (isCurrent && model === value)) && <span className="fast-model-card-tags">
                       {note && <em>{note}</em>}{isCurrent && model === value && <em className="is-current">当前默认</em>}
                     </span>}
-                    {price?.unit_price != null ? <span className="fast-model-unit-price">{priceYuan(price.unit_price, pricing?.currency)}<small>每次调用</small></span>
+                    {price?.unit_price != null ? <span className="fast-model-unit-price"><b>{priceYuan(price.unit_price, pricing?.currency)}</b><small>每次调用</small></span>
                       : price?.tiers.length ? <span className="fast-model-price-table">
                         <span className="fast-model-price-row is-heading"><span>上下文</span><span>输入</span><span>输出</span><span>缓存读取</span></span>
                         {price.tiers.map((tier, index) => <span className="fast-model-price-row" key={index}><span>{tier.label}</span><b>{priceYuan(tier.input, pricing?.currency)}</b><b>{priceYuan(tier.output, pricing?.currency)}</b><b>{priceYuan(tier.cache, pricing?.currency)}</b></span>)}
