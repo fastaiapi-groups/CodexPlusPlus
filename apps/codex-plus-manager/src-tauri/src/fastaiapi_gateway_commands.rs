@@ -99,6 +99,13 @@ pub(crate) fn set_default_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 平台目录没标类型、通用规则也认不出的图片 / 视频模型（Gemini 生图的 nano-banana、
+/// 魔法视频的 mx-h3）。它们不能对话，不放进 Codex 的模型列表。
+fn media_by_name(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.contains("banana") || lower.starts_with("mx-h3")
+}
+
 /// 分组目录里的文字模型：优先用平台列出的 `model_ids`，没有时退回价格表里的模型名。
 fn group_text_models(catalog: &Value) -> Vec<String> {
     let mut models: Vec<String> = match catalog["model_ids"].as_array() {
@@ -122,7 +129,7 @@ fn group_text_models(catalog: &Value) -> Vec<String> {
             .unwrap_or_else(|| codex_plus_core::fastaiapi::model_kind(model))
             .to_owned()
     };
-    models.retain(|model| kind(model) == "text");
+    models.retain(|model| kind(model) == "text" && !media_by_name(model));
     models.sort();
     models.dedup();
     models
@@ -159,6 +166,17 @@ async fn sync(platform: Platform) -> Result<Value, String> {
     let mut kept: Vec<String> = Vec::new();
     let mut order: Vec<String> = Vec::new();
     for (group, name) in groups {
+        // 目录这次没取到（平台接口瞬时失败）不等于分组没有文字模型：保留上次同步的上游，不动它。
+        // New API 的分组模型以 `model_ids` 为准，缺了它说明这次没列出来，价格表里的模型不完整。
+        let catalog = catalogs["catalogs"].get(&group);
+        if catalog.is_none()
+            || (platform == Platform::NewApi
+                && !catalog.is_some_and(|catalog| catalog["model_ids"].is_array()))
+        {
+            kept.push(format!("{prefix}{group}"));
+            skipped.push(format!("{name}：分组模型目录暂时取不到，沿用上次同步的结果"));
+            continue;
+        }
         let models = group_text_models(&catalogs["catalogs"][&group]);
         if models.is_empty() {
             // 没有文字模型的分组（纯图片 / 视频）不需要进 Codex，也不为它建 Key。
@@ -299,9 +317,32 @@ pub async fn fastaiapi_auto_key(
                 .is_ok_and(|gateway| gateway.active_binding(&ToolId::Codex).is_some())
             {
                 apply::disable_binding(&context(), &settings, &ToolId::Codex).map_err(text)?;
+                // 走网关期间切过线路的话，恢复出来的直连配置还指着旧线路，这里对齐到当前线路。
+                super::fastaiapi_commands::update_account_route(
+                    platform,
+                    panels::origin(platform).await,
+                )?;
             }
             status(platform)
         }
         _ => Err("未知操作".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_text_models_follow_the_catalog_and_drop_media_models() {
+        let catalog = json!({
+            "model_ids": ["gpt-6-sol", "sd-2-c1", "gemini-nano-banana-2.1", "mx-h3", "claude-opus-5"],
+            "models": [{"model":"sd-2-c1","kind":"video"},{"model":"gpt-6-sol","kind":"text"}]
+        });
+        assert_eq!(group_text_models(&catalog), ["claude-opus-5", "gpt-6-sol"]);
+        // 没有 model_ids 时退回价格表里的模型名。
+        let priced = json!({"models":[{"model":"glm-5.3-flash","kind":"text"},{"model":"gpt-image-2","kind":"image"}]});
+        assert_eq!(group_text_models(&priced), ["glm-5.3-flash"]);
+        assert!(group_text_models(&Value::Null).is_empty());
     }
 }

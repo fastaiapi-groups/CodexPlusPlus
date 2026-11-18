@@ -1728,8 +1728,11 @@ impl LaunchHooks for DefaultLaunchHooks {
             .first()
             .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
         let mut child_command = Command::new(executable);
+        let no_proxy = current_no_proxy();
         child_command
             .args(&command[1..])
+            .env("NO_PROXY", &no_proxy)
+            .env("no_proxy", &no_proxy)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if let Some(user_data_dir) = multi_instance_user_data_dir_from_args(&launch_extra_args) {
@@ -7724,16 +7727,47 @@ fn record_pet_overlay_sync_result(debug_port: u16, helper_port: u16, result: any
     }
 }
 
+/// 给 Codex 的 `NO_PROXY`：在用户已有的值后面补上回环地址。
+///
+/// Codex 走本机网关 / 协议代理（`http://127.0.0.1:<端口>`）时，如果系统开着 HTTP 代理而没有这一项，
+/// 请求会被发给代理并被掐断（实测 Surge 返回 503「Connection Closed」），根本到不了本机。
+pub fn loopback_no_proxy(existing: Option<&str>) -> String {
+    let mut hosts: Vec<&str> = existing
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .collect();
+    for host in ["localhost", "127.0.0.1", "::1"] {
+        if !hosts.iter().any(|known| known.eq_ignore_ascii_case(host)) {
+            hosts.push(host);
+        }
+    }
+    hosts.join(",")
+}
+
+fn current_no_proxy() -> String {
+    let existing = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .ok();
+    loopback_no_proxy(existing.as_deref())
+}
+
 pub fn build_macos_open_command(
     app_dir: &Path,
     debug_port: u16,
     extra_args: &[String],
 ) -> Vec<String> {
+    let no_proxy = current_no_proxy();
     let mut command = vec![
         "open".to_string(),
         "-W".to_string(),
         "-a".to_string(),
         app_dir.to_string_lossy().to_string(),
+        "--env".to_string(),
+        format!("NO_PROXY={no_proxy}"),
+        "--env".to_string(),
+        format!("no_proxy={no_proxy}"),
         "--args".to_string(),
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));

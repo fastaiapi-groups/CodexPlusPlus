@@ -1075,6 +1075,26 @@ fn launcher_macos_open_command_waits_for_app_exit() {
 }
 
 #[test]
+fn launcher_macos_open_command_keeps_loopback_off_the_system_proxy() {
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &[]);
+    let args_index = command.iter().position(|part| part == "--args").unwrap();
+    for name in ["NO_PROXY", "no_proxy"] {
+        let index = command
+            .iter()
+            .position(|part| part.starts_with(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("{name} missing"));
+        assert!(index < args_index, "{name} must come before --args");
+        assert_eq!(command[index - 1], "--env");
+        assert!(command[index].contains("127.0.0.1") && command[index].contains("localhost"));
+    }
+    assert_eq!(
+        codex_plus_core::launcher::loopback_no_proxy(Some("corp.example, 127.0.0.1")),
+        "corp.example,127.0.0.1,localhost,::1"
+    );
+    assert_eq!(codex_plus_core::launcher::loopback_no_proxy(None), "localhost,127.0.0.1,::1");
+}
+
+#[test]
 fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
     let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &extra_args);

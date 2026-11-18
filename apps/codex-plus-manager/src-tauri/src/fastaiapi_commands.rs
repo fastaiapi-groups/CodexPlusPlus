@@ -211,7 +211,7 @@ fn account_selection_path(platform: Platform) -> std::path::PathBuf {
     codex_plus_core::paths::default_app_state_dir()
         .join(format!("account-{}-profile", platform.id()))
 }
-fn update_account_route(platform: Platform, origin: &str) -> Result<(), String> {
+pub(crate) fn update_account_route(platform: Platform, origin: &str) -> Result<(), String> {
     let mut settings = SettingsStore::default()
         .load()
         .map_err(|_| "无法读取账户模型配置")?;
