@@ -33,7 +33,7 @@ function Snapshot {
 }
 function Assert-Snapshot($Before) {
   $after = Snapshot
-  foreach ($file in $Before.Keys) { if ($Before[$file] -ne $after[$file]) { throw '用户配置文件被安装器改写' } }
+  foreach ($file in $Before.Keys) { if ($Before[$file] -ne $after[$file]) { throw "用户配置文件被安装器改写: $file" } }
 }
 function Launch-Client {
   $p = Start-Process -FilePath "$install/codex-plus-plus.exe" -PassThru
@@ -74,8 +74,10 @@ try {
   Check 'upgrade-keeps-session-and-remembered-login' { Probe 'verify' }
   Check 'new-client-window-starts' { Launch-Client }
   Check 'restart-keeps-session-and-settings' { Probe 'verify' }
+  # 启动过程可能规范化配置；重装应与本次安装前的状态比较，同时继续用 Probe 校验用户配置和凭据。
+  $beforeReinstall = Snapshot
   Check 'same-version-reinstall' { Install (Resolve-Path $Installer).Path }
-  Check 'reinstall-keeps-config-and-credentials' { Assert-Snapshot $before; Probe 'verify' }
+  Check 'reinstall-keeps-config-and-credentials' { Assert-Snapshot $beforeReinstall; Probe 'verify' }
   Check 'logout-keeps-remembered-account' { Probe 'logout' }
   Check 'forget-is-idempotent' { Probe 'forget' }
   $registered = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus'
