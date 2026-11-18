@@ -275,12 +275,14 @@ fn key_view(raw: &Value) -> Value {
 }
 
 fn active_key_in_group(key: &Value, group: &str) -> bool {
-    key["status"] == "active"
-        && key["group"]
-            .as_str()
-            .filter(|name| !name.is_empty())
-            .unwrap_or("default")
-            == group
+    if key["status"] != "active" {
+        return false;
+    }
+    let key_group = key["group"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("default");
+    key_group == "auto" || key_group == group
 }
 
 async fn keys(s: &mut State) -> Result<Vec<Value>, String> {
@@ -365,7 +367,7 @@ async fn setup_default_media(s: &mut State) -> Result<Value, String> {
         .as_secs() as i64;
     let candidates = keys(s).await?;
     for item in candidates.iter().filter(|k| {
-        k["group"] == "default"
+        (k["group"] == "default" || k["group"] == "auto")
             && k["status"] == "active"
             && k["expired_time"]
                 .as_i64()
@@ -401,12 +403,12 @@ async fn setup_default_media(s: &mut State) -> Result<Value, String> {
     if groups.get("default").is_none() {
         return Err("账户未开放 default 分组，请联系管理员开放后重试。".into());
     }
-    request(s,"POST","/api/token/",json!({"name":"Codex++ FastAiApi","group":"default","expired_time":-1,"unlimited_quota":true,"model_limits_enabled":false})).await?;
+    request(s,"POST","/api/token/",json!({"name":"Codex++ FastAiApi","group":"auto","expired_time":-1,"unlimited_quota":true,"model_limits_enabled":false})).await?;
     let created = keys(s)
         .await?
         .into_iter()
         .find(|k| {
-            k["group"] == "default"
+            k["group"] == "auto"
                 && k["name"] == "Codex++ FastAiApi"
                 && !candidates.iter().any(|old| old["id"] == k["id"])
         })
@@ -928,7 +930,7 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                     .as_str()
                     .filter(|name| !name.is_empty())
                     .unwrap_or("default");
-                if body["group_id"] != group {
+                if body["group_id"] != group && group != "auto" {
                     return Err("Key 所属分组已变更，请刷新后重试".into());
                 }
                 let secret = key_secret(&mut s, id).await?;
@@ -984,7 +986,7 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 &mut s,
                 "POST",
                 "/api/token/",
-                json!({"name": name, "group": group, "expired_time": -1,
+                json!({"name": name, "group": "auto", "expired_time": -1,
                 "unlimited_quota": true, "model_limits_enabled": false}),
             )
             .await?;
@@ -1420,6 +1422,10 @@ mod tests {
         ));
         assert!(active_key_in_group(
             &json!({"status":"active","group":"video"}),
+            "video"
+        ));
+        assert!(active_key_in_group(
+            &json!({"status":"active","group":"auto"}),
             "video"
         ));
         assert!(!active_key_in_group(

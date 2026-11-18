@@ -6,7 +6,8 @@ export type ModelChoice = { model: string; groupId: string | null; keyId?: numbe
 
 export function keyGroup(key: ModelGroupKey, platform: string): string | null {
   if (platform === "subapi") return key.group_id == null ? null : String(key.group_id);
-  return key.group || "default";
+  // New API 的 auto Key 会跨分组路由，模型选择器仍从默认分组开始展示可用模型。
+  return key.group === "auto" ? null : key.group || "default";
 }
 
 export function initialGroup(groups: AccountGroup[], current: string | null) {

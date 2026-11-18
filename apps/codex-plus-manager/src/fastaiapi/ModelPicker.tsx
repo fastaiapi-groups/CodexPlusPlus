@@ -19,6 +19,9 @@ export function ModelPicker({keyId, value, busy, onApply}: {
   const kinds = catalogModelKinds(directory?.catalogs);
   const count = new Set(Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels)
     .filter(id => supportsModel(routes.platform, "text", id, kinds.get(id)))).size;
+  const models = Array.from(directory?.catalogs.values() ?? [])
+    .flatMap(catalogModels)
+    .filter(id => supportsModel(routes.platform, "text", id, kinds.get(id)));
   return <>
     <article className="fast-media-choice">
       <header><MessageSquare size={18}/><strong>文字模型</strong><small>{count} 个可用</small></header>
@@ -26,6 +29,6 @@ export function ModelPicker({keyId, value, busy, onApply}: {
       <b>{value || "未设置"}</b>
       <button type="button" disabled={busy} onClick={() => setOpen(true)}>切换文字模型 ▾</button>
     </article>
-    {open && <ModelDialog keyId={keyId} models={value ? [value] : []} groupId={groupId} value={value} busy={busy} onApply={onApply} onClose={() => setOpen(false)}/>}
+    {open && <ModelDialog keyId={keyId} models={models} groupId={groupId} value={value} busy={busy} onApply={onApply} onClose={() => setOpen(false)}/>}
   </>;
 }

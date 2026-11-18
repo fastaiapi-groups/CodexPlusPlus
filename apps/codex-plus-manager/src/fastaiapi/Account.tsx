@@ -136,7 +136,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       {routes.platform === "subapi" && <SubApiSubscriptions/>}
       <MediaModels key={routes.selected} textModel={configuration.model} textPicker={
         <ModelPicker keyId={configuration.key_id ?? 0} value={configuration.model ?? ""}
-          busy={busy || officialMode} onApply={async ({model, keyId}) => {
+          busy={busy} onApply={async ({model, keyId}) => {
             setConfiguration({key_id: keyId, model});
             setNotice("默认分组和模型已更新，重启 Codex 生效。");
           }}/>
