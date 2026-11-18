@@ -39,19 +39,30 @@ fn synced_ids(gateway: &GatewaySettings, platform: Platform) -> Vec<String> {
         .collect()
 }
 
-/// Codex 已接入网关，且池里有当前平台同步的分组上游。
+/// Codex 绑定实际在用的当前平台分组上游。池里有但被绑定排除的不算：
+/// 两个平台都同步过时，Codex 同一时间只用其中一个平台的分组。
+fn in_use_ids(gateway: &GatewaySettings, platform: Platform) -> Vec<String> {
+    let Some(binding) = gateway.active_binding(&ToolId::Codex) else {
+        return Vec::new();
+    };
+    synced_ids(gateway, platform)
+        .into_iter()
+        .filter(|id| !binding.pool_exclude.contains(id))
+        .collect()
+}
+
+/// Codex 已接入网关，并且正在用当前平台同步的分组。
 pub(crate) fn enabled(platform: Platform) -> bool {
-    GatewayStore::default().load().is_ok_and(|gateway| {
-        gateway.active_binding(&ToolId::Codex).is_some()
-            && !synced_ids(&gateway, platform).is_empty()
-    })
+    GatewayStore::default()
+        .load()
+        .is_ok_and(|gateway| !in_use_ids(&gateway, platform).is_empty())
 }
 
 /// 自动换 Key 开着时 Codex 的默认文字模型（网关绑定的主模型）。
 pub(crate) fn default_model(platform: Platform) -> Option<String> {
     let gateway = GatewayStore::default().load().ok()?;
     let binding = gateway.active_binding(&ToolId::Codex)?;
-    if synced_ids(&gateway, platform).is_empty() {
+    if in_use_ids(&gateway, platform).is_empty() {
         return None;
     }
     Some(route::binding_default_model(&gateway, binding)).filter(|model| !model.is_empty())
@@ -74,8 +85,8 @@ fn remember(platform: Platform, on: bool) -> Result<(), String> {
 
 fn status(platform: Platform) -> Result<Value, String> {
     let gateway = GatewayStore::default().load().map_err(text)?;
-    let ids = synced_ids(&gateway, platform);
-    let on = gateway.active_binding(&ToolId::Codex).is_some() && !ids.is_empty();
+    let ids = in_use_ids(&gateway, platform);
+    let on = !ids.is_empty();
     let model = gateway
         .binding(&ToolId::Codex)
         .map(|binding| route::binding_default_model(&gateway, binding))
@@ -384,6 +395,18 @@ mod tests {
             scoped_excludes(&gateway, Platform::SubApi, &[], false),
             ["tumei-auto", "other", "mine"]
         );
+        // 池里有另一个平台的分组但被绑定排除时，不算那个平台「已开启」。
+        let mut bound = gateway.clone();
+        bound.bindings.insert(
+            "codex".into(),
+            codex_plus_core::gateway::store::AgentBinding {
+                enabled: true,
+                pool_exclude: vec!["tumei-auto".into()],
+                ..Default::default()
+            },
+        );
+        assert!(in_use_ids(&bound, Platform::NewApi).is_empty());
+        assert_eq!(in_use_ids(&bound, Platform::SubApi), ["fast-gpt"]);
         // 已接入后换平台：另一个平台的分组排除，用户原来放行的供应商继续放行。
         assert_eq!(
             scoped_excludes(&gateway, Platform::NewApi, &["tumei-auto".into(), "other".into()], true),
