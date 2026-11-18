@@ -91,12 +91,14 @@ test('auto key routing syncs each group key into the gateway and keeps Codex on 
   assert.match(lib, /fastaiapi_gateway_commands::fastaiapi_auto_key/);
   const account = readFileSync(new URL('./fastaiapi/Account.tsx', import.meta.url), 'utf8');
   assert.match(account, /invoke<[\s\S]{0,200}>\("fastaiapi_auto_key", \{action, model\}\)/);
-  // 默认开启的开关：没关过就自动同步，但 Codex 用官方账号或其他供应商时不接管。
+  // 首次登录默认同步；用户手动关闭后不自动重开。
   assert.match(gateway, /map_or\(true, \|value\| value\.trim\(\) != "off"\)/);
   // 开关显示实际状态：默认开启但没接管（Codex 在用别的连接）时显示为关。
   assert.match(account, /role="switch" aria-checked=\{autoKey\.enabled\}/);
   assert.match(account, /if \(status\.eligible\) void autoKeyAction\("enable", true, value\.model\)/);
-  assert.match(gateway, /"eligible":wanted\(platform\) && \(on \|\| takeover_allowed\(platform, &gateway\)\)/);
+  assert.match(gateway, /"eligible":wanted\(platform\) && \(on \|\| takeover_allowed\(platform, &gateway, &settings, !preference_path\(platform\)\.exists\(\)\)\)/);
+  // 初始化失败显示原因，避免页面无声地停在未开启、未设置。
+  assert.match(account, /catch \(failure\) \{\s+setError\(String\(failure\)\);/);
   // 模型类型以平台目录为准，auto 分组排最前。
   assert.match(gateway, /"auto" if platform == Platform::NewApi => 0/);
   assert.match(gateway, /row\["kind"\]\.as_str\(\)/);

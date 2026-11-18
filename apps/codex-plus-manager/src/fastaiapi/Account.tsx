@@ -114,7 +114,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
         ? `已同步 ${result.groups} 个分组、${result.models} 个文字模型${result.skipped?.length ? `，${result.skipped.length} 个分组未同步` : ""}。重启 Codex 生效。`
         : "已关闭自动换 Key，Codex 恢复为之前的连接。重启 Codex 生效。");
     } catch (failure) {
-      if (!silent) setError(String(failure));
+      setError(String(failure));
     } finally {
       setAutoKeyBusy(false);
     }
@@ -151,7 +151,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       if (disposed) return;
       setConfiguration(value);
       // 开关默认开启：登录后就在后台同步分组 Key 并接入 Codex，用户不用再做设置。
-      // Codex 用的是官方账号、其他供应商或另一个平台时不自动接管（由后端的 eligible 判断）。
+      // 首次登录也会初始化文字模型；之后尊重用户关闭开关或切换连接的选择。
       void invoke<AutoKeyStatus>("fastaiapi_auto_key", {action: "status"}).then(status => {
         if (disposed) return;
         setAutoKey({enabled: status.enabled, groups: status.groups, wanted: status.wanted});

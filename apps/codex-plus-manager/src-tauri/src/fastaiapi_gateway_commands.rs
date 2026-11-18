@@ -8,7 +8,7 @@ use codex_plus_core::fastaiapi_platform::{self as panels, Platform};
 use codex_plus_core::gateway::apply::{self, ApplyContext, ProviderInput};
 use codex_plus_core::gateway::route;
 use codex_plus_core::gateway::store::{GatewaySettings, GatewayStore};
-use codex_plus_core::settings::{RelayProtocol, SettingsStore};
+use codex_plus_core::settings::{BackendSettings, RelayProtocol, SettingsStore};
 use codex_plus_core::tools::ToolId;
 use serde_json::{Value, json};
 
@@ -85,13 +85,17 @@ fn remember(platform: Platform, on: bool) -> Result<(), String> {
 
 /// 没在用本平台分组时，登录后能不能自动接管 Codex。
 ///
-/// 可以：Codex 还没配置过连接，或当前连接就是本平台的账户连接（含它被「只用增强功能」
-/// 模式关掉总开关的情况）。不可以：Codex 在用官方账号、其他供应商，或网关里另一个平台的分组——
-/// 那是用户自己的选择，不能因为登录了这里就改掉。
-fn takeover_allowed(platform: Platform, gateway: &GatewaySettings) -> bool {
-    let Ok(settings) = SettingsStore::default().load() else {
-        return false;
-    };
+/// 首次登录默认接入本平台，同时初始化文字模型。开关偏好建立后，沿用当前平台连接，
+/// 用户后来改用官方账号、其他供应商或另一平台时保留该选择。
+fn takeover_allowed(
+    platform: Platform,
+    gateway: &GatewaySettings,
+    settings: &BackendSettings,
+    first_login: bool,
+) -> bool {
+    if first_login {
+        return true;
+    }
     let active = settings.active_relay_id.trim();
     if active == apply::CODEX_GATEWAY_RELAY_ID {
         // 网关接着 Codex 但没有任何绑定在生效，属于残留状态，可以接管。
@@ -131,6 +135,7 @@ pub(crate) async fn use_gateway_for(platform: Platform, model: &str) -> Result<b
 
 fn status(platform: Platform) -> Result<Value, String> {
     let gateway = GatewayStore::default().load().map_err(text)?;
+    let settings = SettingsStore::default().load().map_err(text)?;
     let ids = in_use_ids(&gateway, platform);
     let on = !ids.is_empty();
     let model = gateway
@@ -138,7 +143,7 @@ fn status(platform: Platform) -> Result<Value, String> {
         .map(|binding| route::binding_default_model(&gateway, binding))
         .unwrap_or_default();
     Ok(json!({"enabled":on,"groups":ids.len(),"model":model,"wanted":wanted(platform),
-        "eligible":wanted(platform) && (on || takeover_allowed(platform, &gateway))}))
+        "eligible":wanted(platform) && (on || takeover_allowed(platform, &gateway, &settings, !preference_path(platform).exists()))}))
 }
 
 /// 自动换 Key 开着时切换默认文字模型：只改网关绑定的主模型，Codex 仍走网关。
@@ -433,6 +438,23 @@ pub async fn fastaiapi_auto_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_login_initializes_even_with_an_existing_official_connection() {
+        let settings = BackendSettings {
+            active_relay_id: "official-account".into(),
+            relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+                id: "official-account".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let gateway = GatewaySettings::default();
+        assert!(takeover_allowed(Platform::SubApi, &gateway, &settings, true));
+        assert!(!takeover_allowed(Platform::SubApi, &gateway, &settings, false));
+        assert!(takeover_allowed(Platform::NewApi, &gateway, &settings, true));
+        assert!(!takeover_allowed(Platform::NewApi, &gateway, &settings, false));
+    }
 
     #[test]
     fn group_text_models_follow_the_catalog_and_drop_media_models() {
