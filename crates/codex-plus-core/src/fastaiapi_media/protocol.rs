@@ -154,10 +154,11 @@ impl Generate {
         let resolution =
             self.resolution
                 .as_deref()
-                .unwrap_or(if h3 && platform == Platform::NewApi {
-                    "480p"
-                } else {
+                // 默认 480p；Grok 与 SubAPI H3 的渠道只接受 720p。
+                .unwrap_or(if grok || platform == Platform::SubApi {
                     "720p"
+                } else {
+                    "480p"
                 });
         if grok {
             ensure!(
@@ -254,7 +255,12 @@ impl Generate {
                 (_, "768p") => (1376, 768),
                 (true, "1080p") => (1920, 1088),
                 (false, "1080p") => (1920, 1080),
-                _ => bail!("所选视频模型不支持此分辨率"),
+                (true, _) => bail!(
+                    "{model} 支持 480p、768p、1080p，不支持 {resolution}；省略分辨率时使用 480p"
+                ),
+                _ => bail!(
+                    "{model} 支持 480p、720p、768p、1080p，不支持 {resolution}；省略分辨率时使用 480p"
+                ),
             };
             let size = if ratio == "9:16" {
                 format!("{h}x{w}")
@@ -459,6 +465,35 @@ mod tests {
             .unwrap();
         assert_eq!(short["model"], "minimax-h3-x");
         assert_eq!(short["seconds"], 3);
+    }
+
+    #[test]
+    fn video_resolution_defaults_to_480p_and_names_supported_tiers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let text: Generate = serde_json::from_value(json!({
+            "workspace":root,"request_id":"00000000-0000-4000-8000-000000000002","prompt":"a red ball rolls"
+        }))
+        .unwrap();
+        for model in ["minimax-h3-x", "wan2.1"] {
+            let (_, body) = text
+                .build(Platform::NewApi, "video", model, &root)
+                .unwrap();
+            assert_eq!(body["size"], "864x480", "{model}");
+        }
+        let hd = Generate {
+            resolution: Some("720p".into()),
+            ..text
+        };
+        let error = hd
+            .build(Platform::NewApi, "video", "minimax-h3-x", &root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("480p、768p、1080p"), "{error}");
+        let (_, body) = hd
+            .build(Platform::NewApi, "video", "wan2.1", &root)
+            .unwrap();
+        assert_eq!(body["size"], "1280x720");
     }
 
     #[test]

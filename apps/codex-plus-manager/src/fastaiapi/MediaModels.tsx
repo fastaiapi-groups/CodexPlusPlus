@@ -9,6 +9,7 @@ import { keyGroup, supportsModel } from "./modelGroups";
 
 import { useModelDirectory } from "./ModelDirectoryContext";
 import { catalogModelKinds, catalogModels } from "./modelDirectory";
+import { mediaStatusCache } from "./mediaStatusCache";
 
 type Status = {
   state: string; message: string; default_video_available?: boolean; models?: string[];
@@ -18,36 +19,41 @@ type Status = {
   models_by_kind?: Partial<Record<"text" | "image" | "video", string[]>>;
 };
 
-export function MediaModels({textModel, textPicker}: {textModel?: string; textPicker: ReactNode}) {
+export function MediaModels({textModel, textKeyId, textPicker}: {textModel?: string; textKeyId?: number; textPicker: ReactNode}) {
   const invoke = usePlatformInvoke();
   const api = <T,>(action: string, body?: object) => invoke<T>("fastaiapi_account", {action, body});
   const {routes, setLocked} = useServiceRoutes();
   const {directory} = useModelDirectory();
   const kinds = catalogModelKinds(directory?.catalogs);
   const platformName = routes.platforms.find(platform => platform.id === routes.platform)?.name;
-  const [status, setStatus] = useState<Status | null>(null), [busy, setBusy] = useState("");
+  const cacheKey = `${routes.platform}:${routes.selected}`;
+  // 回到概览时先显示上次的结果，后台再刷新，避免卡片闪回兜底模型名、按钮短暂不可点。
+  const cached = mediaStatusCache.get<Status>(cacheKey);
+  const [status, setStatus] = useState<Status | null>(cached?.status ?? null), [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
-  const [connecting, setConnecting] = useState(true);
-  const [registered, setRegistered] = useState(false);
+  const [connecting, setConnecting] = useState(!cached);
+  const [registered, setRegistered] = useState(cached?.registered ?? false);
+  const publish = (connection: Status, tool: {registered: boolean} | null) => {
+    const next = tool?.registered === true;
+    setStatus(connection);
+    setRegistered(next);
+    mediaStatusCache.set(cacheKey, {status: connection, registered: next});
+  };
   const check = () => Promise.all([
     api<Status>("media_status"),
     invoke<{registered: boolean}>("fastaiapi_media_tool", {action: "status"}).catch(() => null),
   ]);
   const refresh = async () => {
     const [connection, tool] = await check();
-    setStatus(connection);
-    setRegistered(tool?.registered === true);
+    publish(connection, tool);
   };
   const ensure = () => invoke<{registered: boolean; message?: string}>("fastaiapi_media_tool", {action: "ensure"});
   useEffect(() => {
     let disposed = false;
     const update = () => check().then(([connection, tool]) => {
-      if (!disposed) {
-        setStatus(connection);
-        setRegistered(tool?.registered === true);
-      }
+      if (!disposed) publish(connection, tool);
     });
-    setConnecting(true);
+    setConnecting(!mediaStatusCache.get(cacheKey));
     setMessage("");
     void ensure().then(result => {
       if (!disposed && result.message) setMessage(result.message);
@@ -69,6 +75,12 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
     const key = directory?.keys.find(key => key.id === boundKey(kind));
     return status?.group_ids?.[kind] ?? (key ? keyGroup(key, routes.platform) : null);
   };
+  // 文本测试走文本默认 Key，不依赖媒体 Key 所在分组是否带文本模型。
+  const textKey = directory?.keys.find(key => key.id === textKeyId);
+  const textGroup = textKey && keyGroup(textKey, routes.platform);
+  const textModels = [...new Set([...(textModel ? [textModel] : []),
+    ...(textGroup ? catalogModels(directory?.catalogs.get(textGroup)) : Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels))])]
+    .filter(model => supportsModel(routes.platform, "text", model, kinds.get(model)));
   const checkConnection = async () => {
     const result = await ensure();
     if (result.message) setMessage(result.message);
@@ -81,7 +93,7 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
       const ids = new Set([...modelsFor(kind), ...Array.from(directory?.catalogs.values() ?? []).flatMap(catalogModels)]
         .filter(id => supportsModel(routes.platform, kind, id, kinds.get(id))));
       const group = directory?.groups.find(group => group.id === groupFor(kind));
-      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{ids.size} 个可用</small></header><span>默认模型{group && ` · ${group.name}`}</span><b>{defaults[kind]}</b><button disabled={working} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button></article>;
+      return <article className="fast-media-choice" key={kind}><header>{kind === "image" ? <Image size={18}/> : <Video size={18}/>}<strong>{kind === "image" ? "图片模型" : "视频模型"}</strong><small>{ids.size} 个可用</small></header><span>默认模型{group && ` · ${group.name}`}</span><b>{status ? defaults[kind] : connecting ? "加载中…" : "暂不可用"}</b><button disabled={working} onClick={()=>setPicker(kind)}>切换{kind === "image" ? "图片" : "视频"}模型 ▾</button></article>;
     })}</div>
     <section className="fast-media-models" aria-label="媒体创作与连接"><header><div><h3>媒体创作与连接</h3><p>使用上方选定的默认模型，测试当前线路或在 Codex 对话中调用媒体工具。</p></div><button disabled={working} onClick={() => void work("refresh",checkConnection)}><RefreshCw size={14}/>检查连接</button></header>
     <div className={`fast-media-status ${status?.state === "ready" && registered ? "is-ready" : "needs-repair"}`} role="status">
@@ -90,7 +102,7 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
     </div>
     {status?.default_video_available === false && <p className="fast-error">当前 Key 未开放默认视频模型 {defaults.video}，请联系平台开通，或生成时明确指定其他模型。</p>}
     <div className="fast-row">
-      <button disabled={working || !registered || !modelsFor("text").length} onClick={() => setTest("text")}><FlaskConical size={14}/>文本测试</button>
+      <button disabled={working || !textKeyId || !textModels.length} onClick={() => setTest("text")}><FlaskConical size={14}/>文本测试</button>
       <button disabled={working || !registered || !modelsFor("image").length} onClick={() => setTest("image")}><Image size={14}/>图片测试</button>
       <button disabled={working || !registered} onClick={() => setTest("video")}><Video size={14}/>视频测试</button>
     </div>
@@ -102,7 +114,7 @@ export function MediaModels({textModel, textPicker}: {textModel?: string; textPi
         setMessage("媒体默认分组和模型已保存。");
       }}/>}
     {test === "video" && <VideoTestDialog models={modelsFor("video")} value={defaults.video} onClose={() => setTest(null)} onBusy={setTestBusy}/>}
-    {(test === "text" || test === "image") && <MediaTestDialog kind={test} models={modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={setTestBusy}/>}
+    {(test === "text" || test === "image") && <MediaTestDialog kind={test} keyId={test === "text" ? textKeyId : undefined} models={test === "text" ? textModels : modelsFor(test)} value={test === "image" ? defaults.image : textModel} onClose={()=>setTest(null)} onBusy={setTestBusy}/>}
     {message && <p role="status" className="fast-notice">{message}</p>}
     </section>
   </>;

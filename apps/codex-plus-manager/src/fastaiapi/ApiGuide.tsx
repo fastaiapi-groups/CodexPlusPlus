@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BookOpen, ExternalLink, RefreshCw } from "lucide-react";
+import { useActiveServiceRoute } from "./ServiceRoutes";
 import "./api-guide.css";
 
 const guideUrl = "https://tumeiapi.com/hub/home/help/image-api/";
@@ -25,6 +26,7 @@ function visibleBounds(viewport: HTMLElement): Bounds | null {
 }
 
 export function ApiGuide({ onOpenExternal }: { onOpenExternal: (url: string) => Promise<void> }) {
+  const {platformName} = useActiveServiceRoute();
   const viewport = useRef<HTMLDivElement>(null);
   const refreshGuide = useRef<() => void>(() => {});
   const [error, setError] = useState("");
@@ -76,9 +78,9 @@ export function ApiGuide({ onOpenExternal }: { onOpenExternal: (url: string) => 
   }, []);
 
   return (
-    <section className="fast-api-guide" aria-label="TuMeiAPI 使用教程">
+    <section className="fast-api-guide" aria-label={`${platformName} 使用教程`}>
       <header className="fast-api-guide-toolbar">
-        <h2><BookOpen size={17} aria-hidden="true"/>TuMeiAPI 图片 API</h2>
+        <h2><BookOpen size={17} aria-hidden="true"/>{platformName} 图片 API</h2>
         <div className="fast-api-guide-actions">
           <button type="button" onClick={() => refreshGuide.current()}><RefreshCw size={14} aria-hidden="true"/>刷新</button>
           <button type="button" onClick={() => void onOpenExternal(guideUrl)}><ExternalLink size={14} aria-hidden="true"/>浏览器打开</button>

@@ -44,7 +44,8 @@ pub async fn fastaiapi_account(
             &saved_id,
             platform,
         );
-        return Ok(profile.map(|p| json!({"profile_id": p.id, "model": p.model, "key_id": p.id.strip_prefix(&prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
+        let routed = super::fastaiapi_gateway_commands::default_model(platform);
+        return Ok(profile.map(|p| json!({"profile_id": p.id, "model": routed.clone().unwrap_or_else(|| p.model.clone()), "active": p.id == settings.active_relay_id || super::fastaiapi_gateway_commands::enabled(platform), "key_id": p.id.strip_prefix(&prefix).and_then(|id| id.rsplit('-').next()).and_then(|id| id.parse::<i64>().ok())})).unwrap_or(json!({})));
     }
     if action == "select_route" {
         let mut result = panels::account(platform, &action, "", body.unwrap_or(json!({}))).await?;
@@ -55,6 +56,25 @@ pub async fn fastaiapi_account(
     }
     if action == "apply_model_binding" {
         return apply_model_binding(platform, body.unwrap_or_default()).await;
+    }
+    // 文本测试用文本默认 Key：媒体 Key 所在分组常常没有文本模型，按它测试按钮永远不可用。
+    if action == "media_test"
+        && let Some(options) = &body
+        && options["kind"] == "text"
+        && let Some(key_id) = options["key_id"].as_i64()
+    {
+        let route = panels::route(platform).await;
+        let (key, _) = panels::key_and_models(platform, key_id).await?;
+        if panels::route(platform).await != route {
+            return Err("路线已切换，请重新测试".into());
+        }
+        return codex_plus_core::fastaiapi::test_with_key(
+            platform,
+            panels::origin(platform).await,
+            &key,
+            options,
+        )
+        .await;
     }
     panels::account(
         platform,
@@ -159,7 +179,10 @@ async fn apply_model_binding(platform: Platform, mut body: Value) -> Result<Valu
             (key, id, secret, models)
         }
     };
-    if kind == "text" {
+    if kind == "text" && super::fastaiapi_gateway_commands::enabled(platform) {
+        // 自动换 Key 开着：Codex 走网关，只改网关主模型，不切回单 Key 直连。
+        super::fastaiapi_gateway_commands::set_default_model(&model)?;
+    } else if kind == "text" {
         apply_text_model(platform, id, model, secret, models).await?;
     } else {
         body["key_id"] = json!(id);

@@ -861,6 +861,7 @@ pub struct LogRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogsPayload {
     pub path: String,
     pub text: String,

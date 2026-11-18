@@ -279,7 +279,7 @@ export function VideoTestDialog({models, value, onClose, onBusy}: {
         <details className="fast-video-test-resume">
           <summary>恢复已有任务</summary>
           <label>测试编号
-            <input type="text" value={resumeId} onChange={event => setResumeId(event.target.value)} placeholder="原任务的 UUID"
+            <input spellCheck={false} autoCapitalize="off" autoCorrect="off" type="text" value={resumeId} onChange={event => setResumeId(event.target.value)} placeholder="原任务的 UUID"
               onKeyDown={event => {
                 if (event.key !== "Enter") return;
                 event.preventDefault();

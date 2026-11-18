@@ -111,7 +111,8 @@ impl BridgeReinjectBackoff {
         self.healthy_since = None;
     }
 }
-const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
+// Codex 会话多时正常退出常超过 5 秒，等太短会让「重启 Codex」直接失败。
+const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 20_000;
 const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
 /// 协议代理的端口写死在 `config.toml` 的 `base_url = "http://127.0.0.1:57321/v1"` 里，

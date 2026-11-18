@@ -179,6 +179,13 @@ pub(crate) async fn send(
         .await
         .map_err(|_| "无法连接当前路线，请测试网络或切换路线")?;
     if !response.status().is_success() {
+        // 已登录的账户请求被拒绝说明会话失效；界面据此回到登录页，而不是继续显示「已连接」。
+        if response.status().as_u16() == 401
+            && model_key.is_none()
+            && !(session.cookie.is_empty() && session.bearer.is_empty())
+        {
+            return Err("登录已过期，请重新登录".into());
+        }
         return Err(format!(
             "当前路线请求失败（HTTP {}）",
             response.status().as_u16()
@@ -544,6 +551,20 @@ pub(crate) async fn media_test_for(
         }
         key
     };
+    test_with_key(platform, origin, &key, options).await
+}
+/// 用指定 Key 做一次真实生成测试。文本测试走文本默认 Key（见 `fastaiapi_commands`），
+/// 图片测试走媒体 Key：媒体 Key 所在分组常常没有文本模型。
+pub async fn test_with_key(
+    platform: crate::fastaiapi_platform::Platform,
+    origin: &str,
+    key: &str,
+    options: &Value,
+) -> Result<Value, String> {
+    let kind = options["kind"].as_str().unwrap_or("text");
+    if !matches!(kind, "text" | "image") {
+        return Err("请选择文本或图片测试".into());
+    }
     let raw = data(
         send(
             origin,
@@ -551,7 +572,7 @@ pub(crate) async fn media_test_for(
             "GET",
             "/v1/models",
             Value::Null,
-            Some(&key),
+            Some(key),
         )
         .await?,
     );
@@ -565,7 +586,7 @@ pub(crate) async fn media_test_for(
     let defaults = crate::fastaiapi_media_env::model_defaults(platform);
     let model = if let Some(model) = requested {
         if !ids.contains(&model) || model_kind(model) != kind {
-            return Err("请选择当前媒体 Key 可用的对应类型模型。".into());
+            return Err("请选择当前 Key 可用的对应类型模型。".into());
         }
         Some(model)
     } else if kind == "image" {
@@ -609,7 +630,7 @@ pub(crate) async fn media_test_for(
         "POST",
         path,
         body,
-        Some(&key),
+        Some(key),
     )
     .await?;
     let mut result = test_result(kind, model, &value)?;
@@ -617,7 +638,7 @@ pub(crate) async fn media_test_for(
         .as_str()
         .filter(|url| !url.starts_with("data:"))
     {
-        match crate::fastaiapi_media::test_image_data(platform, origin, &key, url).await {
+        match crate::fastaiapi_media::test_image_data(platform, origin, key, url).await {
             Ok(image) => result["image"] = json!(image),
             Err(_) => result["image_history_unavailable"] = json!(true),
         }
@@ -974,11 +995,22 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
             }
             let before = keys(&mut s).await?;
             let name = body["name"].as_str().unwrap_or("Codex++ FastAiApi");
-            if action == "ensure_group_key"
-                && let Some(key) = before.iter().find(|key| {
+            // `exact`：必须是这个分组自己的 Key。auto Key 只能路由到 auto 覆盖的分组，
+            // 其余分组（如 Claude、国模）的模型用它会被平台拒绝，多分组自动换 Key 靠这个区分。
+            let exact = body["exact"] == true;
+            let in_group = |key: &Value| {
+                if exact {
+                    key["status"] == "active"
+                        && key["group"].as_str().filter(|g| !g.is_empty()).unwrap_or("default")
+                            == group
+                } else {
                     active_key_in_group(key, group)
-                        && (body["dedicated"] != true || key["name"] == name)
-                })
+                }
+            };
+            if action == "ensure_group_key"
+                && let Some(key) = before
+                    .iter()
+                    .find(|key| in_group(key) && (body["dedicated"] != true || key["name"] == name))
             {
                 return Ok(key.clone());
             }
@@ -986,7 +1018,7 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 &mut s,
                 "POST",
                 "/api/token/",
-                json!({"name": name, "group": "auto", "expired_time": -1,
+                json!({"name": name, "group": if exact { group } else { "auto" }, "expired_time": -1,
                 "unlimited_quota": true, "model_limits_enabled": false}),
             )
             .await?;
@@ -995,9 +1027,7 @@ pub async fn account(action: &str, id: &str, mut body: Value) -> Result<Value, S
                 .into_iter()
                 .rev()
                 .find(|k| {
-                    k["name"] == name
-                        && active_key_in_group(k, group)
-                        && !before.iter().any(|b| b["id"] == k["id"])
+                    k["name"] == name && in_group(k) && !before.iter().any(|b| b["id"] == k["id"])
                 })
                 .ok_or("Key 已创建，请刷新列表后选择".into())
         }

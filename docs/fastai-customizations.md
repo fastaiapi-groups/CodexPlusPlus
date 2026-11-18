@@ -18,6 +18,7 @@
 | F08 | 模型级窗口/压缩阈值、catalog 指针与旧 per-profile 单值兼容 | core `settings.rs`、`relay_config.rs`、`model_catalog.rs`；前端模型列表；`docs/model-window-overrides.md` | `model_list` 窗口后缀、手工窗口、导入及外部 catalog 兼容；旧配置无需迁移即可继续使用 |
 | F09 | 拓展接口兼容、路由白名单、持久注册与扫描安全 | `assets/inject/renderer-inject/91-extension-api.js`、`01-registry.js` 及汇编产物 | 已发布类名/constants 不更名；写路由不开放；插入节点带 `data-codex-plus-ext`；重建 DOM 不丢注册 |
 | F10 | 用户当前的其他本地适配与上游既有能力继续可用 | 每轮相对共同祖先的自有侧 diff；`App.tsx`、Tauri 注册入口、配置生成、工作流等共享接入点 | 包含供应商名称保留、注入重试/日志、Computer Use 接入等历史改动；核实来源和当前行为，不能仅以 FastAiApi 文件名过滤定制 |
+| F11 | 多分组自动换 Key（默认开启）：各分组的专属 Key 同步进 Codex++ 网关池，Codex 换模型时按模型选分组 Key；New API 的 auto 分组优先；Codex 用官方账号或其他供应商时不自动接管 | Tauri `fastaiapi_gateway_commands.rs`；core `fastaiapi.rs` 的 `ensure_group_key` `exact`；前端 `Account.tsx` 开关 | 只调用上游网关的公开接口（`create_provider`/`update_provider`/`enable_binding`/`disable_binding`），来源标记 `fastaiapi:<平台>:<分组>`；上游改这些接口时需同步适配 |
 
 ## 已有验证入口
 

@@ -144,7 +144,7 @@ export function ModelDialog({keyId, models, value, groupId, busy, onApply, onClo
                 {kind === "text" && pricing ? ` · ${pricing.currency === "CNY" ? "人民币" : "美元"} / 百万 tokens` : ""}</span>
               <button type="button" disabled={busy || working || loading} onClick={() => void refresh()}><RefreshCw size={13}/>刷新列表</button>
             </div>
-            <label className="fast-group-search"><Search size={16}/><input aria-label="搜索模型" placeholder="搜索模型名称…" value={query} onChange={event => setQuery(event.target.value)}/></label>
+            <label className="fast-group-search"><Search size={16}/><input spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-label="搜索模型" placeholder="搜索模型名称…" value={query} onChange={event => setQuery(event.target.value)}/></label>
             {pricing?.pricing_warning && <p className="fast-model-hint fast-model-warning" role="status">{pricing.pricing_warning}</p>}
             <div className="fast-group-list" role="radiogroup" aria-label="可用模型">
               {filtered.map(model => {

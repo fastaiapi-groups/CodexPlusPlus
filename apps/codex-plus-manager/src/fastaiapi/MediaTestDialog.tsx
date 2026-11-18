@@ -10,8 +10,8 @@ import { saveMediaTest } from "./mediaTestStore";
 import "./media-guide.css";
 
 type Result = {message: string; model: string; text?: string; image?: string; image_history_unavailable?: boolean};
-export function MediaTestDialog({kind, models, value, onClose, onBusy}: {
-  kind: "text" | "image"; models: string[]; value?: string; onClose: ()=>void; onBusy: (value: boolean)=>void;
+export function MediaTestDialog({kind, keyId, models, value, onClose, onBusy}: {
+  kind: "text" | "image"; keyId?: number; models: string[]; value?: string; onClose: ()=>void; onBusy: (value: boolean)=>void;
 }) {
   const invoke = usePlatformInvoke(), dialog = useRef<HTMLDialogElement>(null);
   const [model,setModel] = useState(models.includes(value || "") ? value! : models[0] || "");
@@ -26,7 +26,7 @@ export function MediaTestDialog({kind, models, value, onClose, onBusy}: {
   const label = kind === "text" ? "文本" : "图片";
   useEffect(()=>{const opener=document.activeElement,element=dialog.current;element?.showModal();return()=>{element?.close();if(opener instanceof HTMLElement && opener.isConnected)opener.focus();};},[]);
   return createPortal(<dialog ref={dialog} className="fast-setup-dialog fast-media-test-dialog" aria-labelledby="fast-media-test-title" onCancel={event=>{event.preventDefault();if(!running)onClose();}} onClick={event=>{if(event.target===event.currentTarget&&!running)onClose();}}>
-    <header><div><small>当前媒体连接 · 真实调用</small><h2 id="fast-media-test-title">{label}生成测试</h2></div><button type="button" aria-label="关闭生成测试" disabled={running} onClick={onClose}><X size={20}/></button></header>
+    <header><div><small>{kind === "text" ? "文本默认 Key" : "当前媒体连接"} · 真实调用</small><h2 id="fast-media-test-title">{label}生成测试</h2></div><button type="button" aria-label="关闭生成测试" disabled={running} onClick={onClose}><X size={20}/></button></header>
     {kind === "image" && <MediaTestTabs id="fast-image-test" tab={tab} onChange={setTab} disabled={running}/>}
     {kind === "image" && tab === "history" && <MediaTestHistory id="fast-image-test" scope={scope}/>}
     <form hidden={tab !== "generate"} role={kind === "image" ? "tabpanel" : undefined} id="fast-image-test-generate-panel"
@@ -37,7 +37,7 @@ export function MediaTestDialog({kind, models, value, onClose, onBusy}: {
         const entry = {id: crypto.randomUUID(), createdAt: Date.now(), model};
         let status: string, image: string | undefined;
         try {
-          const next = await invoke<Result>("fastaiapi_account", {action: "media_test", body: {kind, model, prompt}});
+          const next = await invoke<Result>("fastaiapi_account", {action: "media_test", body: {kind, model, prompt, key_id: keyId}});
           setResult(next);
           status = next.message;
           image = next.image_history_unavailable ? undefined : next.image;
@@ -57,10 +57,10 @@ export function MediaTestDialog({kind, models, value, onClose, onBusy}: {
           options={models.map(model => ({value:model,label:model}))} placeholder="暂无可用模型" disabled={running || !models.length}
           onChange={model=>{setModel(model);setResult(null);setError("");}}/>
       </div>
-      {!models.length && <p role="alert">当前媒体 Key 没有可用的{label}模型，请先检查连接和分组权限。</p>}
+      {!models.length && <p role="alert">当前{kind === "text" ? "文本默认" : "媒体"} Key 没有可用的{label}模型，请先检查连接和分组权限。</p>}
       <label>测试内容<textarea aria-label="测试内容" maxLength={4000} required rows={3} value={prompt} onChange={event=>{setPrompt(event.target.value);setResult(null);setError("");}} disabled={running}/></label>
       <p className="fast-media-test-endpoint"><code>POST {kind === "image" ? urls.generateImage : urls.testText}</code></p>
-      <p className="fast-media-test-note">{kind === "image" ? "本次请求生成 1 张 1024×1024 图片，实际尺寸以平台返回为准。" : "本次进行一次简短文本生成。"}测试使用媒体 Key，按当前平台计费；不会改变默认模型。</p>
+      <p className="fast-media-test-note">{kind === "image" ? "本次请求生成 1 张 1024×1024 图片，实际尺寸以平台返回为准。" : "本次进行一次简短文本生成。"}测试使用{kind === "text" ? "文本默认" : "媒体"} Key，按当前平台计费；不会改变默认模型。</p>
       {running && <p className="fast-media-test-progress" role="status"><LoaderCircle size={16}/>{label}生成中，请等待平台响应。请勿重复提交。</p>}
       {error && <div className="fast-media-test-error" role="alert"><strong>{result ? "结果预览需要检查" : "测试未完成"}</strong><p>{error}</p><small>如需排查权限，请检查当前分组和模型。若结果不确定，请先核对平台使用记录。</small></div>}
       {result && <div className="fast-media-test-result" role="status"><strong><CheckCircle2 size={16}/>{result.message}</strong><small>{result.model}</small>{result.text && <pre>{result.text}</pre>}{result.image && <img src={result.image} alt="图片生成测试结果" onError={()=>setError("平台已返回图片，但预览加载失败。请核对原使用记录，避免重复生成。")}/>}</div>}

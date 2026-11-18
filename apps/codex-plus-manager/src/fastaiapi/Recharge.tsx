@@ -140,7 +140,7 @@ export function Recharge({origin, data, onClose, onPaid}: {origin: string; data:
       e.preventDefault(); setBusy(true); setError(""); setNotice("");
       try { await api("redeem", {key: redeem.trim()}); setRedeem(""); setNotice("兑换成功，正在刷新账户余额。"); onPaid(); }
       catch (e) { setError(String(e)); } finally { setBusy(false); }
-    }}><label>兑换码<input required autoComplete="off" value={redeem} onChange={e => setRedeem(e.target.value)}/></label><button type="submit" disabled={busy || !redeem.trim()}>兑换</button></form>
+    }}><label>兑换码<input spellCheck={false} autoCapitalize="off" autoCorrect="off" required autoComplete="off" value={redeem} onChange={e => setRedeem(e.target.value)}/></label><button type="submit" disabled={busy || !redeem.trim()}>兑换</button></form>
     <div className="fast-scan-actions"><button disabled={busy} onClick={() => { void loadOrders(true); onPaid(); }}><RefreshCw size={15}/>刷新订单和余额</button><button onClick={() => void invoke("open_external_url", {url: `${origin}/hub/home/recharge`})}>官网充值中心<ExternalLink size={15}/></button></div>
     <div className="fast-payment-support"><span>充值未到账？请联系客服</span><div className="fast-payment-support-contacts"><SupportContact channel="qq" value="172733456"/><SupportContact channel="wechat" value="selectthree"/></div><small>请提供订单号，方便核查到账情况。</small></div>
     <p className="fast-payment-security"><ShieldCheck size={14}/>由平台安全收款 · 支付结果以平台订单为准</p>

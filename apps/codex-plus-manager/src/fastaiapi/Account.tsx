@@ -4,12 +4,12 @@ const logo = new URL("./logo.svg", import.meta.url).href;
 import "./account.css";
 import "./overview.css";
 import { RefreshCw, Plus, ArrowUpRight, LogOut, Sparkles } from "lucide-react";
-import { SubApiSubscriptions } from "./SubApiSubscriptions";
 import { Recharge } from "./Recharge";
 import { NewApiRecharge } from "./NewApiRecharge";
 import { createFastAiRechargeData, createNewApiRechargeData, type NewApiOrder, type NewApiRechargeInfo } from "./rechargeData";
-import { ServiceRouteProvider, RouteSelector, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
+import { ServiceRouteProvider, RouteSelector, SESSION_EXPIRED_EVENT, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
 import { MediaModels } from "./MediaModels";
+import { mediaStatusCache } from "./mediaStatusCache";
 import "./gate.css";
 import { ModelPicker } from "./ModelPicker";
 import { createModelDirectory, loadModelDirectory, type GroupCatalogs } from "./modelDirectory";
@@ -50,7 +50,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
   const [code, setCode] = useState(""), [invitation, setInvitation] = useState("");
   const [requires2fa, setRequires2fa] = useState(false), [totp, setTotp] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
-  const [configuration, setConfiguration] = useState<{key_id?: number; model?: string}>({});
+  const [configuration, setConfiguration] = useState<{key_id?: number; model?: string; active?: boolean}>({});
   const account = user?.email;
   const rechargeData = useMemo(() => ({
     newapi: createNewApiRechargeData(
@@ -80,9 +80,37 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     if (account !== undefined) void directory.load();
   }, [directory, account]);
   const [recharge, setRecharge] = useState(false);
+  // 多分组自动换 Key：各分组的 Key 同步进 Codex++ 网关，Codex 换模型时由网关选对应分组的 Key。
+  const [autoKey, setAutoKey] = useState<{enabled: boolean; groups: number; wanted: boolean}>({enabled: false, groups: 0, wanted: true});
+  const [autoKeyBusy, setAutoKeyBusy] = useState(false);
+  type AutoKeyStatus = {enabled: boolean; groups: number; wanted: boolean; model?: string};
+  // 同步要逐个分组读目录和 Key，放后台跑，不锁住整个页面。
+  const autoKeyAction = async (action: "enable" | "disable", silent = false, model = configuration.model) => {
+    setAutoKeyBusy(true);
+    if (!silent) setError("");
+    try {
+      const result = await invoke<AutoKeyStatus & {models?: number; skipped?: string[]; status?: AutoKeyStatus}>("fastaiapi_auto_key", {action, model});
+      const status = result.status ?? result;
+      setAutoKey({enabled: status.enabled, groups: status.groups, wanted: status.wanted});
+      if (action === "enable") setConfiguration(previous => ({...previous, active: true, model: status.model || previous.model}));
+      if (!silent) setNotice(action === "enable"
+        ? `已同步 ${result.groups} 个分组、${result.models} 个文字模型${result.skipped?.length ? `，${result.skipped.length} 个分组未同步` : ""}。重启 Codex 生效。`
+        : "已关闭自动换 Key，Codex 恢复为之前的连接。重启 Codex 生效。");
+    } catch (failure) {
+      if (!silent) setError(String(failure));
+    } finally {
+      setAutoKeyBusy(false);
+    }
+  };
   const [settings, setSettings] = useState<{registration_enabled?: boolean; email_verify_enabled?: boolean; invitation_code_enabled?: boolean; captcha_required?: boolean} | null>(null);
   const work = async (fn: () => Promise<void>) => { setBusy(true); setLocked(true); setError(""); try { await fn(); } catch(e) { setError(String(e)); } finally { setBusy(false); setLocked(false); } };
   const refresh = async () => setUser(await api<User>("me"));
+  useEffect(() => {
+    // 会话在使用中失效（平台侧过期或被顶号）：回到登录页，避免页面继续显示「已连接」。
+    const expired = () => { mediaStatusCache.clear(); setUser(null); setAuthenticated(false); setConfiguration({}); setRecharge(false); setNotice(""); setError("登录已过期，请重新登录。"); };
+    window.addEventListener(SESSION_EXPIRED_EVENT, expired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expired);
+  }, []);
   useEffect(() => {
     let disposed = false;
     setLocked(true);
@@ -103,7 +131,15 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     if (account === undefined) return;
     let disposed = false;
     void api<typeof configuration>("configuration").then(value => {
-      if (!disposed) setConfiguration(value);
+      if (disposed) return;
+      setConfiguration(value);
+      // 开关默认开启：Codex 正在用本平台（或已接入网关）时，进入页面就在后台同步一次分组 Key。
+      // Codex 用的是官方账号或其他供应商时不自动接管。
+      void invoke<AutoKeyStatus>("fastaiapi_auto_key", {action: "status"}).then(status => {
+        if (disposed) return;
+        setAutoKey({enabled: status.enabled, groups: status.groups, wanted: status.wanted});
+        if (status.wanted && (status.enabled || value.active)) void autoKeyAction("enable", true, value.model);
+      }).catch(() => {});
     }).catch(error => {if (!disposed) setError(String(error));});
     return () => {disposed = true;};
   }, [account, routes.selected]);
@@ -113,7 +149,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     const u = await api<User & {requires_2fa?: boolean; warning?: string}>(requires2fa ? "login_2fa" : register ? "register" : "login", requires2fa ? {totp_code: totp} : {email, password, remember_password: remember, verify_code: code, invitation_code: invitation || undefined});
     if (u.requires_2fa) {setRequires2fa(true); setPassword(""); setNotice("请输入身份验证器中的六位验证码。"); return;}
     setRequires2fa(false); setTotp("");
-    setUser(u); setAuthenticated(true); setPassword(""); setConfirm("");
+    mediaStatusCache.clear(); setUser(u); setAuthenticated(true); setPassword(""); setConfirm("");
     if (u.warning) setError(u.warning);
     if (remember && !u.password_remembered) setError("登录成功，但系统凭据库未保存账号密码。请允许访问系统凭据库后重新登录保存。");
     if (!u.session_persistent) setNotice("系统凭据库不可用，本次仅保持内存登录，重启后需重新登录。");
@@ -124,24 +160,25 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     {!user ? <form onSubmit={e => { e.preventDefault(); void login(); }}>
       <nav><button type="button" disabled={busy} onClick={() => {setRegister(false); setRequires2fa(false);}} aria-pressed={!register}>登录</button><button type="button" disabled={busy} onClick={() => {setRegister(true); setRequires2fa(false);}} aria-pressed={register}>注册账号</button></nav>
       {!register && <><h2>欢迎回来</h2><p>登录后可选择默认分组和模型。</p></>}<div className="fast-fields">
-      {requires2fa ? <label>身份验证器验证码<input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={totp} onChange={e=>setTotp(e.target.value)}/></label> : <><label>{register || routes.platform === "subapi" ? "邮箱" : "邮箱或用户名"}<input type={register || routes.platform === "subapi" ? "email" : "text"} autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}/></label>
-      {register && settings?.email_verify_enabled && <label>邮箱验证码<div className="fast-row"><input required autoComplete="one-time-code" value={code} onChange={e => setCode(e.target.value)}/><button type="button" disabled={busy || !email} onClick={() => void work(async () => {await api("verify", {email}); setNotice("验证码已发送，请查收邮箱。");})}>发送验证码</button></div></label>}
+      {requires2fa ? <label>身份验证器验证码<input required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={totp} onChange={e=>setTotp(e.target.value)}/></label> : <><label>{register || routes.platform === "subapi" ? "邮箱" : "邮箱或用户名"}<input spellCheck={false} autoCapitalize="off" autoCorrect="off" type={register || routes.platform === "subapi" ? "email" : "text"} autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)}/></label>
+      {register && settings?.email_verify_enabled && <label>邮箱验证码<div className="fast-row"><input spellCheck={false} autoCapitalize="off" autoCorrect="off" required autoComplete="one-time-code" value={code} onChange={e => setCode(e.target.value)}/><button type="button" disabled={busy || !email} onClick={() => void work(async () => {await api("verify", {email}); setNotice("验证码已发送，请查收邮箱。");})}>发送验证码</button></div></label>}
       <label>密码<input type="password" minLength={8} autoComplete={register ? "new-password" : "current-password"} required value={password} onChange={e => setPassword(e.target.value)}/></label>
-      {register && <><label>确认密码<input type="password" autoComplete="new-password" required value={confirm} onChange={e => setConfirm(e.target.value)}/></label>{settings?.invitation_code_enabled && <label>邀请码（选填）<input value={invitation} onChange={e => setInvitation(e.target.value)}/></label>}</>}
+      {register && <><label>确认密码<input type="password" autoComplete="new-password" required value={confirm} onChange={e => setConfirm(e.target.value)}/></label>{settings?.invitation_code_enabled && <label>邀请码（选填）<input spellCheck={false} autoCapitalize="off" autoCorrect="off" value={invitation} onChange={e => setInvitation(e.target.value)}/></label>}</>}
       </>}</div>{settings?.captcha_required && <p className="fast-muted">当前平台可能要求人机验证。如无法登录，请前往平台网站完成验证。</p>}<label className="fast-remember"><input type="checkbox" checked={remember} disabled={busy || requires2fa} onChange={e => { const checked = e.target.checked; if (checked) setRemember(true); else void work(async () => { await api("forget_login"); setRemember(false); setPassword(""); }); }}/>记住账号密码</label><button disabled={busy || (register && (!settings || !settings.registration_enabled))} type="submit">{busy ? "处理中…" : requires2fa ? "验证并登录" : register ? "注册并登录" : "登录"}</button>
       <p className="fast-muted">勾选后，账号密码仅保存在 macOS 系统钥匙串。取消勾选即可清除；未勾选不保存密码。</p>
     </form> : <>
       <div className="fast-endpoint"><span>模型服务</span><strong>{origin}<span>/v1</span></strong><small>已连接你的 {platformName} 账户</small></div>
       {officialMode && <p className="fast-muted">当前 Codex 使用官方账号，下方保留你的 {platformName} 模型配置。</p>}
-      {routes.platform === "subapi" && <SubApiSubscriptions/>}
-      <MediaModels key={routes.selected} textModel={configuration.model} textPicker={
+      {!officialMode && configuration.active === false && <p className="fast-muted">Codex 文字对话当前使用的是其他连接。点击「切换文字模型」并确认后，才会改用 {platformName}。</p>}
+      <div className="fast-auto-key"><p className="fast-muted"><strong>多分组自动换 Key</strong>{autoKeyBusy ? " · 正在同步分组 Key…" : autoKey.enabled ? ` · 已开启，${autoKey.groups} 个分组` : " · 未开启"}<br/>开启后自动同步各分组的 Key，在 Codex 里换模型时使用该模型所在分组的 Key；没有 Key 的分组会自动创建。Codex 经本机 Codex++ 网关转发，使用期间 Codex++ 需保持运行。</p><div>{autoKey.enabled && <button type="button" disabled={busy || autoKeyBusy} onClick={() => void autoKeyAction("enable")}>立即同步</button>}<button type="button" role="switch" aria-checked={autoKey.wanted} aria-label="多分组自动换 Key" className="fast-auto-key-switch" disabled={busy || autoKeyBusy} onClick={() => void autoKeyAction(autoKey.wanted ? "disable" : "enable")}><i/></button></div></div>
+      <MediaModels key={routes.selected} textModel={configuration.model} textKeyId={configuration.key_id ?? undefined} textPicker={
         <ModelPicker keyId={configuration.key_id ?? 0} value={configuration.model ?? ""}
           busy={busy} onApply={async ({model, keyId}) => {
-            setConfiguration({key_id: keyId, model});
+            setConfiguration({key_id: keyId, model, active: true});
             setNotice("默认分组和模型已更新，重启 Codex 生效。");
           }}/>
       }/>
-      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频工具</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); setUser(null); setAuthenticated(false); setConfiguration({}); await restoreLogin(); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
+      <footer className="fast-account-footer"><span><Sparkles size={15}/>内置图片与视频工具</span><div><button onClick={() => void work(async () => { await invoke("open_external_url", {url: origin}); })}>平台网站<ArrowUpRight size={14}/></button><button disabled={busy} onClick={() => void work(async () => { const result = await api<{warning?: string}>("logout"); mediaStatusCache.clear(); setUser(null); setAuthenticated(false); setConfiguration({}); await restoreLogin(); setRecharge(false); setNotice(result.warning || "已退出登录。"); })}><LogOut size={14}/>退出登录</button></div></footer>
       {recharge && (routes.platform === "subapi" ? <Recharge origin={walletOrigin} data={rechargeData.subapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/> : <NewApiRecharge origin={origin} walletOrigin={walletOrigin} currency={user.currency} data={rechargeData.newapi} onClose={() => setRecharge(false)} onPaid={() => void work(refresh)}/>)}
     </>}
     {!user && busy && <p className="fast-muted" role="status">正在登录平台，请留意系统凭据授权提示。</p>}

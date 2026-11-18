@@ -80,8 +80,17 @@ pub async fn fastaiapi_media_tool(
                 }
                 media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;
                 codex_plus_core::fastaiapi_media_env::restore_group_route(platform, origin)?;
+                // 切换平台或线路后，连接还指向旧线路且当前线路没有绑定过媒体分组：
+                // 自动接到当前线路，否则图片测试读不到模型、一直不可用。失败只提示，不阻断后续绑定。
+                let warning = if media::has_saved_route(platform, origin) {
+                    None
+                } else {
+                    panels::account(platform, "media_setup", "", json!({}))
+                        .await
+                        .err()
+                };
                 if status.registered {
-                    return Ok(json!({"registered":true}));
+                    return Ok(json!({"registered":true,"message":warning}));
                 }
             } else {
                 media::enable_native().map_err(|_| "无法保存媒体工具本地配置")?;

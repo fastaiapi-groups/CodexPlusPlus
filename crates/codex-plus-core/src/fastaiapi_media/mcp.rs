@@ -219,7 +219,13 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "submit_video",
-            "按当前平台计费提交视频任务，保存回执并返回任务 ID。参考图和视频时长按模型及模式限制。",
+            "按当前平台计费提交视频任务，保存回执并返回任务 ID。\
+             省略 resolution 时默认 480p，用户没有明确要求更高清晰度就不要传。\
+             MiniMax H3 系列（minimax-h3、-x、-u17、-u24、-u32）只接受 480p、768p、1080p，不接受 720p；Grok 只接受 720p。\
+             minimax-h3-x 时长 2–15 秒，可纯文生视频或带 1–9 张参考图；minimax-h3-u17 只支持文生视频；\
+             minimax-h3、-u24、-u32 时长 5–15 秒。\
+             提交前按所选模型优化提示词：H3 系列用英文写清主体、动作、镜头和声音，对白保留原语言，\
+             动作要能在所选时长内完成；Grok 用一句清晰的动作描述。用户要求原样使用时不改写。",
             json!({"workspace":workspace,"request_id":request,"prompt":string,"model":string,
                 "images":refs,"audios":refs,"videos":refs,"seconds":{"type":"integer","minimum":1,"maximum":60},
                 "ratio":{"enum":["16:9","9:16"]},"resolution":{"enum":["480p","720p","768p","1080p"]},

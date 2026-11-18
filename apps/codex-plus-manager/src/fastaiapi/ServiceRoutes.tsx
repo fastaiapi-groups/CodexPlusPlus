@@ -17,9 +17,14 @@ export function useActiveServiceRoute() {
   };
 }
 // 捕获本次渲染的平台，异步请求不依赖可变的全局选择。
+export const SESSION_EXPIRED_EVENT = "fastaiapi-session-expired";
 export function usePlatformInvoke() {
   const {routes} = useServiceRoutes();
-  return <T,>(command: string, args: Record<string, unknown> = {}) => invoke<T>(command, {...args, platform: routes.platform});
+  // 任何调用发现会话失效都广播一次，账户页据此回到登录页。
+  return <T,>(command: string, args: Record<string, unknown> = {}) => invoke<T>(command, {...args, platform: routes.platform}).catch(error => {
+    if (/登录已过期/.test(String(error))) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    throw error;
+  });
 }
 export function ServiceRouteProvider({children}: {children: ReactNode}) {
   const [routes, setRoutes] = useState<Routes | null>(null), [error, setError] = useState("");
