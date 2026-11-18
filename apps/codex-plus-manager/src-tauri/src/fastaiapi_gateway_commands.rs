@@ -263,20 +263,37 @@ async fn sync(platform: Platform) -> Result<Value, String> {
     Ok(json!({"groups":synced,"models":models_total,"skipped":skipped}))
 }
 
+/// Codex 绑定里要排除的上游：当前平台同步的分组一律放行，另一个平台同步的分组一律排除
+/// （两个平台的同名模型不能混着用）。首次接入时连池里其它供应商也排除，不悄悄带进 Codex；
+/// 已接入时保留用户原来对其它供应商的选择。
+fn scoped_excludes(
+    gateway: &GatewaySettings,
+    platform: Platform,
+    current: &[String],
+    already_enabled: bool,
+) -> Vec<String> {
+    let ours = source_prefix(platform);
+    gateway
+        .providers
+        .iter()
+        .filter(|provider| {
+            if provider.source.starts_with(&ours) {
+                false
+            } else if provider.source.starts_with("fastaiapi:") {
+                true
+            } else {
+                !already_enabled || current.contains(&provider.relay.id)
+            }
+        })
+        .map(|provider| provider.relay.id.clone())
+        .collect()
+}
+
 fn connect(platform: Platform, preferred: &str) -> Result<(), String> {
     let ctx = context();
     let gateway = ctx.gateway.load().map_err(text)?;
     let mut binding = gateway.binding(&ToolId::Codex).cloned().unwrap_or_default();
-    if !binding.enabled {
-        // 首次接入：只用当前平台同步的分组，不把池里其它供应商悄悄带进 Codex。
-        let ours = synced_ids(&gateway, platform);
-        binding.pool_exclude = gateway
-            .providers
-            .iter()
-            .map(|provider| provider.relay.id.clone())
-            .filter(|id| !ours.contains(id))
-            .collect();
-    }
+    binding.pool_exclude = scoped_excludes(&gateway, platform, &binding.pool_exclude, binding.enabled);
     if !preferred.is_empty() && route::model_is_routable(&gateway, &binding, preferred) {
         binding.model = preferred.to_owned();
     } else if !route::model_is_routable(&gateway, &binding, &binding.model) {
@@ -344,5 +361,33 @@ mod tests {
         let priced = json!({"models":[{"model":"glm-5.3-flash","kind":"text"},{"model":"gpt-image-2","kind":"image"}]});
         assert_eq!(group_text_models(&priced), ["glm-5.3-flash"]);
         assert!(group_text_models(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn binding_only_uses_the_current_platform_groups() {
+        let provider = |source: &str, id: &str| {
+            let relay = codex_plus_core::settings::RelayProfile {
+                id: id.into(),
+                ..Default::default()
+            };
+            json!({"source":source,"relay":relay})
+        };
+        let gateway: GatewaySettings = serde_json::from_value(json!({"providers":[
+            provider("fastaiapi:newapi:auto", "tumei-auto"),
+            provider("fastaiapi:subapi:2", "fast-gpt"),
+            provider("codex:x", "other"),
+            provider("", "mine"),
+        ]}))
+        .unwrap();
+        // 首次接入：只留当前平台。
+        assert_eq!(
+            scoped_excludes(&gateway, Platform::SubApi, &[], false),
+            ["tumei-auto", "other", "mine"]
+        );
+        // 已接入后换平台：另一个平台的分组排除，用户原来放行的供应商继续放行。
+        assert_eq!(
+            scoped_excludes(&gateway, Platform::NewApi, &["tumei-auto".into(), "other".into()], true),
+            ["fast-gpt", "other"]
+        );
     }
 }

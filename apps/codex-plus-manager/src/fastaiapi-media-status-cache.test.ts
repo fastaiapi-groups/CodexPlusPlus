@@ -92,7 +92,8 @@ test('auto key routing syncs each group key into the gateway and keeps Codex on 
   assert.match(account, /invoke<[\s\S]{0,200}>\("fastaiapi_auto_key", \{action, model\}\)/);
   // 默认开启的开关：没关过就自动同步，但 Codex 用官方账号或其他供应商时不接管。
   assert.match(gateway, /map_or\(true, \|value\| value\.trim\(\) != "off"\)/);
-  assert.match(account, /role="switch" aria-checked=\{autoKey\.wanted\}/);
+  // 开关显示实际状态：默认开启但没接管（Codex 在用别的连接）时显示为关。
+  assert.match(account, /role="switch" aria-checked=\{autoKey\.enabled\}/);
   assert.match(account, /status\.wanted && \(status\.enabled \|\| value\.active\)\) void autoKeyAction\("enable", true, value\.model\)/);
   // 模型类型以平台目录为准，auto 分组排最前。
   assert.match(gateway, /"auto" if platform == Platform::NewApi => 0/);
