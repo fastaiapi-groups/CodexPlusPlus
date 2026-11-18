@@ -20,7 +20,7 @@ export async function configureAccount(keys: Key[], client: Client) {
   const models = await client.models(key.id);
   const current = await client.current();
   const model = (current.key_id === key.id && models.includes(current.model ?? "") ? current.model : undefined)
-    ?? models.find(m => m === "gpt-5.6-sol") ?? models[0];
+    ?? models.find(m => m === "gpt-6.1-sol") ?? models.find(m => m === "gpt-5.6-sol") ?? models[0];
   if (!model) throw new Error("该 Key 没有可用对话模型，请选择其他分组。");
   await client.apply(key.id, model);
   return {id: key.id, models, model};

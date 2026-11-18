@@ -452,9 +452,11 @@ pub(crate) async fn status_for(platform: Platform, origin: &str) -> Value {
         "video": fastaiapi_media_env::group_model(&descriptor, platform, origin, "video")["key_id"],
     });
     let defaults = fastaiapi_media_env::defaults_for(&descriptor, platform, origin);
-    let video = defaults["video"].as_str().unwrap_or("minimax-h3");
+    let video = defaults["video"]
+        .as_str()
+        .unwrap_or(fastaiapi_media_env::default_video_model(platform));
     let mut result = json!({"group_ids":bindings, "key_ids":key_ids, "fallback_key_id":fastaiapi_media_env::pricing_key_id(platform).ok(),
-        "image_model":defaults["image"].as_str().unwrap_or("gpt-image-2"), "video_model":video});
+        "image_model":defaults["image"].as_str().unwrap_or(fastaiapi_media_env::DEFAULT_IMAGE_MODEL), "video_model":video});
     match active_connection(platform, origin, None).await {
         Ok(base) => match client() {
             Ok(client) => {

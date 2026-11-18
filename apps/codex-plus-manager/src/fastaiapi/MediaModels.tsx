@@ -66,7 +66,8 @@ export function MediaModels({textModel, textKeyId, textPicker}: {textModel?: str
   }, [routes.platform, routes.selected]);
   const work = async (name: string, fn: () => Promise<void>) => {setBusy(name); setLocked(true); setMessage(""); try {await fn();} catch(e) {setMessage(String(e));} finally {setBusy("");setLocked(false);}};
   const [picker, setPicker] = useState<"image" | "video" | null>(null), [test, setTest] = useState<"text" | "image" | "video" | null>(null);
-  const defaults = {image: status?.image_model || "gpt-image-2", video: status?.video_model || "minimax-h3"};
+  // 与 core `fastaiapi_media_env` 的默认值保持一致；SubAPI 的视频协议只适配了 minimax-h3 与 Grok。
+  const defaults = {image: status?.image_model || "gpt-image-2.6-sunburst", video: status?.video_model || (routes.platform === "subapi" ? "minimax-h3" : "minimax-h3-x")};
   const modelsFor = (kind: "text" | "image" | "video") =>
     (status?.models_by_kind ? status.models_by_kind[kind] ?? [] : status?.models ?? [])
       .filter(model => supportsModel(routes.platform, kind, model, kinds.get(model)));

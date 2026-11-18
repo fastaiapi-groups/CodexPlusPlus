@@ -103,3 +103,14 @@ test('auto key routing syncs each group key into the gateway and keeps Codex on 
   const core = readFileSync(new URL('../../../crates/codex-plus-core/src/fastaiapi.rs', import.meta.url), 'utf8');
   assert.match(core, /"group": if exact \{ group \} else \{ "auto" \}/);
 });
+
+test('built-in default models match across core, panel and onboarding', () => {
+  const env = readFileSync(new URL('../../../crates/codex-plus-core/src/fastaiapi_media_env.rs', import.meta.url), 'utf8');
+  assert.match(env, /DEFAULT_IMAGE_MODEL: &str = "gpt-image-2\.6-sunburst"/);
+  assert.match(env, /Platform::NewApi => "minimax-h3-x",\s+Platform::SubApi => "minimax-h3"/);
+  const panel = readFileSync(new URL('./fastaiapi/MediaModels.tsx', import.meta.url), 'utf8');
+  assert.match(panel, /image_model \|\| "gpt-image-2\.6-sunburst"/);
+  assert.match(panel, /routes\.platform === "subapi" \? "minimax-h3" : "minimax-h3-x"/);
+  const onboarding = readFileSync(new URL('./fastaiapi/onboarding.ts', import.meta.url), 'utf8');
+  assert.match(onboarding, /m === "gpt-6\.1-sol"\) \?\? models\.find\(m => m === "gpt-5\.6-sol"\)/);
+});

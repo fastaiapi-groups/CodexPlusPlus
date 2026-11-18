@@ -47,9 +47,9 @@ pub(super) fn valid_model_id(id: &str) -> bool {
 impl Generate {
     pub fn model(&self, connection: &Connection, kind: &str) -> Result<String> {
         let default = if kind == "image" {
-            "gpt-image-2"
+            crate::fastaiapi_media_env::DEFAULT_IMAGE_MODEL
         } else {
-            "minimax-h3"
+            crate::fastaiapi_media_env::default_video_model(connection.platform)
         };
         let model = self
             .model

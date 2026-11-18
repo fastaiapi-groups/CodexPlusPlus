@@ -156,8 +156,8 @@ pub(super) async fn call(
             }
             Ok(
                 json!({"credential_readable":true,"platform":active.platform.id(),"origin":active.origin,
-                "defaults":{"image":active.defaults["image"].as_str().unwrap_or("gpt-image-2"),
-                "video":active.defaults["video"].as_str().unwrap_or("minimax-h3")}}),
+                "defaults":{"image":active.defaults["image"].as_str().unwrap_or(crate::fastaiapi_media_env::DEFAULT_IMAGE_MODEL),
+                "video":active.defaults["video"].as_str().unwrap_or(crate::fastaiapi_media_env::default_video_model(active.platform))}}),
             )
         }
         "generate_image" => runs::generate(state, client, "image", parse(args)?).await,

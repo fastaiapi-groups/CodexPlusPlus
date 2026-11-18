@@ -14,7 +14,7 @@ Windows 用 `py -3` 或可用的 Python 3.10+ 命令，macOS/Linux 用 `python3`
 若当前 Codex 会话提供 `fastaiapi_media` MCP，优先使用它。连接入口在 Codex++ 概览「媒体创作与连接 → 连接媒体工具」，选择 HTTPS 路线后重新打开 Codex 会话。工具从本机系统凭据库读取当前平台的媒体 Key。
 
 - 检查连接用 `connection_status`，查询可用模型用 `list_models`。只在用户明确要求生成时调用付费工具。
-- 生图用 `generate_image`，省略模型或尺寸时使用界面默认模型与 1024×1024。参考图放在用户指定的项目目录内。
+- 生图用 `generate_image`，省略模型或尺寸时使用界面默认模型与 1024×1024。用户没在界面选过时，托管模式默认图片模型为 `gpt-image-2.6-sunburst`，默认视频模型在 TuMeiAPI 为 `minimax-h3-x`、在 FastAiAPI 为 `minimax-h3`。参考图放在用户指定的项目目录内。
 - 生视频用 `submit_video`。默认分辨率 480p，用户没有明确要求就不传 `resolution`；H3 系列只接受 480p/768p/1080p（不接受 720p），Grok 只接受 720p。
 - 提交前按所选模型优化提示词：H3 系列参考 [H3](references/h3.md)，Grok 参考 [Grok](references/grok.md)。`minimax-h3-x` 可纯文生视频（2–15 秒），`minimax-h3-u17` 只支持文生视频，其余 H3 型号需要参考图。提交后保存 UUID 和平台任务 ID，用 `video_status` 查原任务，成功后用 `download_video`。
 - 用 `list_runs` 查找当前项目的原任务。提交不明确时保留同一个 UUID，核实平台任务 ID 后用 `recover_video` 恢复。旧版已提交的视频可把项目中的 schema 2 回执路径传给 `recover_video`。

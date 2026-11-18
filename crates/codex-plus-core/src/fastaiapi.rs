@@ -502,7 +502,7 @@ pub(crate) async fn media_status_for(
             Ok(
                 json!({"state":if warning.is_some() || fallback {"environment_warning"} else {"ready"},"message":message,"models":ids,
                 "image_model":defaults["image_model"],"video_model":defaults["video_model"],"default_video_model":defaults["video_model"],
-                "fallback_key_id":crate::fastaiapi_media_env::pricing_key_id(platform).ok(),"default_video_available":ids.contains(&defaults["video_model"].as_str().unwrap_or("minimax-h3"))}),
+                "fallback_key_id":crate::fastaiapi_media_env::pricing_key_id(platform).ok(),"default_video_available":ids.contains(&defaults["video_model"].as_str().unwrap_or(crate::fastaiapi_media_env::default_video_model(platform)))}),
             )
         }
         Err(error) if error.contains("HTTP 401") || error.contains("HTTP 403") => Ok(

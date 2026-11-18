@@ -146,10 +146,21 @@ pub(crate) fn group_service(platform: Platform, fingerprint: &str) -> Option<Str
         .then(|| platform.service(&format!("media-group.{fingerprint}")))
 }
 
+/// 用户没选过时的默认图片模型。
+pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
+/// 用户没选过时的默认视频模型。SubAPI 的视频协议只适配了 `minimax-h3` 与 Grok，
+/// 不能用 `minimax-h3-x`，所以按平台区分。
+pub fn default_video_model(platform: Platform) -> &'static str {
+    match platform {
+        Platform::NewApi => "minimax-h3-x",
+        Platform::SubApi => "minimax-h3",
+    }
+}
+
 fn model_defaults_from(value: &Value, platform: Platform) -> Value {
     let defaults = &value["model_defaults"][platform.id()];
-    json!({"image_model":defaults["image"].as_str().filter(|model| valid_model("image", model)).unwrap_or("gpt-image-2"),
-        "video_model":defaults["video"].as_str().filter(|model| valid_model("video", model)).unwrap_or("minimax-h3")})
+    json!({"image_model":defaults["image"].as_str().filter(|model| valid_model("image", model)).unwrap_or(DEFAULT_IMAGE_MODEL),
+        "video_model":defaults["video"].as_str().filter(|model| valid_model("video", model)).unwrap_or(default_video_model(platform))})
 }
 pub fn model_defaults(platform: Platform) -> Value {
     let descriptor = std::fs::read(descriptor_path())
@@ -947,6 +958,16 @@ mod tests {
         assert_eq!(
             model_defaults_from(&value, Platform::SubApi)["video_model"],
             "minimax-h3"
+        );
+        // 没选过时的默认值：图片 sunburst；视频 New API 用 h3-x，SubAPI 协议只适配了 h3。
+        let fresh = json!({});
+        assert_eq!(
+            model_defaults_from(&fresh, Platform::NewApi),
+            json!({"image_model":"gpt-image-2.6-sunburst","video_model":"minimax-h3-x"})
+        );
+        assert_eq!(
+            model_defaults_from(&fresh, Platform::SubApi),
+            json!({"image_model":"gpt-image-2.6-sunburst","video_model":"minimax-h3"})
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("connection.json");
