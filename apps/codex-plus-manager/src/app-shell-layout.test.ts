@@ -732,3 +732,7 @@ test("「Agent 接入」的 Codex 行复用同一份启动状态；Claude 页把
   assert.match(entry, /setClaudeLocalRun\(\(current\) => \(sameClaudeRunState\(current, status\) \? current : status\)\)/);
   assert.match(text, /function sameClaudeRunState\(/);
 });
+
+test("供应商池不显示赞助商推荐悬浮提示", () => {
+  assert.doesNotMatch(functionSource("App"), /cx-float-hint|sponsorHintClosed|正在找合适的供应商|去首页看看赞助商推荐/);
+});
