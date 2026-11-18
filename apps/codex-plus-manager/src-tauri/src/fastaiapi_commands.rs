@@ -179,9 +179,10 @@ async fn apply_model_binding(platform: Platform, mut body: Value) -> Result<Valu
             (key, id, secret, models)
         }
     };
-    if kind == "text" && super::fastaiapi_gateway_commands::enabled(platform) {
-        // 自动换 Key 开着：Codex 走网关，只改网关主模型，不切回单 Key 直连。
-        super::fastaiapi_gateway_commands::set_default_model(&model)?;
+    if kind == "text" && super::fastaiapi_gateway_commands::use_gateway_for(platform, &model).await? {
+        // 自动换 Key 开着：Codex 走网关，只改网关主模型，不切回单 Key 直连；
+        // 同时记下这次选的 Key 和模型，文本测试与下次进入页面都用它。
+        remember_text_choice(platform, id, model.clone(), secret, models).await?;
     } else if kind == "text" {
         apply_text_model(platform, id, model, secret, models).await?;
     } else {
@@ -316,6 +317,9 @@ async fn apply_text_model(
         Err(_) => return Err("无法读取已保存的平台选择".into()),
     };
     atomic_write(&selection, profile_id.as_bytes()).map_err(|_| "无法保存平台选择")?;
+    // 用户在账户页选了模型，就是要 Codex 用它：「只用增强功能」模式留下的总开关关闭状态在这里打开，
+    // 否则切换只会报「供应商配置总开关已关闭」而定制版又没有那个设置页。
+    settings.relay_profiles_enabled = true;
     settings.active_relay_id = profile.id.clone();
     settings.relay_profiles.retain(|p| p.id != profile.id);
     settings.relay_profiles.push(profile);
@@ -331,6 +335,54 @@ async fn apply_text_model(
         return Err(result.message);
     }
     Ok(json!({"model":model,"message":format!("已配置 {}，可启动 Codex", platform.name())}))
+}
+
+/// 只记下本平台的文字 Key 与模型（供文本测试、下次进入页面使用），不改 Codex 当前连接。
+/// Codex 走网关时用它代替 [`apply_text_model`]：后者会把 Codex 切回单 Key 直连。
+pub(crate) async fn remember_text_choice(
+    platform: Platform,
+    key_id: i64,
+    model: String,
+    key: String,
+    models: Vec<String>,
+) -> Result<(), String> {
+    let models: Vec<String> = models
+        .into_iter()
+        .filter(|id| codex_plus_core::fastaiapi::model_kind(id) == "text")
+        .collect();
+    let store = SettingsStore::default();
+    let mut settings = store.load().map_err(|_| "无法读取本地配置")?;
+    let profile_id = platform.profile_id(key_id);
+    let existing = settings
+        .relay_profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .cloned()
+        .unwrap_or_default();
+    let profile = account_profile(
+        platform,
+        existing,
+        profile_id.clone(),
+        key,
+        model,
+        models,
+        panels::origin(platform).await,
+    )?;
+    settings.relay_profiles.retain(|p| p.id != profile.id);
+    settings.relay_profiles.push(profile);
+    store.save(&settings).map_err(|_| "无法保存模型选择")?;
+    atomic_write(&account_selection_path(platform), profile_id.as_bytes())
+        .map_err(|_| "无法保存平台选择")?;
+    crate::gateway_commands::notify_settings_changed();
+    Ok(())
+}
+
+/// 本平台是否已经有保存过的文字模型选择。
+pub(crate) fn has_text_choice(platform: Platform) -> bool {
+    let prefix = platform.profile_prefix();
+    SettingsStore::default()
+        .load()
+        .is_ok_and(|settings| settings.relay_profiles.iter().any(|p| p.id.starts_with(&prefix)))
 }
 
 #[tauri::command]

@@ -85,7 +85,8 @@ test('auto key routing syncs each group key into the gateway and keeps Codex on 
   assert.match(gateway, /format!\("fastaiapi:\{\}:", platform\.id\(\)\)/);
   assert.match(gateway, /enable_binding\(&ctx, &ToolId::Codex, binding\)/);
   const commands = readFileSync(new URL('../src-tauri/src/fastaiapi_commands.rs', import.meta.url), 'utf8');
-  assert.match(commands, /kind == "text" && super::fastaiapi_gateway_commands::enabled\(platform\)[\s\S]{0,200}set_default_model/);
+  assert.match(commands, /kind == "text" && super::fastaiapi_gateway_commands::use_gateway_for\(platform, &model\)\.await\?/);
+  assert.match(gateway, /pub\(crate\) async fn use_gateway_for[\s\S]{0,500}set_default_model\(model\)\?/);
   const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
   assert.match(lib, /fastaiapi_gateway_commands::fastaiapi_auto_key/);
   const account = readFileSync(new URL('./fastaiapi/Account.tsx', import.meta.url), 'utf8');
@@ -94,7 +95,8 @@ test('auto key routing syncs each group key into the gateway and keeps Codex on 
   assert.match(gateway, /map_or\(true, \|value\| value\.trim\(\) != "off"\)/);
   // 开关显示实际状态：默认开启但没接管（Codex 在用别的连接）时显示为关。
   assert.match(account, /role="switch" aria-checked=\{autoKey\.enabled\}/);
-  assert.match(account, /status\.wanted && \(status\.enabled \|\| value\.active\)\) void autoKeyAction\("enable", true, value\.model\)/);
+  assert.match(account, /if \(status\.eligible\) void autoKeyAction\("enable", true, value\.model\)/);
+  assert.match(gateway, /"eligible":wanted\(platform\) && \(on \|\| takeover_allowed\(platform, &gateway\)\)/);
   // 模型类型以平台目录为准，auto 分组排最前。
   assert.match(gateway, /"auto" if platform == Platform::NewApi => 0/);
   assert.match(gateway, /row\["kind"\]\.as_str\(\)/);
@@ -113,4 +115,19 @@ test('built-in default models match across core, panel and onboarding', () => {
   assert.match(panel, /routes\.platform === "subapi" \? "minimax-h3" : "minimax-h3-x"/);
   const onboarding = readFileSync(new URL('./fastaiapi/onboarding.ts', import.meta.url), 'utf8');
   assert.match(onboarding, /m === "gpt-6\.1-sol"\) \?\? models\.find\(m => m === "gpt-5\.6-sol"\)/);
+});
+
+test('logging in is enough: usage mode, config switch and default model are set up automatically', () => {
+  const account = readFileSync(new URL('./fastaiapi/Account.tsx', import.meta.url), 'utf8');
+  // 主界面挂载前把「没选过 / 只用增强功能」统一成全部功能，问卷不再弹。
+  assert.match(account, /needAgentFocusPrompt\(\) \|\| loadAgentFocus\(\) === "enhance"\) saveAgentFocus\("all"\)/);
+  assert.match(account, /export function FastAiApiGate[\s\S]{0,120}ensureUsableFocus\(\);/);
+  const commands = readFileSync(new URL('../src-tauri/src/fastaiapi_commands.rs', import.meta.url), 'utf8');
+  // 选模型和接入网关时自动打开供应商配置总开关。
+  assert.match(commands, /settings\.relay_profiles_enabled = true;\s+settings\.active_relay_id = profile\.id\.clone\(\);/);
+  assert.match(commands, /use_gateway_for\(platform, &model\)\.await\?[\s\S]{0,260}remember_text_choice/);
+  const gateway = readFileSync(new URL('../src-tauri/src/fastaiapi_gateway_commands.rs', import.meta.url), 'utf8');
+  assert.match(gateway, /if !settings\.relay_profiles_enabled \{\s+settings\.relay_profiles_enabled = true;/);
+  assert.match(gateway, /!super::fastaiapi_commands::has_text_choice\(platform\)[\s\S]{0,260}remember_text_choice/);
+  assert.match(gateway, /\["gpt-6\.1-sol", "gpt-5\.6-sol"\]/);
 });

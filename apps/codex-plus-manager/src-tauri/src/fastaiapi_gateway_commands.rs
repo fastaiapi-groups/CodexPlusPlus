@@ -83,6 +83,52 @@ fn remember(platform: Platform, on: bool) -> Result<(), String> {
     .map_err(|_| "无法保存自动换 Key 的开关".to_owned())
 }
 
+/// 没在用本平台分组时，登录后能不能自动接管 Codex。
+///
+/// 可以：Codex 还没配置过连接，或当前连接就是本平台的账户连接（含它被「只用增强功能」
+/// 模式关掉总开关的情况）。不可以：Codex 在用官方账号、其他供应商，或网关里另一个平台的分组——
+/// 那是用户自己的选择，不能因为登录了这里就改掉。
+fn takeover_allowed(platform: Platform, gateway: &GatewaySettings) -> bool {
+    let Ok(settings) = SettingsStore::default().load() else {
+        return false;
+    };
+    let active = settings.active_relay_id.trim();
+    if active == apply::CODEX_GATEWAY_RELAY_ID {
+        // 网关接着 Codex 但没有任何绑定在生效，属于残留状态，可以接管。
+        return gateway.active_binding(&ToolId::Codex).is_none();
+    }
+    active.is_empty()
+        || active.starts_with(&platform.profile_prefix())
+        || !settings.relay_profiles.iter().any(|profile| profile.id == active)
+}
+
+/// 默认文字模型：优先 `gpt-6.1-sol`，其次 `gpt-5.6-sol`，都没有就用列表里的第一个。
+fn preferred_text_model(models: &[String]) -> Option<String> {
+    ["gpt-6.1-sol", "gpt-5.6-sol"]
+        .into_iter()
+        .find(|wanted| models.iter().any(|model| model == wanted))
+        .map(str::to_owned)
+        .or_else(|| models.first().cloned())
+}
+
+/// 用户在账户页选了文字模型：Codex 正由网关接着、且自动换 Key 没被关掉时，由网关来承接
+/// （必要时先同步本平台分组并切到本平台），返回 true；否则返回 false，调用方按单 Key 直连处理。
+pub(crate) async fn use_gateway_for(platform: Platform, model: &str) -> Result<bool, String> {
+    let gateway = GatewayStore::default().load().map_err(text)?;
+    if gateway.active_binding(&ToolId::Codex).is_none() || !wanted(platform) {
+        return Ok(false);
+    }
+    if !in_use_ids(&gateway, platform).is_empty() {
+        set_default_model(model)?;
+        return Ok(true);
+    }
+    if synced_ids(&gateway, platform).is_empty() {
+        sync(platform).await?;
+    }
+    connect(platform, model)?;
+    Ok(true)
+}
+
 fn status(platform: Platform) -> Result<Value, String> {
     let gateway = GatewayStore::default().load().map_err(text)?;
     let ids = in_use_ids(&gateway, platform);
@@ -91,7 +137,8 @@ fn status(platform: Platform) -> Result<Value, String> {
         .binding(&ToolId::Codex)
         .map(|binding| route::binding_default_model(&gateway, binding))
         .unwrap_or_default();
-    Ok(json!({"enabled":on,"groups":ids.len(),"model":model,"wanted":wanted(platform)}))
+    Ok(json!({"enabled":on,"groups":ids.len(),"model":model,"wanted":wanted(platform),
+        "eligible":wanted(platform) && (on || takeover_allowed(platform, &gateway))}))
 }
 
 /// 自动换 Key 开着时切换默认文字模型：只改网关绑定的主模型，Codex 仍走网关。
@@ -176,6 +223,8 @@ async fn sync(platform: Platform) -> Result<Value, String> {
     let (mut synced, mut models_total, mut skipped) = (0usize, 0usize, Vec::new());
     let mut kept: Vec<String> = Vec::new();
     let mut order: Vec<String> = Vec::new();
+    // 第一个同步成功的分组：首次登录还没选过文字模型时，用它建立账户页的默认选择。
+    let mut first: Option<(i64, String, Vec<String>)> = None;
     for (group, name) in groups {
         // 目录这次没取到（平台接口瞬时失败）不等于分组没有文字模型：保留上次同步的上游，不动它。
         // New API 的分组模型以 `model_ids` 为准，缺了它说明这次没列出来，价格表里的模型不完整。
@@ -228,7 +277,7 @@ async fn sync(platform: Platform) -> Result<Value, String> {
             base_url: format!("{origin}/v1"),
             protocol: RelayProtocol::Responses,
             keys: vec![secret],
-            model: models[0].clone(),
+            model: preferred_text_model(&models).unwrap_or_default(),
             model_list: models.join("\n"),
             ..Default::default()
         };
@@ -244,6 +293,9 @@ async fn sync(platform: Platform) -> Result<Value, String> {
             }
             None => apply::create_provider(&store, &input, &source, None).map_err(text)?.1,
         });
+        if first.is_none() {
+            first = Some((id, input.keys[0].clone(), models.clone()));
+        }
         synced += 1;
         models_total += models.len();
     }
@@ -270,6 +322,15 @@ async fn sync(platform: Platform) -> Result<Value, String> {
             "没有可同步的分组。{}",
             skipped.first().cloned().unwrap_or_default()
         ));
+    }
+    // 首次登录：账户页还没有文字模型选择时，用第一个分组的 Key 和默认模型建一个，
+    // 这样文本测试和「文字模型」卡片登录后就可用，不用先手动选一次。
+    if !super::fastaiapi_commands::has_text_choice(platform)
+        && let Some((key_id, key, models)) = first
+        && let Some(model) = preferred_text_model(&models)
+    {
+        super::fastaiapi_commands::remember_text_choice(platform, key_id, model, key, models)
+            .await?;
     }
     Ok(json!({"groups":synced,"models":models_total,"skipped":skipped}))
 }
@@ -302,13 +363,25 @@ fn scoped_excludes(
 
 fn connect(platform: Platform, preferred: &str) -> Result<(), String> {
     let ctx = context();
+    // 接入网关要写 Codex 配置；「只用增强功能」模式留下的总开关关闭状态在这里打开，登录后才能直接用。
+    let mut settings = ctx.settings.load().map_err(|_| "无法读取本地配置")?;
+    if !settings.relay_profiles_enabled {
+        settings.relay_profiles_enabled = true;
+        ctx.settings.save(&settings).map_err(|_| "无法打开供应商配置开关")?;
+        crate::gateway_commands::notify_settings_changed();
+    }
     let gateway = ctx.gateway.load().map_err(text)?;
     let mut binding = gateway.binding(&ToolId::Codex).cloned().unwrap_or_default();
     binding.pool_exclude = scoped_excludes(&gateway, platform, &binding.pool_exclude, binding.enabled);
     if !preferred.is_empty() && route::model_is_routable(&gateway, &binding, preferred) {
         binding.model = preferred.to_owned();
-    } else if !route::model_is_routable(&gateway, &binding, &binding.model) {
-        binding.model = String::new();
+    } else if binding.model.is_empty() || !route::model_is_routable(&gateway, &binding, &binding.model) {
+        // 没有可沿用的选择：用默认文字模型，池里没有它时留空交给网关取第一个供应商的默认模型。
+        binding.model = ["gpt-6.1-sol", "gpt-5.6-sol"]
+            .into_iter()
+            .find(|model| route::model_is_routable(&gateway, &binding, model))
+            .unwrap_or_default()
+            .to_owned();
     }
     apply::enable_binding(&ctx, &ToolId::Codex, binding).map_err(text)?;
     if crate::commands::sync_resident_helper().is_none() {
@@ -372,6 +445,21 @@ mod tests {
         let priced = json!({"models":[{"model":"glm-5.3-flash","kind":"text"},{"model":"gpt-image-2","kind":"image"}]});
         assert_eq!(group_text_models(&priced), ["glm-5.3-flash"]);
         assert!(group_text_models(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn default_text_model_prefers_the_house_defaults() {
+        let list = |items: &[&str]| items.iter().map(|item| item.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            preferred_text_model(&list(&["claude-opus-5", "gpt-5.6-sol", "gpt-6.1-sol"])).as_deref(),
+            Some("gpt-6.1-sol")
+        );
+        assert_eq!(
+            preferred_text_model(&list(&["claude-opus-5", "gpt-5.6-sol"])).as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(preferred_text_model(&list(&["glm-5.3"])).as_deref(), Some("glm-5.3"));
+        assert_eq!(preferred_text_model(&[]), None);
     }
 
     #[test]

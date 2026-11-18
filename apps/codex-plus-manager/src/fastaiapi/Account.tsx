@@ -8,6 +8,7 @@ import { Recharge } from "./Recharge";
 import { NewApiRecharge } from "./NewApiRecharge";
 import { createFastAiRechargeData, createNewApiRechargeData, type NewApiOrder, type NewApiRechargeInfo } from "./rechargeData";
 import { ServiceRouteProvider, RouteSelector, SESSION_EXPIRED_EVENT, usePlatformInvoke, useServiceRoutes } from "./ServiceRoutes";
+import { loadAgentFocus, needAgentFocusPrompt, saveAgentFocus } from "../agent-focus-store";
 import { MediaModels } from "./MediaModels";
 import { mediaStatusCache } from "./mediaStatusCache";
 import "./gate.css";
@@ -22,8 +23,23 @@ type User = { email: string; username?: string; balance: number; currency?: stri
 const AccountView = createContext<((officialMode: boolean) => ReactNode) | null>(null);
 export default function Account({officialMode = false}: {officialMode?: boolean}) { return useContext(AccountView)?.(officialMode) ?? null; }
 
+// 这个发行版登录后就要能用：账户页的模型切换和自动换 Key 都依赖供应商配置。
+// 上游的「只用增强功能」模式会关掉配置总开关并隐藏相关页面，首次启动的问卷也可能让用户选到它，
+// 所以在主界面挂载前把没选过或选了它的情况统一成「全部功能」，问卷不再弹出。
+let focusEnsured = false;
+function ensureUsableFocus() {
+  if (focusEnsured) return;
+  focusEnsured = true;
+  try {
+    if (needAgentFocusPrompt() || loadAgentFocus() === "enhance") saveAgentFocus("all");
+  } catch {
+    // 读不了本地存储时保持上游行为。
+  }
+}
+
 // 根入口只包一层；登录状态和账户卡片共享生命周期，不修改上游 App 的路由。
 export function FastAiApiGate({children}: {children: ReactNode}) {
+  ensureUsableFocus();
   return <ServiceRouteProvider><PlatformGate>{children}</PlatformGate></ServiceRouteProvider>;
 }
 function PlatformGate({children}: {children: ReactNode}) {
@@ -83,7 +99,7 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
   // 多分组自动换 Key：各分组的 Key 同步进 Codex++ 网关，Codex 换模型时由网关选对应分组的 Key。
   const [autoKey, setAutoKey] = useState<{enabled: boolean; groups: number; wanted: boolean}>({enabled: false, groups: 0, wanted: true});
   const [autoKeyBusy, setAutoKeyBusy] = useState(false);
-  type AutoKeyStatus = {enabled: boolean; groups: number; wanted: boolean; model?: string};
+  type AutoKeyStatus = {enabled: boolean; groups: number; wanted: boolean; eligible?: boolean; model?: string};
   // 同步要逐个分组读目录和 Key，放后台跑，不锁住整个页面。
   const autoKeyAction = async (action: "enable" | "disable", silent = false, model = configuration.model) => {
     setAutoKeyBusy(true);
@@ -92,7 +108,8 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
       const result = await invoke<AutoKeyStatus & {models?: number; skipped?: string[]; status?: AutoKeyStatus}>("fastaiapi_auto_key", {action, model});
       const status = result.status ?? result;
       setAutoKey({enabled: status.enabled, groups: status.groups, wanted: status.wanted});
-      if (action === "enable") setConfiguration(previous => ({...previous, active: true, model: status.model || previous.model}));
+      // 首次登录时后端会顺带建立默认的文字模型选择，重新读一次让卡片和文本测试马上可用。
+      if (action === "enable") setConfiguration(await api<typeof configuration>("configuration").catch(() => ({...configuration, active: true, model: status.model || configuration.model})));
       if (!silent) setNotice(action === "enable"
         ? `已同步 ${result.groups} 个分组、${result.models} 个文字模型${result.skipped?.length ? `，${result.skipped.length} 个分组未同步` : ""}。重启 Codex 生效。`
         : "已关闭自动换 Key，Codex 恢复为之前的连接。重启 Codex 生效。");
@@ -133,12 +150,12 @@ function AccountGate({children, register, setRegister}: {children: ReactNode; re
     void api<typeof configuration>("configuration").then(value => {
       if (disposed) return;
       setConfiguration(value);
-      // 开关默认开启：Codex 正在用本平台（或已接入网关）时，进入页面就在后台同步一次分组 Key。
-      // Codex 用的是官方账号或其他供应商时不自动接管。
+      // 开关默认开启：登录后就在后台同步分组 Key 并接入 Codex，用户不用再做设置。
+      // Codex 用的是官方账号、其他供应商或另一个平台时不自动接管（由后端的 eligible 判断）。
       void invoke<AutoKeyStatus>("fastaiapi_auto_key", {action: "status"}).then(status => {
         if (disposed) return;
         setAutoKey({enabled: status.enabled, groups: status.groups, wanted: status.wanted});
-        if (status.wanted && (status.enabled || value.active)) void autoKeyAction("enable", true, value.model);
+        if (status.eligible) void autoKeyAction("enable", true, value.model);
       }).catch(() => {});
     }).catch(error => {if (!disposed) setError(String(error));});
     return () => {disposed = true;};
